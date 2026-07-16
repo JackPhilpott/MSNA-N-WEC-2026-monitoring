@@ -16,8 +16,8 @@ cadence, but live in separate subfolders so the deployable app stays lean.
 - `data/` — Local exchange between cleaning and the dashboard. Gitignored
   (reproducible from `cleaning/` + `input_data/`).
 - `input_data/` — Static copy of the sampling frame (from
-  `../sampling/output/`) that cleaning diagnostics run against. Gitignored;
-  copy in the file(s) you need, don't reference `sampling/` by path.
+  `../1_sampling/output/`) that cleaning diagnostics run against. Gitignored;
+  copy in the file(s) you need, don't reference `1_sampling/` by path.
 
 ## Setup (once code exists here)
 
