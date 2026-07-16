@@ -1,0 +1,26 @@
+# RStudio / R session state
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+
+# renv (commit renv.lock itself, not the library)
+renv/library/
+renv/staging/
+renv/python/
+
+# Raw KoBo pulls and any local data exchange - sensitive/reproducible, not
+# for version control (mirrors sampling/'s input_data/ convention)
+input_data/
+data/
+
+# Shiny deployment metadata (machine/account-specific)
+dashboard_app/rsconnect/
+
+# Claude Code local settings (machine/user-specific)
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+
+# OS
+Thumbs.db
+Desktop.ini
