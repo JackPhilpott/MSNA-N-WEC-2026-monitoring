@@ -10,14 +10,14 @@ renv/staging/
 renv/python/
 
 # Raw KoBo pulls and any local data exchange - sensitive/reproducible, not
-# for version control (mirrors sampling/'s input_data/ convention)
+# for version control (mirrors 1_sampling/'s input_data/ convention)
 input_data/
 data/
 
 # Shiny deployment metadata (machine/account-specific)
 dashboard_app/rsconnect/
 
-# Claude Code local settings (machine/user-specific)
+# Assist tool local settings (machine/user-specific)
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
 
