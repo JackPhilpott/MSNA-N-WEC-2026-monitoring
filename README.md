@@ -1544,3 +1544,507 @@ local), and the new container's startup log is clean. This deploy also
 carries the 2026-08-17c "weak internet" performance fixes (map
 lazy-loading, boundary coordinate precision, histogram pre-binning) —
 all now live together.
+
+## Update (2026-08-18) — FACT digest v2: cleaning-log analysis added
+
+2026-08-17b's digest only ever read `submissions_raw` (sample-vs-submission
+MATCHING integrity — GPS distance to assigned point, hh-roster mismatch,
+off-hours, duplicates). It never touched the cleaning team's own daily
+check-flag logs (`cleaning/MSNA_Data_Cleaning/output/checking/`), so it had
+nothing to say about response CONTENT — FSL plausibility, survey duration,
+listing/sampling integrity — which is where the two real, active problems
+(rushed surveys, implausible FSL answers) actually live. This update adds
+that half, in the same workbook, per your steer to extend rather than
+split into a second file.
+
+**New file**: `cleaning/real/summarise_cleaning_logs.R` — discovers every
+dated `<date>/all_orgs/*_cleaning_log_main.xlsx` (confirmed empirically
+that each day's log is a fresh batch, not a cumulative reissue — zero
+uuid+check_id overlap between consecutive days — so every date has to be
+read and combined, there's no "latest file wins" shortcut here), and
+classifies every `check_id` into one of four severity tiers:
+
+- **A** — recommend deletion (structurally invalid: all-zero or
+  maximum-possible FCS, entire LCSI module blank, confirmed-rushed
+  duration, implausible values)
+- **B** — needs a human review (duration near the threshold, GPS/sampling
+  duplicates, listing-integrity breaks, generic outliers)
+- **C** — pattern-only (individually plausible FSL cross-checks; only a
+  concern as an enumerator-level *rate*, not a single occurrence)
+- **D** — not a partner issue (self-resolving or statistical)
+
+`CHECK_TIER` in that file is a judgement call, not derived from the
+cleaning script's own `change_type` column — that column turned out to be
+populated for the most recent log date only, and incompletely even there
+(e.g. all-zero FCS, arguably the single worst check, was left
+unclassified rather than auto-marked for removal). Confirmed with Jack
+before building against it.
+
+Two data-quality surprises turned up reading the real logs, both fixed:
+- **check_id naming drift** — earlier logs spell the all-zero-FSL check
+  `flag_fcs_zero`, later ones `flag_zero_fcs`; both now tier A. Found a
+  genuinely new pattern along the way, `flag_full_fcs` (maximum possible
+  FCS, 112/112, every day for a week) — tiered A too, as structurally
+  implausible as the all-zero case, just the mirror image.
+- **~25–45% of rows in the four earliest logs have no `check_id` at all**
+  (the column wasn't consistently populated yet) — confirmed this wasn't
+  junk, the `issue` text is still there and matches known patterns, so
+  `recover_check_id_from_issue()` recovers a check_id from that text
+  instead of silently dropping a third of the early history. Deliberately
+  conservative: everything recovered this way lands at tier B, never A.
+
+**Five new sheets** in `build_fact_quality_digest_excel()`
+(`dashboard_app/R/reports_fact_digest.R`), ordered right after Summary:
+- **Priority follow-up** — every submission with a tier-A issue, or
+  already auto-marked `remove_survey` by the cleaning script, cross-checked
+  against `submissions_raw` for whether it's still live. Concrete finding
+  from the first real run: 41 submissions are tier-A, all 41 are still
+  present in the dataset, 36 are still counting toward the achieved total.
+  Nothing flagged so far has actually been removed anywhere yet.
+- **By enumerator (cleaning log)** / **By partner (cleaning log)** — tier
+  breakdown + HIGH/MEDIUM/LOW priority, the direct "who's having the
+  biggest issues" answer objective 2 asked for.
+- **Common errors** — per-`check_id` rollup (tier, plain-English issue
+  text, submissions/enumerators/partners affected) — objective 1's "what
+  common errors are we having problems with," independent of who caused
+  them.
+- **Cleaning log detail** — row-level drill-down, tier-annotated.
+
+One finding worth flagging directly: **si (Solidarités International)**
+has a 100% cleaning-log flag rate across all 104 of their submissions, and
+all 13 of their enumerators land at HIGH priority. Traced the cause —
+`gps_possible_duplicate` alone hits 95 of those 104 submissions, which
+reads more like a systemic GPS/methodology issue than 95 individually
+coincidental duplicate visits.
+
+Scope, per your answers: cumulative snapshot only (no day-by-day trend
+yet), no rest-day/staffing-pattern section (data-quality only, matching
+the two stated objectives).
+
+**Bug caught reviewing the first real output, fixed before shipping**: the
+Summary sheet's two "...of which" lines (still-achieved, still-present)
+were summed across the *whole* priority table instead of their own
+preceding row's subset — produced a nonsensical "remove_survey: 27,
+...of which still present: 41" (41 > 27, impossible). Fixed to scope each
+line to its own subset, and added a regression test asserting every "of
+which" figure stays ≤ its total, so this class of bug can't silently
+reappear.
+
+**Verified**: full smoke suite passes, including new assertions — sheet
+structure, priority-list row count reconciles with a fresh recompute,
+"counting as achieved" implies "still in dataset", tier-A sums reconcile
+between the enumerator and partner rollups, every check type is
+tier-labelled, and the Summary "of which" invariant above. Ran
+`generate_fact_digest.R` end to end and read every new sheet back out of
+the actual `.xlsx` to confirm the numbers land right, not just that the
+code runs.
+
+Still a standalone script only (`source("generate_fact_digest.R")` from
+the project root) — nothing here touches `app.R`/`ui.R` or gets deployed.
+
+## Update (2026-08-19) — Dange-Shuni reallocated Street Child → FACT; redeployed
+
+Per `field_verify/prompt_2026-08-19_dange_shuni_partner_reallocation.md`
+(instructions from the `1_sampling/` session, that project's own
+`Partnerscoverage.xlsx` already updated there): Dange-Shuni LGA (Sokoto,
+`NG034003`) moves from Street Child of Nigeria to FACT. Straight one-LGA
+swap, no other LGA's coverage changed.
+
+Copied the updated source into both of this project's independent
+snapshots (`input_data/partner_coverage/Partnerscoverage.xlsx` and
+`dashboard_app/input_data/partner_coverage/Partnerscoverage.xlsx`),
+verifying the source itself first rather than trusting the prompt's word
+for it — confirmed Dange-Shuni's row has FACT marked, Street Child
+cleared, `COUNT` correctly still 1. Reran
+`cleaning/prep/prep_partner_lga_assignment.R`: output now shows
+`NG034003 -> org_id "fact"` only. One pre-existing unmatched-row warning
+(Nasarawa/Eggon) is unrelated — different region, not touched by this
+change, confirmed it's a frame-matching quirk that predates today.
+
+Checked the three files the prompt flagged for caching risk
+(`mod_partner_report.R`, `mod_map.R`, `reports_fact_digest.R`) rather than
+assuming a file swap was enough: all three derive partner-LGA assignment
+live from `partner_lga_assignment.csv` at `global.R` source time
+(`partner_adm2`, `coverage_orgs_by_adm2`, `partner_coverage_label()`) —
+no baked `.rds`, nothing cached across sessions. A redeploy (fresh R
+process) is sufficient on its own; confirmed this directly by reading
+`partner_adm2[["fact"]]`/`partner_adm2[["street_child"]]` against the
+regenerated CSV before deploying, not just inferring it from the code.
+Since nothing needed an actual dashboard code change, this qualified as
+the "simple file swap" case the prompt said doesn't need a separate
+confirmation round before redeploying.
+
+**Real bug caught by the smoke suite along the way, unrelated to
+Dange-Shuni**: a new `2026-08-18` cleaning-log folder had landed since the
+last full test run (cleaning logs and `submissions_raw` refresh on
+independent schedules — see 2026-08-18's entry). That log referenced more
+of a few enumerators' work than the still-08-17-based `submissions_raw`
+yet contained, so `submissions_flagged` briefly exceeded
+`total_submissions` for those enumerators in `summarise_cleaning_logs.R`'s
+`by_enumerator`/`by_partner` tables — caught by the
+`Submissions.flagged <= Total.submissions` regression assertion. Fixed
+with `pmax()` flooring the denominator at `submissions_flagged` (comment
+in the code explains why), so this refresh-timing skew — which will
+happen again any time cleaning logs get ahead of the last data pull —
+can't produce a >100% flag rate or a failed invariant. Not something a
+test relaxation would have been right to do here; the underlying
+computation needed to be correct regardless of which source is
+momentarily ahead.
+
+**Deploy**: hit shinyapps.io network trouble again (Jack's connection
+dropped mid-attempt) — the first attempt's upload succeeded but the
+client lost the connection waiting on the server-side task, then three
+follow-up attempts all got HTTP 409 "task already in progress" because
+that first attempt's build was still genuinely running server-side (not
+stuck — `rsconnect::taskLog()` showed real progress installing system
+dependencies). Rather than keep retrying into the same wall, polled the
+specific task ID via `rsconnect::tasks()`/`taskLog()` until it resolved
+(`building` → `deploying` → `success`, ~13 minutes total). Note for next
+time: the local `.dcf` deployment record's `bundleId` isn't reliable
+evidence of what's actually live when multiple attempts overlap like
+this — it just reflects the last `deployApp()` call made locally, success
+or not. All the overlapping attempts' bundles were content-identical
+(no files changed between them), so it didn't matter here, but a bundle-ID
+check alone wouldn't have been trustworthy verification on its own.
+
+**Verified**: HTTP 200, container log clean (only the routine GDAL
+GeoPackage warnings, then "Listening on..."), live HTML has zero matches
+for the FACT-digest button (confirming that change also stayed correctly
+out of the deployed app), full smoke suite passing pre-deploy including
+the new `pmax()` fix.
+
+## Update (2026-08-20) — FACT digest v3: usability restructure + oversampled clusters
+
+Jack's review of the first real output: too many tabs, no orientation for
+someone opening it cold, and a real analytical gap (oversampled clusters
+never surfaced anywhere). Four changes:
+
+**"Read me" sheet** (replaces "Summary", first tab) — a sheet-by-sheet
+guide ("what it shows" / "start here if..."), the severity-tier
+definitions (A–D) spelled out in plain language, an explicit note on how
+"Tier A/B/C" (can double-count a submission across tiers) differs from
+"Total flag instances" (flat, non-overlapping — the direct "how many
+flags in total" answer, new this update), and the headline numbers table
+"Summary" used to hold alone. Navy (`#1F3864`) / black styling applied
+workbook-wide: navy header row on every sheet, navy section banners on
+Read me. Couldn't visually render the actual `.xlsx` to confirm the
+styling reads well — Jack, please eyeball it and flag anything.
+
+**Partners / Enumerators merged** — asked first (see conversation) whether
+to consolidate by entity (one "Partners" sheet, one "Enumerators" sheet,
+each carrying both dashboard-flag and cleaning-log metrics) or by
+analysis-type (a "cleaning log" sheet and a "progress" sheet, each mixing
+partner- and enumerator-grain rows). Went with entity-based per Jack's
+choice — cleaner grain, works as a real sortable/filterable Excel Table,
+matches "look up a partner/enumerator, see everything about them." Old
+"By partner" + "By partner (cleaning log)" collapsed into one "Partners"
+sheet; "By enumerator (cleaning log)" gained a new dashboard-flag rollup
+(GPS/duration/roster/off-hours/duplicates by enumerator — didn't exist
+before) to become "Enumerators". Both are now **full rosters** — every
+partner/enumerator with a submission OR a cleaning-log flag, not just
+flagged ones, so a clean enumerator shows zeros instead of being invisible.
+Both gained "Flagged issues" (which check types, most frequent first) and
+"Total flag instances" (the flat total the Read me note above explains).
+
+Building the full roster surfaced a real gap, caught by the smoke suite:
+an enumerator can appear in a cleaning log before their first submission
+is pulled into `submissions_raw` at all (not just with a higher count —
+absent entirely). A roster built from `submissions_raw` alone silently
+dropped such an enumerator's row, tier-A flags included — found via the
+enumerator-vs-partner tier-A reconciliation test failing (61 vs 63:
+`si_zam_msna_015` had 2 tier-A flags and zero rows in `submissions_raw`
+yet). Fixed by building both rosters as a **union** of `submissions_raw`'s
+and the cleaning logs' own enum_id/org_id sets (see the union-roster note
+in `summarise_cleaning_logs.R`), not `submissions_raw` alone. 33
+enumerators currently exist only via this union. Their dashboard-flag
+columns (Completed/Achieved/GPS outliers/...) coalesce to 0 (genuinely
+unknown until pulled in) rather than blank; "Submissions" falls back to
+the cleaning log's own pmax-protected count rather than showing a
+contradictory 0 next to a non-zero flag count.
+
+**Oversampled clusters** (new sheet) — clusters where achieved
+submissions exceed `target_households`, computed from the same
+`psu_hexagons_sf`/`psu_sites_sf` target the Coverage Map itself uses
+(mirrors `mod_map.R`'s `cluster_achieved()`/`cluster_status()` pattern),
+not from the cleaning logs — this is a sampling-design question, not a
+response-quality one, so it doesn't go through the tier system. **14
+oversampled clusters, 102 surplus submissions** as of this run. Worth
+flagging directly: si's Zamfara IDP cluster (`idp_NG037001_6`) is at
+92/60 — 32 over target — and si is also the partner with by far the worst
+cleaning-log profile (see below). Likely the same underlying behaviour
+(revisiting within a cluster instead of spreading out) producing both the
+volume surplus and the GPS-duplicate flags. Shows both the *assigned*
+partner (from `Partnerscoverage.xlsx`) and the *actual submitting*
+partner(s) separately, since a mismatch between the two is its own signal.
+
+**si (Solidarités International) update**: with cleaning logs now
+covering through 19 Aug (vs. 17 Aug when this was first flagged), si's
+picture has gotten worse, not better — cleaning-log flag rate is now a
+flat 100% (151 flagged submissions known to the cleaning logs against 104
+pulled into the dashboard so far — see the "Submissions" vs
+"Cleaning-log flagged" note above, this is the real-world case that
+motivated it), tier-A count is up to 21, and `si_zam_msna_012`
+individually now shows 9 tier-A flags against 8 pulled submissions.
+
+**Verified**: full smoke suite passes, including new assertions for the
+merged sheets' roster completeness, cross-sheet tier-A reconciliation, the
+oversampled-clusters sheet's own arithmetic (`Surplus == Achieved -
+Target.HH` for every row), and the Read me headline numbers reconciling
+against their source sheets. Ran `generate_fact_digest.R` end to end and
+read every sheet back out of the actual `.xlsx` — including a manual
+spot-check of si's row and an enumerator's "Flagged issues" string — not
+just that the code runs without error.
+
+## Update (2026-08-21) — mock data retired; duplicated data files cleaned up
+
+Jack noticed `mock_submissions.csv`/`mock_meta.rds` duplicated across
+`data/` (project root) and `dashboard_app/data/` (~10MB total) and asked
+for it to be removed — mock data was a pre-launch stand-in before real
+submissions existed, and real data has been the only thing actually
+loaded (`global.R`'s own `USE_REAL_DATA` preference) for weeks now.
+
+**Removed**: both copies of `mock_submissions.csv`/`mock_meta.rds`, and
+`cleaning/mock/` entirely (`generate_mock_submissions.R` + its README —
+the generator script itself, not just its output; confirmed with Jack
+first since it was untracked, so deleting it isn't recoverable via git
+history the way a tracked file would be).
+
+**Not removed**: `real_submissions.csv`/`real_meta.rds`'s own two copies
+(`data/` and `dashboard_app/data/`) — this looks like the same kind of
+duplication but isn't: it's `deploy_dashboard.R`'s deliberate copy-into-
+`dashboard_app/` step (shinyapps.io only bundles the app directory
+itself), regenerated fresh on every deploy. Removing the `dashboard_app/`
+copy would just break local testing until the next deploy re-created it.
+
+**Code cleanup, not just data**: `global.R`'s mock/real fallback
+(`USE_REAL_DATA`) is gone — it now requires `real_submissions.csv`
+outright and fails with a clear message pointing at
+`prep_real_submissions.R` if it's missing, rather than silently reaching
+for a mock file that no longer exists anywhere (verified both the clean
+boot path and the missing-file error path directly, not just read the
+code). The `IS_MOCK_DATA` flag and its two dead UI banners (sidebar in
+`app.R`, Home-tab text in `mod_home.R`) are gone too — provably always
+`FALSE` now, since `real_meta.rds` never sets `is_mock_data`. Renamed the
+confusingly-named `mock_meta` variable (it held real metadata regardless
+of source) to `submissions_meta` — `generate_fact_digest.R` updated to
+match.
+
+**One real test dependency had to be preserved, not just deleted**:
+`tests/smoke_test.R` had a `find_gps_duplicate_groups()` regression test
+that specifically read `mock_submissions.csv` off disk, because the mock
+generator deliberately injected a guaranteed GPS-duplicate pattern —
+real data has no reliable duplicate coincidence, so asserting a nonzero
+count against whichever source happened to be active would make the test
+flaky the day real data's recovered-GPS subset genuinely has zero
+coincidences (not a bug). Replaced with a minimal inline synthetic
+fixture (three rows, two sharing one lat/lon) that exercises the same
+function deterministically without needing the retired file at all.
+
+**Verified**: full smoke suite passes. Booted the dashboard locally (this
+touched UI code) and confirmed in the actual rendered HTML — zero
+remaining matches for "mock" anywhere on the page, Home tab's data-source
+text renders correctly. Directly tested the new missing-file error path
+by temporarily renaming `data/real_submissions.csv` away and confirming
+`global.R` fails with the intended clear message, then restored it.
+Regenerated `generate_fact_digest.R` end to end post-cleanup to confirm
+nothing there depended on any of this either.
+
+## Update (2026-08-21b) — input-data sanity checks (new)
+
+Jack asked whether the pipeline does any sanity-checking of the incoming
+data at all, thinking about what happens if the data officer's upstream
+export changes shape or has a mistake. Audit found essentially none:
+two existence-only file checks, a set of per-row quality *flags* that
+never alert anyone, and a test suite that verifies the app's own
+arithmetic, not the data's plausibility. Concrete risk traced through the
+code: a broken join or a renamed column mostly degrades into a
+plausible-looking wrong number (e.g. an all-NA date column would silently
+turn `FIELDING_START` into `Inf`, cascading into garbage ETA figures with
+no crash and no alert) rather than failing clearly.
+
+**New**: `cleaning/real/sanity_checks.R` — eight checks run at the end of
+`prep_real_submissions.R`: schema (expected columns still present),
+row-count (should only grow day to day), date-field health, numeric
+parse failures (previously silently swallowed by `suppressWarnings()`),
+duplicate raw uuids (an export-glitch check, distinct from the existing
+methodology-aware repeat-household flag), unknown `org_id` values,
+roster-join health (did it silently stop matching), and conservative
+implausible-value bounds (negative duration, extreme age/household size).
+
+**Deliberately warn, never hard-stop** (Jack's call) — a pipeline that can
+block itself from refreshing on a false positive is worse than one that
+flags a concern but still produces today's data. But per Jack's follow-up
+— a warning that only prints to a console and scrolls away is nearly as
+bad as no warning — these persist to `data/SANITY_WARNINGS.txt` and get
+loudly re-announced at the start of **every** entry point in the daily
+workflow (`prep_real_submissions.R`, `generate_fact_digest.R`,
+`deploy_dashboard.R` — the last one being the most important checkpoint,
+right before anything goes live) for as long as the file exists. It is
+never auto-cleared by a subsequent clean run; `clear_sanity_warnings.R`
+(new, project root) is the explicit acknowledgment step. That's the
+"can't move past without acknowledging" behaviour Jack asked for, without
+an actual blocking prompt (which would break running any of these
+non-interactively, e.g. from this assistant).
+
+**Found real, previously-invisible issues on the very first run** against
+current data: row count had more than doubled since the last local prep
+(1,363 → 3,325 — worth knowing given more data is expected within the
+hour), 2 households with `hh_size` of 35/36 (internally consistent with
+their roster count, so the *existing* hh_size-vs-roster mismatch flag
+would never have caught these — a genuine gap this closes), and 3
+submissions with a negative duration (end time before start time). Left
+these live in `data/SANITY_WARNINGS.txt`, unacknowledged, for Jack to
+review — not cleared as part of this work.
+
+**Verified**: ran the real pipeline (not synthetic data) and confirmed
+each finding by hand-inspecting the flagged rows, not just trusting the
+check fired. Confirmed the banner re-appears at the start of
+`generate_fact_digest.R` (ran it for real) without needing to re-trigger
+`prep_real_submissions.R`. Verified `clear_sanity_warnings.R` displays,
+removes the file, and that the banner goes silent afterward — then
+re-ran `prep_real_submissions.R` once more so the file honestly reflects
+current (still-unacknowledged) reality rather than being left artificially
+clear from testing. Full smoke suite passes against the refreshed,
+much-larger real dataset (achieved count now 3,072 of 31,506).
+
+## Update (2026-08-21c) — workspace review (excl. `cleaning/`): findings + cleanup
+
+Read-only review of everything outside `cleaning/` for stale files,
+documentation gaps, and inefficient processes, per Jack's request. Full
+findings given directly to Jack; summarised here is what got actioned,
+each confirmed with him first.
+
+**`renv.lock` was genuinely broken for deploy, not just a nagging
+warning** — this is the "project is out-of-sync" message every single R
+script run in this project has printed for days. Ran `renv::status()`
+directly (not just noted the symptom): `rsconnect` — the package
+`deploy_dashboard.R` depends on to push live — was installed and used but
+never recorded in the lockfile, alongside its auth deps (`httr2`, `jose`,
+`rstudioapi`, `snowflakeauth`, `packrat`, `RcppTOML`) and a drifted
+`rlang` (1.2.0 recorded vs 1.3.0 installed). A fresh `renv::restore()` —
+new machine, or recovering from the OneDrive folder-loss this project
+already suffered once (2026-08-15c) — would silently fail to install the
+one package the deploy script needs. Ran `renv::snapshot()`; `renv::status()`
+now reports "No issues found." Verified `library(rsconnect)` still loads
+(v1.10.1) and the full smoke suite still passes post-snapshot — did not
+run an actual deploy, per the earlier "hold off" instruction still in
+effect this session.
+
+**Removed, confirmed dead first**: `MSNA_data_quality_evidence.xlsx`
+(project root — grepped the whole workspace including `cleaning/`, zero
+references anywhere); `input_data/kobo_form/NGA2605_MSNA_Kobo_30072026.xlsx`
+(both copies — its only documented purpose was grounding the mock-data
+generator, itself deleted 2026-08-21); `dashboard_app/.gitkeep`
+(vestigial from before that folder had real content).
+
+**`field_verify/` reorganised**: the closed SCI boundary-dispute thread
+(verify/crosscheck scripts, output CSVs, 3 example maps, the draft
+response, the original cross-session prompt that started it) moved to
+`field_verify/archive/sci_boundary_dispute/` rather than deleted — Jack
+confirmed the dispute is closed, but it's worth keeping as a record. Added
+`field_verify/README.md` — the folder mixes several unrelated threads
+with no map tying them together, so a short index of what's live vs.
+archived, and why.
+
+**Terminated the abandoned shinyapps.io app slot** (`msna_nga_monitoring`,
+appId `17662994`) — flagged as "looks abandoned" back on 2026-08-03c and
+never resolved. Confirmed first via `rsconnect::applications()`: status
+"pending," `updated_time` nine seconds after `created_time`, meaning it
+never had a successful deployment — an empty first-attempt app slot, not
+live content. Confirmed with Jack, then `rsconnect::terminateApp(...)`;
+re-checked `applications()` afterward to confirm status is now
+"terminated." Also removed the now-orphaned local
+`dashboard_app/rsconnect/shinyapps.io/impact-nga-jp/msna_nga_monitoring.dcf`.
+
+**Flagged but not actioned** (Jack's to decide/do):
+- `reports/` has no retention policy and grows forever; also has an
+  unexplained gap (no 2026-08-20 file despite that day's own README entry
+  describing a digest run) and mtimes that don't match the dates in their
+  filenames. Could be the same OneDrive-sync quirk this project has hit
+  before (2026-08-15c, 2026-08-17f) — flagged for Jack to check directly
+  rather than guessed at.
+- Real uncommitted work currently sitting only on disk (`README.md`,
+  `mod_home.R`, `app.R`, `global.R`, `smoke_test.R`, `deploy_dashboard.R`,
+  `generate_fact_digest.R`, plus `clear_sanity_warnings.R` untracked
+  entirely) — not committed as part of this work, since committing wasn't
+  asked for, but worth doing soon given the project's own history of
+  losing exactly this kind of uncommitted work.
+- Root `README.md` (this file) is now a ~1,900-line pure changelog with
+  no "current state" summary at the top — not changed here since it's
+  this file's own append-only convention under discussion, not a
+  unilateral call to make.
+
+**Verified**: full smoke suite passes after every change in this round
+(archiving, deletions, `.gitkeep` removal, the `renv.lock` fix, the
+shinyapps.io termination) — ran it fresh at the end, not just after each
+individual step.
+
+## Update (2026-08-21d) — report renamed + integrated into deploy; redeployed; a real bug caught along the way
+
+Per Jack: (1) the report and the dashboard update are "inherently linked"
+and should happen together, not as two separate things to remember; (2)
+the report should drop "FACT" from its name/branding — it's IMPACT's own
+internal review first, with what (if anything) gets shared with FACT (a
+close field partner, not the primary audience) a decision made *after*
+reviewing it, not assumed by the report's identity.
+
+**Renamed** (via `git mv`, preserving history): `generate_fact_digest.R`
+→ `generate_partner_digest.R`; `dashboard_app/R/reports_fact_digest.R` →
+`reports_partner_digest.R`; the function `build_fact_quality_digest_excel`
+→ `build_partner_quality_digest_excel`; the output file
+`MSNA_2026_partner_digest_for_FACT_<date>.xlsx` →
+`MSNA_2026_partner_digest_<date>.xlsx`. The Read me sheet's own title
+dropped "(for FACT)"; its subtitle now reads "Internal IMPACT review —
+generated \<date\> — what (if anything) to share with FACT or other
+partners is a decision made after reviewing this, not assumed." Grepped
+the whole workspace afterward to confirm no leftover `FACT`/`build_fact_*`
+references outside of (a) the deliberate mentions explaining FACT as a
+downstream stakeholder, and (b) untouched historical README entries
+(never rewritten, per this file's own convention).
+
+**Integrated**: `deploy_dashboard.R` now sources `generate_partner_
+digest.R` as its first real step, before the data/input_data copy and the
+actual deploy — one `source("deploy_dashboard.R")` now produces both.
+`generate_partner_digest.R` still works standalone too (e.g. to
+regenerate just the report without redeploying).
+
+**A real, unrelated bug turned up while verifying the deploy, and got
+fixed before going live**: `latitude_submitted`/`longitude_submitted`
+were coming back **100% NA** in `submissions_raw` — not because the data
+was missing, but because `readr::read_csv()`'s default type-guessing only
+samples the first ~1,000 rows, these two columns are NA for most rows
+(only populated where GPS was recovered via the spatial-duplicate audit),
+and as the file has grown past 4,500 rows the real values now first
+appear well past that sample window. Confirmed directly: `problems()`
+showed 384 rejected cells, the resulting columns were `logical` not
+`double`, and `find_gps_duplicate_groups()` — which the Data Integrity
+tab's GPS-duplicate check depends on — was silently running against zero
+real coordinates the whole time (the smoke test's own check on this
+function is deliberately informational-only against real data, so it
+never would have caught this). Noticed it from a "parsing issues" warning
+in the first deploy's own console output (bundle `12445696`) while
+checking the log for anything unusual — not something anyone was
+specifically looking for. Fixed in `global.R`'s `read_csv()` call:
+explicit `col_types` for these two columns (bulletproof regardless of
+sample size) plus a much larger `guess_max` as a general safeguard
+against the same class of mistake on any other sparse column. Verified
+directly before and after: 0 → 192 non-NA coordinates recovered, GPS-
+duplicate groups found went from 0 to a real, non-trivial count, and the
+"parsing issues" warning is gone from the redeploy's console output
+entirely. Redeployed with the fix (bundle `12445717`) before anyone
+downstream saw the broken version live for more than a few minutes.
+
+**Data refreshed to the latest available export** before deploying —
+`NGA2605_MSNA_anonymised_2026-08-21.xlsx` (3,325 → 4,532 rows, the
+"updated data" Jack was expecting). Same 5 sanity-check findings from
+2026-08-21b persist unacknowledged (2 large households, 3 negative
+durations) — still real, still Jack's to review, `data/SANITY_WARNINGS.txt`
+correctly keeps re-announcing them at every entry point.
+
+**Verified live**: HTTP 200, local `.dcf` bundle ID matches
+(`12445717`), deployed container's own startup log confirmed clean — no
+parsing-issues warning server-side either, confirming the fix applies
+there too, not just locally. Grepped the live rendered page for stray
+"FACT" branding: the only hits are the dashboard's own pre-existing,
+legitimate "IMPACT/FACT" dual-audience framing text (unrelated, untouched
+by this work), not digest branding.

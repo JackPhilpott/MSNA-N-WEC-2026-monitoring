@@ -49,24 +49,44 @@ FIELDING_PLANNED_END <- as.Date("2026-09-11")
 
 # ---- load data -------------------------------------------------------------
 
-# Real data (cleaning/real/prep_real_submissions.R) is preferred whenever
-# present; mock data (cleaning/mock/generate_mock_submissions.R) is the
-# fallback for local dev/demoing before real submissions exist, or if the
-# real adapter hasn't been re-run for the day. Same column contract either
-# way, so nothing downstream needs to know which one it got.
-USE_REAL_DATA <- file.exists(file.path(DATA_DIR, "real_submissions.csv"))
-submissions_file <- if (USE_REAL_DATA) "real_submissions.csv" else "mock_submissions.csv"
-meta_file <- if (USE_REAL_DATA) "real_meta.rds" else "mock_meta.rds"
+# Real data only (cleaning/real/prep_real_submissions.R) — mock/simulated
+# data (previously cleaning/mock/generate_mock_submissions.R, a pre-launch
+# stand-in before real submissions existed) was retired 2026-08-21 once
+# real data was reliably flowing every day; see README's 2026-08-21 entry.
+# Fails loudly and clearly if this hasn't been run yet, rather than
+# silently falling back to a mock file that no longer exists.
+if (!file.exists(file.path(DATA_DIR, "real_submissions.csv"))) {
+  stop(
+    "data/real_submissions.csv not found. Run cleaning/real/prep_real_submissions.R ",
+    "from the project root first — see that file's header for the daily workflow."
+  )
+}
 
-submissions_raw <- read_csv(file.path(DATA_DIR, submissions_file), show_col_types = FALSE) %>%
+# guess_max + explicit col_types for the two GPS columns (2026-08-21,
+# found while verifying a deploy): latitude_submitted/longitude_submitted
+# are NA for most rows (only populated where GPS was recovered via the
+# spatial-duplicate audit — see prep_real_submissions.R's header) and, as
+# the file has grown, the real values now first appear well past readr's
+# default 1000-row guess sample. Left to guess, readr sees nothing but NA
+# in that sample, infers `logical`, and silently turns every real
+# coordinate past row ~4084 into NA — confirmed directly (100% NA where
+# the source CSV plainly has real decimals). Not just cosmetic:
+# find_gps_duplicate_groups() below depends on this column, so it was
+# silently checking against zero real coordinates. guess_max scans the
+# whole file (cheap at this size) as a general safeguard against the same
+# class of mistake on any other sparse column; the explicit col_types
+# guarantees these two specifically regardless of guess_max.
+submissions_raw <- read_csv(
+  file.path(DATA_DIR, "real_submissions.csv"), show_col_types = FALSE,
+  guess_max = 100000, col_types = cols(latitude_submitted = col_double(), longitude_submitted = col_double())
+) %>%
   mutate(
     submission_date = as.Date(submission_date),
     start_datetime = as_datetime(start_datetime),
     end_datetime = as_datetime(end_datetime)
   )
 
-mock_meta <- tryCatch(readRDS(file.path(DATA_DIR, meta_file)), error = function(e) list(is_mock_data = TRUE))
-IS_MOCK_DATA <- isTRUE(mock_meta$is_mock_data)
+submissions_meta <- readRDS(file.path(DATA_DIR, "real_meta.rds"))
 
 FIELDING_START <- min(submissions_raw$submission_date, na.rm = TRUE)
 

@@ -1,4 +1,10 @@
-# Deploys dashboard_app/ to shinyapps.io.
+# Deploys dashboard_app/ to shinyapps.io — AND regenerates the partner
+# data quality digest (reports/) as part of the same run (integrated
+# 2026-08-21d, per Jack's steer: the report and the dashboard are both
+# downstream of the same daily data refresh and are "inherently linked" —
+# should happen together, not as two separate things to remember). To
+# regenerate just the report without deploying, run
+# generate_partner_digest.R directly instead.
 #
 # shinyapps.io only bundles the app directory itself (dashboard_app/), not
 # sibling folders — but the app reads its data from ../data and
@@ -19,6 +25,12 @@
 # is itself gitignored as it's machine-specific).
 
 library(rsconnect)
+
+source("cleaning/real/sanity_checks.R")
+print_sanity_banner_if_present() # most important checkpoint: right before this goes live and public
+
+# ---- report generation, before the deploy itself — same data, one run ----
+source("generate_partner_digest.R")
 
 for (d in c("dashboard_app/data", "dashboard_app/input_data")) {
   if (dir.exists(d)) unlink(d, recursive = TRUE)

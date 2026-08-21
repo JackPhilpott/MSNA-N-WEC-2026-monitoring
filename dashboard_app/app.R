@@ -1,11 +1,10 @@
 # MSNA N-WEC 2026 — Monitoring dashboard (live 2026-08-15)
 #
 # Reads: ../data/real_submissions.csv, adapted daily from the data team's
-# cleaning pipeline by cleaning/real/prep_real_submissions.R — or, when
-# that file isn't present, ../data/mock_submissions.csv (same column
-# contract — see cleaning/mock/README.md) as a local dev/demo fallback.
-# global.R does all data loading and picks between the two; R/mod_*.R
-# hold one Shiny module per tab.
+# cleaning pipeline by cleaning/real/prep_real_submissions.R. global.R does
+# all data loading; R/mod_*.R hold one Shiny module per tab.
+# (Mock/simulated data was used pre-launch, before real submissions
+# existed — retired 2026-08-21 once real data was reliably flowing.)
 #
 # Dual audience: IMPACT/FACT internal monitoring (all tabs, unfiltered) and
 # field partners (filter to their org via the sidebar, or use the dedicated
@@ -98,14 +97,6 @@ filter_sidebar <- sidebar(
     max = max(submissions_raw$submission_date, na.rm = TRUE)
   ),
   hr(),
-  if (IS_MOCK_DATA) {
-    div(
-      class = "alert alert-warning",
-      style = "font-size: 0.85em;",
-      icon("flask"), strong(" Mock data"),
-      p("This dashboard is showing simulated submissions (~40% partial fielding), not real KoBo data. See cleaning/mock/README.md.", style = "margin-top: 4px;")
-    )
-  },
   bg = THEME_SIDEBAR_BG, fg = THEME_SIDEBAR_FG
 )
 

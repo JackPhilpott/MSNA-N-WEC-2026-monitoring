@@ -48,27 +48,115 @@ testServer(mod_quality_server, args = list(filtered_subs = reactive(submissions_
   cat("flagged_table rendered ok:", !is.null(output$flagged_table), "\n")
 })
 
-cat("\n=== FACT partner digest (build_fact_quality_digest_excel, R/reports_fact_digest.R) ===\n")
+cat("\n=== Partner data quality digest (build_partner_quality_digest_excel, R/reports_partner_digest.R) ===\n")
 # Regression test for the recurring (daily) digest added 2026-08-17 — this
-# is a standalone report (generate_fact_digest.R at the project root), NOT
-# a dashboard feature (corrected 2026-08-17d, see README), but it's still
+# is a standalone report (generate_partner_digest.R at the project root,
+# now also integrated into deploy_dashboard.R — 2026-08-21d), NOT a
+# dashboard feature (corrected 2026-08-17d, see README), but it's still
 # meant to be re-generated every day as submissions_raw refreshes, so it
 # needs a permanent test the same as any other daily-driven output, not
-# just a one-time manual check.
+# just a one-time manual check. Renamed from "FACT" digest 2026-08-21d:
+# it's IMPACT's internal review first, not something branded for/sent to
+# FACT by default — see reports_partner_digest.R's header.
+#
+# Extended 2026-08-18 for the cleaning-log half (cleaning/real/
+# summarise_cleaning_logs.R), and restructured 2026-08-20 (Read me sheet,
+# Partners/Enumerators merged full-roster sheets, Oversampled clusters) —
+# runs against whatever real cleaning logs/submissions exist on disk right
+# now (same convention as the rest of this file), so assertions below
+# check structural/reconciliation properties rather than hardcoded counts
+# that would go stale as new daily logs are added.
+source("../cleaning/real/summarise_cleaning_logs.R")
+cleaning_log <- summarise_cleaning_logs()
+
 digest_tmp <- tempfile(fileext = ".xlsx")
-build_fact_quality_digest_excel(digest_tmp)
+build_partner_quality_digest_excel(digest_tmp, cleaning_log)
 digest_sheets <- getSheetNames(digest_tmp)
 cat("Sheets:", paste(digest_sheets, collapse = ", "), "\n")
-stopifnot(setequal(digest_sheets, c("Summary", "By partner", "Flagged submissions")))
+stopifnot(setequal(digest_sheets, c(
+  "Read me", "Priority follow-up", "Partners", "Enumerators", "Oversampled clusters",
+  "Common errors", "Flagged submissions", "Cleaning log detail"
+)))
 
-by_partner <- read.xlsx(digest_tmp, sheet = "By partner")
-cat("By-partner rows:", nrow(by_partner), "of", length(unique(submissions_raw$org_id)), "active partners\n")
-stopifnot(nrow(by_partner) == length(unique(submissions_raw$org_id)))
-stopifnot(all(diff(by_partner$`Flag.rate`) <= 1e-9)) # non-increasing = sorted worst-first
-stopifnot(sum(by_partner$Submissions) == nrow(submissions_raw))
-stopifnot(sum(by_partner$Achieved) == sum(is_achieved(submissions_raw)))
-stopifnot(sum(by_partner$`Flagged.for.review`) == sum(submissions_raw$any_quality_flag))
-cat("By-partner totals reconcile with submissions_raw: achieved", sum(by_partner$Achieved), ", flagged", sum(by_partner$`Flagged.for.review`), "\n")
+priority_sheet <- read.xlsx(digest_tmp, sheet = "Priority follow-up")
+cat("Priority follow-up rows:", nrow(priority_sheet), "of", nrow(cleaning_log$priority), "expected\n")
+stopifnot(nrow(priority_sheet) == nrow(cleaning_log$priority))
+achieved_rows <- priority_sheet$`Counting.as.achieved` == "Yes"
+cat("Priority rows counting as achieved that are also still in dataset:", sum(achieved_rows & priority_sheet$`Still.in.dataset` == "Yes"), "of", sum(achieved_rows), "\n")
+stopifnot(all(priority_sheet$`Still.in.dataset`[achieved_rows] == "Yes")) # achieved implies present
+
+# ---- Partners: full roster (every partner with a submission, not just
+# flagged ones), dashboard-flag + cleaning-log columns merged into one
+# wide table (2026-08-20, replacing the old separate "By partner"/"By
+# partner (cleaning log)" sheets per Jack's steer) --------------------------
+partners <- read.xlsx(digest_tmp, sheet = "Partners")
+cat("Partners rows:", nrow(partners), "of", dplyr::n_distinct(submissions_raw$org_id), "active partners (full roster)\n")
+# >= not ==: the roster is a UNION of submissions_raw's org_ids and the
+# cleaning logs' org_ids (see summarise_cleaning_logs.R, 2026-08-20) - a
+# partner can appear in a cleaning log before their first submission is
+# pulled into submissions_raw, so the roster (and the Submissions sum,
+# which falls back to the cleaning log's own count for such a partner) can
+# legitimately be larger than submissions_raw alone, never smaller.
+stopifnot(nrow(partners) >= dplyr::n_distinct(submissions_raw$org_id))
+stopifnot(sum(partners$Submissions) >= nrow(submissions_raw))
+stopifnot(sum(partners$Achieved) == sum(is_achieved(submissions_raw)))
+stopifnot(sum(partners$Integrity.flagged) == sum(submissions_raw$any_quality_flag))
+# each tier is a SUBSET of "flagged" (documented as such in Read me — the
+# three tiers can jointly exceed Cleaning-log.flagged since one submission
+# can carry issues in more than one tier, but no single tier ever can)
+stopifnot(all(partners$`Tier.A.(likely.delete)` <= partners$`Cleaning-log.flagged`))
+stopifnot(all(partners$`Tier.B.(needs.review)` <= partners$`Cleaning-log.flagged`))
+stopifnot(all(partners$`Tier.C.(pattern)` <= partners$`Cleaning-log.flagged`))
+# NOT asserting Cleaning-log.flagged <= Submissions here: "Submissions" is
+# the TRUE submissions_raw count (deliberately not pmax-inflated, so it's
+# honest), but cleaning logs and submissions_raw refresh on independent
+# schedules (see summarise_cleaning_logs.R's pmax() note) - when the
+# cleaning team's logs are ahead of the last data pull, Cleaning-log.flagged
+# can legitimately exceed Submissions, and that's informative (a real
+# refresh-timing signal), not a bug to hide. The RATE stays safely bounded
+# regardless, since it's computed inside summarise_cleaning_logs.R against
+# its own pmax-protected denominator, not against this merged Submissions
+# column - that's the invariant actually worth asserting.
+stopifnot(all(partners$Integrity.flag.rate >= 0 & partners$Integrity.flag.rate <= 1, na.rm = TRUE))
+stopifnot(all(partners$`Cleaning-log.flag.rate` >= 0 & partners$`Cleaning-log.flag.rate` <= 1, na.rm = TRUE))
+cat("Partners totals reconcile with submissions_raw: achieved", sum(partners$Achieved), ", integrity-flagged", sum(partners$Integrity.flagged), "\n")
+
+# ---- Enumerators: same full-roster convention, individual grain -----------
+enumerators <- read.xlsx(digest_tmp, sheet = "Enumerators")
+cat("Enumerators rows:", nrow(enumerators), "of", dplyr::n_distinct(submissions_raw$enum_id), "enumerators (full roster)\n")
+# see the matching >= note in the Partners block above - same union-roster
+# reasoning applies at enumerator grain (this is in fact where it was
+# caught: si_zam_msna_015 and 32 others exist in the cleaning logs with
+# zero rows in submissions_raw so far).
+stopifnot(nrow(enumerators) >= dplyr::n_distinct(submissions_raw$enum_id))
+stopifnot(sum(enumerators$Submissions) >= nrow(submissions_raw))
+stopifnot(sum(enumerators$Achieved) == sum(is_achieved(submissions_raw)))
+stopifnot(all(enumerators$`Tier.A.(likely.delete)` <= enumerators$`Cleaning-log.flagged`))
+# see the matching note in the Partners block above - not asserting
+# Cleaning-log.flagged <= Submissions here for the same reason.
+stopifnot(all(enumerators$`Cleaning-log.flag.rate` >= 0 & enumerators$`Cleaning-log.flag.rate` <= 1, na.rm = TRUE))
+stopifnot(all(enumerators$Priority %in% c("HIGH", "MEDIUM", "LOW")))
+cat("Enumerators totals reconcile with submissions_raw: submissions", sum(enumerators$Submissions), ", achieved", sum(enumerators$Achieved), "\n")
+
+# Tier-A submissions reconcile between the two merged sheets (same
+# underlying flags_by_submission_check, grouped two different ways)
+cat("Tier-A submissions reconcile enumerator vs partner rollup:", sum(enumerators$`Tier.A.(likely.delete)`), "==", sum(partners$`Tier.A.(likely.delete)`), "\n")
+stopifnot(sum(enumerators$`Tier.A.(likely.delete)`) == sum(partners$`Tier.A.(likely.delete)`))
+
+# ---- Oversampled clusters (new 2026-08-20) - achieved > target_households,
+# same target the Coverage Map itself uses -----------------------------------
+oversampled <- read.xlsx(digest_tmp, sheet = "Oversampled clusters")
+cat("Oversampled clusters rows:", nrow(oversampled), ", total surplus:", sum(oversampled$Surplus), "\n")
+stopifnot(all(oversampled$Achieved > oversampled$Target.HH))
+stopifnot(all(oversampled$Surplus == oversampled$Achieved - oversampled$Target.HH))
+stopifnot(all(oversampled$`%.over.target` > 0))
+
+common_errors <- read.xlsx(digest_tmp, sheet = "Common errors")
+cat("Common errors: check types =", nrow(common_errors), ", all tier-labelled:", all(grepl("^[ABCD] - ", common_errors$Tier)), "\n")
+stopifnot(all(grepl("^[ABCD] - ", common_errors$Tier)))
+stopifnot(nrow(common_errors) == dplyr::n_distinct(cleaning_log$detail$`Check type`))
+
+cat("Partner digest cleaning-log/merged-entity sheets regression test passed.\n")
 
 flagged_detail <- read.xlsx(digest_tmp, sheet = "Flagged submissions")
 cat("Flagged submissions rows:", nrow(flagged_detail), "of", sum(submissions_raw$any_quality_flag), "expected\n")
@@ -77,11 +165,39 @@ still_present_digest <- intersect(ROW_LEVEL_PII_COLUMNS, names(flagged_detail))
 cat("PII columns in digest's flagged-submissions sheet:", if (length(still_present_digest) == 0) "none" else paste(still_present_digest, collapse = ", "), "\n")
 stopifnot(length(still_present_digest) == 0)
 
-summary_sheet <- read.xlsx(digest_tmp, sheet = "Summary", colNames = FALSE)
-not_started_cell <- summary_sheet[summary_sheet$X1 == "Partners with zero submissions so far", "X2"]
+# ---- Read me (2026-08-20, replaces the old "Summary" sheet) - the
+# headline-numbers table now sits partway down the sheet after the
+# navigation guide and tier definitions, so search column 1 for the field
+# label rather than assuming a fixed row (robust to the guide content
+# above it changing length) --------------------------------------------------
+readme_sheet <- read.xlsx(digest_tmp, sheet = "Read me", colNames = FALSE)
+get_readme_field <- function(field) readme_sheet[which(readme_sheet$X1 == field), "X2"]
+not_started_cell <- get_readme_field("Partners with zero submissions so far")
 cat("Not-started list excludes the 'other' catch-all:", !grepl("Other / unassigned", not_started_cell), "\n")
 stopifnot(!grepl("Other / unassigned", not_started_cell))
-cat("FACT partner digest regression test passed.\n")
+stopifnot(length(get_readme_field("Priority follow-up")) > 0) # nav guide row present
+
+# Regression test for a real bug caught 2026-08-18 reviewing the first run:
+# the Read me sheet's (then "Summary" sheet's) two "...of which" lines were
+# summed across the whole priority table instead of their own preceding
+# row's subset, so remove_survey=27 could show a same-scope "still present"
+# count of 41 - impossible, since 41 > 27. Each "of which" figure must
+# never exceed the total it's a subset of.
+get_readme_num <- function(field) as.numeric(gsub(",", "", get_readme_field(field)))
+n_tier_a <- get_readme_num("Submissions with a tier-A cleaning-log issue (recommend deletion)")
+n_tier_a_achieved <- get_readme_num("...of which still counting toward the achieved total")
+n_remove_survey <- get_readme_num("Submissions already marked \"remove_survey\" by the cleaning script")
+n_remove_survey_present <- get_readme_num("...of which still present in the dataset")
+cat("Read me 'of which' figures stay within their own subset: tier-A", n_tier_a_achieved, "<=", n_tier_a, "| remove_survey", n_remove_survey_present, "<=", n_remove_survey, "\n")
+stopifnot(n_tier_a_achieved <= n_tier_a, n_remove_survey_present <= n_remove_survey)
+
+# Read me's oversampling headline reconciles with the actual sheet
+n_over_readme <- get_readme_num("Oversampled clusters (achieved > target)")
+n_surplus_readme <- get_readme_num("...surplus submissions across those clusters")
+cat("Read me oversampling headline reconciles with sheet:", n_over_readme, "==", nrow(oversampled), "|", n_surplus_readme, "==", sum(oversampled$Surplus), "\n")
+stopifnot(n_over_readme == nrow(oversampled), n_surplus_readme == sum(oversampled$Surplus))
+
+cat("Partner data quality digest regression test passed.\n")
 
 cat("\n=== mod_home_server ===\n")
 testServer(mod_home_server, args = list(), {
@@ -168,17 +284,28 @@ testServer(mod_integrity_server, args = list(filtered_subs = reactive(submission
   cat("gps_dup_table rendered ok:", !is.null(output$gps_dup_table), "\n")
   cat("overmax_table rendered ok:", !is.null(output$overmax_table), "\n")
 })
-# Tests find_gps_duplicate_groups() itself against the mock data
-# specifically (which deliberately injects GPS-reuse patterns), not
-# whatever submissions_raw happens to be — real data (preferred by
-# global.R whenever data/real_submissions.csv exists) has no guaranteed
-# duplicate GPS coincidence, so asserting a nonzero count against
-# whichever source is active would make this test flaky the moment real
-# data's recovered-GPS subset happens to have zero exact coincidences,
-# which isn't a bug.
-mock_check <- read_csv(file.path(DATA_DIR, "mock_submissions.csv"), show_col_types = FALSE)
-stopifnot(nrow(find_gps_duplicate_groups(mock_check)) > 0)
-cat("GPS-duplicate injection confirmed present in mock data.\n")
+# Tests find_gps_duplicate_groups() itself against a small SYNTHETIC
+# fixture with a deliberate GPS-reuse pattern, not whatever submissions_raw
+# happens to be — real data has no guaranteed duplicate GPS coincidence,
+# so asserting a nonzero count against whichever source is active would
+# make this test flaky the moment real data's recovered-GPS subset happens
+# to have zero exact coincidences, which isn't a bug. Used to read this
+# off mock_submissions.csv (which deliberately injected such a pattern
+# across its ~900 rows) — replaced 2026-08-21 when mock data was retired
+# (real data has been the only source in practice for weeks; global.R now
+# requires real_submissions.csv outright) with the minimal fixture
+# actually needed:
+# two completed submissions sharing one lat/lon, one that doesn't.
+gps_dup_fixture <- tibble(
+  interview_outcome = c("completed", "completed", "completed"),
+  latitude_submitted = c(11.5, 11.5, 12.1),
+  longitude_submitted = c(7.5, 7.5, 8.2),
+  enum_id = c("test_enum_001", "test_enum_002", "test_enum_003"),
+  admin1 = "Test State", admin2_submitted = "Test LGA",
+  submission_date = as.Date("2026-08-01")
+)
+stopifnot(nrow(find_gps_duplicate_groups(gps_dup_fixture)) == 1) # exactly the 2 matching rows form one group
+cat("GPS-duplicate detection confirmed against synthetic fixture.\n")
 cat("(find_gps_duplicate_groups() against the currently-loaded data:", nrow(find_gps_duplicate_groups(submissions_raw)), "group(s) — informational, not asserted.)\n")
 
 cat("\n=== mod_representativeness_server ===\n")

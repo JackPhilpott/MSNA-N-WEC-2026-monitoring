@@ -44,18 +44,9 @@ mod_home_ui <- function(id) {
             )
           ),
           p(
-            if (IS_MOCK_DATA) {
-              tagList(
-                "Data source: mock/simulated submissions — real submissions aren't loaded in ",
-                "this instance. See the sidebar banner and ", code("cleaning/mock/README.md"), " for details."
-              )
-            } else {
-              tagList(
-                "Data source: real KoBo submissions, cleaned and adapted daily via ",
-                code("cleaning/real/prep_real_submissions.R"), " from the data team's own cleaning ",
-                "pipeline output."
-              )
-            }
+            "Data source: real KoBo submissions, cleaned and adapted daily via ",
+            code("cleaning/real/prep_real_submissions.R"), " from the data team's own cleaning ",
+            "pipeline output."
           ),
           p(
             strong("Administrative boundary sources: "),
