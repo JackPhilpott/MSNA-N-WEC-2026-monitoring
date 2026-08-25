@@ -11,21 +11,28 @@ mod_progress_ui <- function(id) {
     layout_columns(
       col_widths = c(3, 3, 3, 3),
       value_box(
-        title = "Interviews achieved / planned",
+        title = info_title(
+          "Interviews achieved / planned",
+          "ACHIEVED: completed, matched, non-duplicate interviews — capped at each cluster's own target. A cluster that's been oversampled only ever contributes up to its target here, never more, so oversampling in one cluster can't mask under-coverage in another.",
+          icon_color = "white"
+        ),
         value = textOutput(ns("kpi_achieved")),
         showcase = icon("clipboard-check"),
         theme = "primary"
       ),
       value_box(
-        title = "% of target",
+        title = info_title("% of target", "Achieved (capped, see that tile's definition) as a share of the planned sample. Oversampling does not inflate this."),
         value = textOutput(ns("kpi_pct")),
         showcase = icon("percent"),
         theme = "success"
       ),
       value_box(
-        title = "Consent refusal rate",
-        value = textOutput(ns("kpi_refusal")),
-        showcase = icon("hand"),
+        title = info_title(
+          "Collected",
+          "COLLECTED: every completed interview actually done in the field — includes oversampled surplus, duplicates, and submissions that couldn't be matched to a sampled point. This is total field effort, not what counts toward the sample. A big gap between Collected and Achieved usually means oversampling of easy-to-reach clusters, which is wasted operational resource, not progress toward coverage elsewhere."
+        ),
+        value = textOutput(ns("kpi_collected")),
+        showcase = icon("layer-group"),
         theme = "warning"
       ),
       value_box(
@@ -79,11 +86,14 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum) {
       fmt_pct(if (tgt > 0) ach / tgt else NA_real_)
     })
 
-    output$kpi_refusal <- renderText({
-      df <- filtered_subs()
-      denom <- sum(df$interview_outcome %in% c("completed", "consent_refused"))
-      num <- sum(df$interview_outcome == "consent_refused")
-      fmt_pct(if (denom > 0) num / denom else NA_real_)
+    output$kpi_collected <- renderText({
+      # Total field effort — every completed interview, unconditional (see
+      # is_collected() in global.R). Computed directly from filtered_subs()
+      # rather than summed from filtered_stratum()$collected_n, since the
+      # stratum-level figure can only include rows that resolved to a real
+      # stratum_id — this total should never undercount just because a
+      # handful of submissions couldn't be attributed to one.
+      comma(sum(is_collected(filtered_subs())))
     })
 
     output$kpi_days_remaining <- renderText({

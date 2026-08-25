@@ -2048,3 +2048,186 @@ there too, not just locally. Grepped the live rendered page for stray
 "FACT" branding: the only hits are the dashboard's own pre-existing,
 legitimate "IMPACT/FACT" dual-audience framing text (unrelated, untouched
 by this work), not digest branding.
+
+## Update (2026-08-22) — oversampled-cluster map indicator; resampling-readiness hardening; a real partner-coverage bug and a real IDP identity gap, both fixed
+
+Not deployed yet — Jack asked to hold everything below for the next data
+refresh rather than a standalone push. `mod_map.R`/`global.R` show as
+modified-but-uncommitted; everything else in this entry lives under
+`cleaning/`, which is entirely gitignored in this repo (dashboard-only,
+see `.gitignore`) and will never show up in `git status` regardless.
+
+**Oversampled clusters now shown directly on the Coverage Map**, not just
+in the partner digest. Cluster view only (an LGA can contain both an
+oversampled and an undersampled cluster at once, so the LGA choropleth
+can't represent this meaningfully) — a purple outline (`OVERSAMPLED_BORDER`
+in `global.R`), deliberately not red: `STATUS_COLORS["Not started"]`
+already owns red in the same legend, oversampled clusters are always
+"Complete" (green-filled) already, and red-vs-red is a bad pair for
+red-green colourblindness besides. Surplus called out in the hover label,
+4th legend line added. While touching `cluster_status()`/`cluster_achieved()`
+also fixed a real, if currently silent, bug: the map's per-cluster achieved
+count checked `matched_cluster_id` where `is_achieved()` (the one canonical
+"achieved" definition, per its own header comment) checks `matched_survey_id`
+— a materially weaker test. Checked against real data: zero rows currently
+differ, so no visible effect today, but it was one data update away from
+silently diverging from every other achieved figure on the dashboard.
+
+**Resampling-readiness hardening**, ahead of the significant resampling
+Jack is currently running across the coverage areas (expected to change
+cluster IDs, targets, possibly partner-LGA assignment "drastically"). A
+background-agent audit of the dashboard + `cleaning/real/` found the core
+risk: nothing checked that a submission's matched cluster/strata/survey ID
+actually exists in the sampling frame it's joined against — a resampled
+frame could silently zero out every downstream figure rather than error.
+Three fixes, all additive (no existing output changes):
+1. `sanity_checks.R` now flags matched IDs absent from the current frame.
+   First version of this check was itself wrong — flagged all 2,371 IDP
+   rows as "drift" because IDP stores a cluster ID where non-IDP stores a
+   point ID, compared against the same frame column. Caught before it
+   shipped by testing against real data; made pop-type-aware; re-verified
+   clean.
+2. `prep_psu_geometries.R` now prints the design-frame archive's resolved
+   path + file date every run (previously silent — would have kept
+   serving the pre-resampling frame indefinitely if the path isn't
+   updated), and warns persistently if cluster overlap with the current
+   WORKING frame drops below 90% (currently 97%, healthy).
+3. `prep_psu_geometries.R` and `prep_partner_lga_assignment.R` both now
+   write a `_meta.rds` sidecar (generated-at, source + its mtime, row
+   counts) mirroring `real_meta.rds` — previously no output file recorded
+   when/from-what it was generated, so a frame swap would have been
+   undetectable after the fact. Foundation for a future sampling-frame
+   changelog, if/when built.
+
+**Real bug found and fixed**: Jack noticed a partner's LGA coverage
+showing as "Not partner-assigned" and asked why. Root cause:
+`Partnerscoverage.xlsx` lists CARE as covering "Eggon" (Nasarawa, 180
+target surveys), but the sampling frame's formal name is
+"Nasarawa-Eggon". The existing Jaro-Winkler fuzzy-match fallback in
+`prep_partner_lga_assignment.R` scored "eggon" vs "nasarawa-eggon" as
+*worse* (0.58) than an unrelated LGA (0.4) — JW's similarity bonus only
+rewards a shared prefix, and "Eggon" shares none with "Nasarawa-Eggon"
+despite being its exact suffix. Fixed with a substring-containment tier
+ahead of the fuzzy fallback, restricted to ONE direction only (the
+partner sheet's name must be contained in the frame's name, never the
+reverse) — the bidirectional first attempt immediately broke a real row
+on test (Kebbi has both a standalone "Dandi" LGA and a separate
+"Arewa-Dandi" LGA; the reverse direction matched "Arewa Dandi" to the
+wrong, shorter "Dandi"). Regenerated `partner_lga_assignment.csv`;
+diffed against the pre-fix version as exactly one clean addition
+(`Nasarawa-Eggon,care`), nothing else touched. Any future unmatched row —
+column or LGA — now persists to `SANITY_WARNINGS.txt` instead of a
+console message, since this prep script only runs manually and a
+console-only warning has no guarantee anyone's watching.
+
+**IDP submissions now get a real per-household ID.** Jack asked why IDP
+lacked a point-level ID the way non-IDP has one, and whether it could be
+built during cleaning. It can, and mostly already existed:
+`idp_hh_number_from_listing` (Tier 1 — on-site household listing, per the
+Tier 1/Tier 2 methodology in `1_sampling/CLAUDE.md`) and
+`idp_walk_position` (Tier 2 fallback) were already being combined for
+duplicate detection (`dup_key`), just never exposed as a first-class ID.
+`matched_survey_id` for IDP is now `cluster_id + listing-or-walk-position`
+instead of just the cluster id (covers 2,335 of 2,371 IDP rows, 98.5%;
+the remaining 36 with neither Tier 1 nor Tier 2 info fall back to the
+cluster id alone, same as every IDP row did before this change — so
+`is_achieved()`, which only checks non-NA-ness, counts exactly the same
+rows as achieved as before). Confirmed with Jack before building: the
+field listing is meant to be a persistent identity across the whole
+field period, never reused — so any collision (same cluster + same
+listing/walk position, on any day) is a field-team error, not a
+legitimate re-listing, and the existing `is_duplicate` logic (unchanged)
+is already the right response to it. Verified this end to end: 126 real
+per-household ID collisions found (297 rows), and reconciled exactly
+against `is_duplicate` — 171 already flagged as duplicate, 126 correctly
+kept as the first-by-submission-time instance, zero unexplained gap.
+
+## Update (2026-08-24) — everything above deployed live
+
+Report regenerated + dashboard redeployed (10:15:49–10:20:21, ~4.5 min,
+no retries needed). Ships the oversampled-cluster map border, all the
+resampling-readiness hardening, the Eggon/Nasarawa-Eggon partner-coverage
+fix, the IDP per-household ID, and the refreshed + repointed sampling
+frame from the 2026-08-22 entry above. Verified live: HTTP 200.
+
+One thing surfaced during report generation worth a look, not blocking:
+`summarise_cleaning_logs()` logged an unrecognised `check_id` ("unclassified")
+defaulted to tier B — existing defensive fallback handled it without
+erroring, but worth checking whether "unclassified" is a real, expected
+check_id or a sign a cleaning-log check type changed upstream.
+
+## Update (2026-08-24b) — two report fixes, then Collected vs. Achieved dashboard-wide
+
+**State/LGA/Ward fix in the partner digest.** Jack noticed State/LGA blank
+on "Priority follow-up"/"Cleaning log detail". Root cause: the cleaning
+log's `admin1`/`admin2` are already state/LGA *names*, but
+`summarise_cleaning_logs()` matched them against the frame's *pcode*
+columns — `match()` never hit, so those columns were NA on every row, on
+every digest, since the sheets existed. Fixed to match name-to-name on
+the (state, LGA) pair. Added Ward too, derived from `cluster_id` (in the
+raw log from 2026-08-17 onward — earlier files predate that column, 16
+vs 25 columns, confirmed directly) joined against the frame's modal ward
+per cluster. A first attempt crashed (looked like a hang under
+`smoke_test.R`) from assuming `cluster_id` existed in every dated file —
+fixed by checking for it per-file instead.
+
+**Oversampled-cluster border darkened**: `#8E44AD` → `#6C3483`, weight
+3 → 4, per Jack — wasn't standing out enough.
+
+**Collected vs. Achieved — the bigger one.** Jack flagged that "% of
+target" looked inflated (FACT showing 2,946/15,786 = 19%) and asked
+whether oversampled surplus was being counted. Confirmed precisely:
+`compute_progress_by_stratum()`'s `achieved_n` was a raw count per
+stratum with no cap at cluster level — an oversampled cluster's full
+surplus flowed straight through to the stratum, LGA, and partner totals.
+Fixed by formalising two definitions, used consistently everywhere from
+now on:
+- **Collected** (`is_collected()`, global.R): every completed interview,
+  full stop — includes duplicates, oversampled surplus, unmatched.
+- **Achieved** (`is_achieved()` + capped): completed, matched,
+  non-duplicate, AND capped at each CLUSTER's own `target_households`
+  before being summed to stratum/LGA/partner — capping has to happen at
+  the cluster grain, not after summing, or a surplus cluster could still
+  mask a deficit one in the same LGA.
+
+Both now shown side by side wherever "achieved" was shown before —
+Progress Overview (replaced the consent-refusal tile, per Jack, since
+Collected-vs-Achieved tells the oversampling story more generally),
+Partner Report (tiles, LGA table, Excel/PDF exports), Coverage Map
+(hover labels + a definitions tooltip; the LGA choropleth's colours were
+already automatically corrected once `compute_progress_by_stratum()`
+was fixed — no separate change needed there), and the partner digest's
+Partners sheet. New `info_icon()`/`info_title()` helpers (global.R,
+`bslib::tooltip()`) put a hover-defined "(i)" on every box that needs
+one, per Jack's request.
+
+Enumerators sheet is deliberately NOT capped the same way — confirmed
+with Jack: no individual per-enumerator target exists to cap against,
+and that sheet is about quality-rate patterns, not coverage tracking. A
+cluster shared by more than one partner gets its full capped total
+attributed to EACH partner present (not split proportionally) — same
+non-splitting convention `partner_progress_by_lga()`'s "shared_with"
+already used; checked directly against the current real data and this
+causes zero double-counting today (no cluster currently has multi-org
+submissions), though the code handles it correctly if that changes.
+
+Verified throughout: national achieved 5,957 → 5,588 (capped), which is
+*exactly* the 369-submission surplus the "Oversampled clusters" sheet
+already reported independently. FACT: 2,946 → 2,811 achieved (19% →
+18%), Collected 3,060 of 3,065 submissions. Full smoke suite passes.
+Not deployed — Jack asked to hold for the data refresh due in about an
+hour, which will bundle this with everything from 2026-08-24a too.
+
+## Update (2026-08-25) — deployed live: everything from 2026-08-24a/b, on fresh data
+
+Refresh + report + deploy (09:55:01–09:59:22, ~4.3 min, no retries).
+Picked up `NGA2605_MSNA_anonymised_2026-08-24.xlsx` (7,266 rows, up from
+6,408). Ships the Collected/Achieved split, the oversampled-cluster
+border, the digest's State/LGA/Ward fix, and all the resampling-readiness
+hardening from the prior two entries. Verified live: HTTP 200.
+
+Same known issue classes ticked up slightly with the new data — frame
+drift 17→19 rows, negative-duration 22→23 — consistent with more of the
+CRS/Bassa-pattern (missing pop_type) submissions still arriving, not a
+new problem. Still unacknowledged in `SANITY_WARNINGS.txt`, still Jack's
+to review.

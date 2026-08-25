@@ -1,10 +1,17 @@
-# Deploys dashboard_app/ to shinyapps.io — AND regenerates the partner
-# data quality digest (reports/) as part of the same run (integrated
-# 2026-08-21d, per Jack's steer: the report and the dashboard are both
-# downstream of the same daily data refresh and are "inherently linked" —
-# should happen together, not as two separate things to remember). To
-# regenerate just the report without deploying, run
-# generate_partner_digest.R directly instead.
+# Deploys dashboard_app/ to shinyapps.io — AND refreshes submissions from
+# the latest raw export, AND regenerates the partner data quality digest
+# (reports/), all as part of the same run. Refresh step added 2026-08-24
+# after a redeploy went out still showing 21 Aug data despite a newer
+# anonymised export (23 Aug) already sitting in cleaning/MSNA_Data_
+# Cleaning/output/anonymised_data/ — confirmed with Jack: "redeploy" should
+# always mean go back to the submission data and cleaning logs for
+# whatever's currently there, not just re-push whatever data/
+# real_submissions.csv already happens to contain. Same reasoning as the
+# 2026-08-21d report integration: these are all downstream of the same
+# daily refresh and inherently linked, not three separate things to
+# remember to run in order. To refresh/report without deploying, run
+# cleaning/real/prep_real_submissions.R and/or generate_partner_digest.R
+# directly instead.
 #
 # shinyapps.io only bundles the app directory itself (dashboard_app/), not
 # sibling folders — but the app reads its data from ../data and
@@ -26,10 +33,17 @@
 
 library(rsconnect)
 
+# ---- refresh submissions from whatever's currently in cleaning/ (picks up
+# the latest anonymised export + all cleaning logs) — always the first
+# step, per Jack: "redeploy" means go back to source, not re-push
+# whatever data/real_submissions.csv already has sitting in it. Prints its
+# own sanity banner at both start and end.
+source("cleaning/real/prep_real_submissions.R")
+
 source("cleaning/real/sanity_checks.R")
 print_sanity_banner_if_present() # most important checkpoint: right before this goes live and public
 
-# ---- report generation, before the deploy itself — same data, one run ----
+# ---- report generation, before the deploy itself — same freshly-refreshed data, one run ----
 source("generate_partner_digest.R")
 
 for (d in c("dashboard_app/data", "dashboard_app/input_data")) {

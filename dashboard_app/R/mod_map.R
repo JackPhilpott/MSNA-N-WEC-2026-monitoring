@@ -14,7 +14,10 @@ mod_map_ui <- function(id) {
       card_header(
         div(
           style = "display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;",
-          span("Coverage map"),
+          span(
+            "Coverage map",
+            info_icon("Fill colour and \"% of target\" reflect ACHIEVED — capped at each cluster's own target, so oversampling can't count toward or mask under-coverage elsewhere. Hover a cluster/LGA for its COLLECTED figure too (every completed interview, including oversampled surplus).")
+          ),
           div(
             style = "display: flex; align-items: center; flex-wrap: wrap; gap: 14px;",
             radioButtons(
@@ -44,7 +47,10 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
     filtered_lga <- reactive({
       filtered_stratum() %>%
         group_by(region, adm1_pcode, adm1_name, adm2_pcode, adm2_name) %>%
-        summarise(target_sample = sum(target_sample, na.rm = TRUE), achieved_n = sum(achieved_n, na.rm = TRUE), .groups = "drop") %>%
+        summarise(
+          target_sample = sum(target_sample, na.rm = TRUE), achieved_n = sum(achieved_n, na.rm = TRUE),
+          collected_n = sum(collected_n, na.rm = TRUE), .groups = "drop"
+        ) %>%
         mutate(pct_achieved = ifelse(target_sample > 0, achieved_n / target_sample, NA_real_))
     })
 
@@ -55,7 +61,7 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
     # joining with duplicates of those present on both sides would produce
     # suffixed .x/.y columns instead.
     scope_admin2_sf <- reactive({
-      lga <- filtered_lga() %>% select(adm2_pcode, target_sample, achieved_n, pct_achieved)
+      lga <- filtered_lga() %>% select(adm2_pcode, target_sample, achieved_n, collected_n, pct_achieved)
       admin2_sf %>% inner_join(lga, by = "adm2_pcode")
     })
 
@@ -91,10 +97,19 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
 
     # per-cluster achieved counts, from filtered_subs (so — unlike the LGA
     # view, which mirrors the Progress by LGA table's non-date-filtered
-    # figures — this respects the date-range filter too)
+    # figures — this respects the date-range filter too). Uses is_achieved()
+    # (global.R's single canonical "achieved" definition — completed, not a
+    # duplicate, AND matched_survey_id present) rather than hand-rolling the
+    # condition; the previous version here checked matched_cluster_id instead
+    # of matched_survey_id, which is a materially different (weaker) test and
+    # is exactly the kind of drift global.R's comment on is_achieved() warns
+    # against. !is.na(matched_cluster_id) is kept as an ADDITIONAL condition,
+    # not a replacement — it's needed for the count(matched_cluster_id) grain
+    # itself (nothing to attribute to a hexagon without it), not as the
+    # achieved test.
     cluster_achieved <- reactive({
-      filtered_subs() %>%
-        filter(interview_outcome == "completed", !is.na(matched_cluster_id), !is_duplicate) %>%
+      subs <- filtered_subs()
+      subs[is_achieved(subs) & !is.na(subs$matched_cluster_id), ] %>%
         count(matched_cluster_id, name = "achieved_n")
     })
 
@@ -111,6 +126,15 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
             TRUE ~ "Not started"
           ),
           fill_color = unname(STATUS_COLORS[status]),
+          # Same definition as reports_partner_digest.R's compute_oversampled_
+          # clusters() (target_households > 0 & achieved_n > target) — always
+          # a subset of "Complete", never a sibling status, so it's drawn as a
+          # border on top of the existing fill rather than a 4th status/colour
+          # or its own filter checkbox (which couldn't sit alongside the
+          # existing Complete/In progress/Not started group cleanly, and would
+          # make an issue we want caught passively into one you have to
+          # remember to go looking for).
+          oversampled = target_households > 0 & achieved_n > target_households,
           label_pct = fmt_pct(ifelse(target_households > 0, achieved_n / target_households, NA_real_)),
           partner_coverage = vapply(adm2_pcode, partner_coverage_label, character(1))
         ) %>%
@@ -255,6 +279,7 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
               "<b>", adm2_name, "</b>, ", adm1_name, "<br>",
               "Achieved: ", coalesce(achieved_n, 0), " / ", coalesce(target_sample, 0),
               " (", label_pct, ")<br>",
+              "Collected: ", coalesce(collected_n, 0), "<br>",
               "Partner(s): ", partner_coverage
             ),
             htmltools::HTML
@@ -272,14 +297,22 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
         addPolygons(
           fillColor = ~fill_color,
           fillOpacity = 0.85,
-          color = "#FFFFFF",
-          weight = 0.5,
+          # Deliberately NOT red (STATUS_COLORS["Not started"] is already
+          # that colour in this exact legend) — a same-hue border+fill pair
+          # in one legend reads as "which one is it?", and red-vs-red is a
+          # particularly bad pair for red-green colourblindness on top of
+          # that. OVERSAMPLED_BORDER (global.R) is purple: unmistakable
+          # against the green "Complete" fill it always sits on, and against
+          # every other colour already in play on this map.
+          color = ~ifelse(oversampled, OVERSAMPLED_BORDER, "#FFFFFF"),
+          weight = ~ifelse(oversampled, 4, 0.5), # bumped from 3 (2026-08-24, per Jack — wasn't clear enough)
           group = "Cluster status",
           label = ~lapply(
             paste0(
               "<b>", cluster_id, "</b><br>", adm2_name, ", ", adm1_name, "<br>",
               "Achieved: ", achieved_n, " / ", target_households, " (", label_pct, ")<br>",
               "Status: ", status, "<br>",
+              ifelse(oversampled, paste0("<b style='color:", OVERSAMPLED_BORDER, ";'>&#9888; Oversampled by ", achieved_n - target_households, "</b><br>"), ""),
               "Partner(s): ", partner_coverage
             ),
             htmltools::HTML
@@ -298,8 +331,8 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
           radius = 6,
           fillColor = ~fill_color,
           fillOpacity = 0.9,
-          color = "#333333",
-          weight = 1,
+          color = ~ifelse(oversampled, OVERSAMPLED_BORDER, "#333333"),
+          weight = ~ifelse(oversampled, 4, 1), # bumped from 3 (2026-08-24, per Jack — wasn't clear enough)
           stroke = TRUE,
           group = "Cluster status sites",
           # Own pane, above the default overlayPane hexagons/polygons share —
@@ -313,6 +346,7 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
               "<b>", coalesce(iom_site_name, cluster_id), "</b><br>", adm2_name, ", ", adm1_name, "<br>",
               "Achieved: ", achieved_n, " / ", target_households, " (", label_pct, ")<br>",
               "Status: ", status, "<br>",
+              ifelse(oversampled, paste0("<b style='color:", OVERSAMPLED_BORDER, ";'>&#9888; Oversampled by ", achieved_n - target_households, "</b><br>"), ""),
               "Partner(s): ", partner_coverage
             ),
             htmltools::HTML
@@ -410,8 +444,12 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
           showGroup(c("Cluster status", "Cluster status sites")) %>%
           addLegend(
             layerId = "map_legend", position = "bottomright",
-            colors = unname(STATUS_COLORS),
-            labels = names(STATUS_COLORS),
+            colors = c(unname(STATUS_COLORS), OVERSAMPLED_BORDER),
+            # The 4th entry's swatch renders as a filled square like the
+            # other three, not an actual outline — addLegend() can't render
+            # a border-only swatch — hence spelling out "outline" in the
+            # label itself so it isn't read as a 4th fill status.
+            labels = c(names(STATUS_COLORS), "Oversampled (purple outline)"),
             title = "Cluster status", opacity = 0.9
           )
       }

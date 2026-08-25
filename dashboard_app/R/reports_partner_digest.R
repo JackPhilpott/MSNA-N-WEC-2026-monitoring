@@ -168,6 +168,30 @@ build_partner_quality_digest_excel <- function(file, cleaning_log) {
 
   yn <- function(x) factor(ifelse(x, "Yes", "No"), levels = c("Yes", "No"))
 
+  # ---- Achieved, capped at cluster level, attributed by partner (added
+  # 2026-08-24 — see is_collected()/is_achieved()/cluster_targets in
+  # global.R). If a cluster's achieved submissions come from more than one
+  # org (rare — clusters usually belong to one partner's assigned LGA),
+  # EACH org with a submission there gets the cluster's full capped total
+  # counted, same non-splitting convention partner_progress_by_lga()
+  # already uses for jointly-covered LGAs ("shared_with") — not divided
+  # proportionally, deliberately: inventing a split rule adds complexity
+  # for a case that's rare in practice and doesn't change which partners
+  # need follow-up. Enumerator-level Achieved (below) is deliberately NOT
+  # capped this way — confirmed with Jack 2026-08-24: enumerators don't
+  # have individual targets to cap against, and that sheet's job is
+  # quality-rate patterns, not coverage tracking.
+  achieved_rows <- submissions_raw[achieved_flag & !is.na(submissions_raw$matched_cluster_id), ]
+  cluster_capped <- achieved_rows %>%
+    count(matched_cluster_id, name = "cluster_achieved_n") %>%
+    left_join(cluster_targets, by = c("matched_cluster_id" = "cluster_id")) %>%
+    mutate(target_households = coalesce(target_households, 0), capped_achieved_n = pmin(cluster_achieved_n, target_households))
+  achieved_capped_by_org <- achieved_rows %>%
+    distinct(matched_cluster_id, org_id) %>%
+    left_join(cluster_capped %>% select(matched_cluster_id, capped_achieved_n), by = "matched_cluster_id") %>%
+    group_by(org_id) %>%
+    summarise(achieved_capped = sum(capped_achieved_n), .groups = "drop")
+
   # ---- dashboard-flag (sample-integrity) rollups, by partner AND by
   # enumerator — the by-enumerator one is new 2026-08-20, didn't exist
   # before since only the cleaning-log half had enumerator-level detail ---
@@ -175,19 +199,22 @@ build_partner_quality_digest_excel <- function(file, cleaning_log) {
     mutate(achieved_flag = achieved_flag) %>%
     group_by(org_id) %>%
     summarise(
-      submissions = n(), completed = sum(interview_outcome == "completed"),
+      submissions = n(), collected = sum(interview_outcome == "completed"),
       consent_refused = sum(interview_outcome == "consent_refused"), achieved = sum(achieved_flag),
       integrity_flagged = sum(any_quality_flag), integrity_flag_rate = mean(any_quality_flag),
       gps_outliers = sum(flag_gps_outlier), duration_outliers = sum(flag_duration_outlier),
       hh_size_mismatches = sum(flag_hh_size_mismatch), duplicates = sum(is_duplicate),
       off_hours = sum(flag_off_hours), .groups = "drop"
-    )
+    ) %>%
+    left_join(achieved_capped_by_org, by = "org_id") %>%
+    mutate(achieved = coalesce(achieved_capped, 0L)) %>%
+    select(-achieved_capped)
 
   integrity_by_enum <- submissions_raw %>%
     mutate(achieved_flag = achieved_flag) %>%
     group_by(enum_id) %>%
     summarise(
-      submissions = n(), completed = sum(interview_outcome == "completed"), achieved = sum(achieved_flag),
+      submissions = n(), collected = sum(interview_outcome == "completed"), achieved = sum(achieved_flag),
       integrity_flagged = sum(any_quality_flag), integrity_flag_rate = mean(any_quality_flag),
       gps_outliers = sum(flag_gps_outlier), duration_outliers = sum(flag_duration_outlier),
       hh_size_mismatches = sum(flag_hh_size_mismatch), duplicates = sum(is_duplicate),
@@ -230,12 +257,12 @@ build_partner_quality_digest_excel <- function(file, cleaning_log) {
   # row in submissions_raw yet (see the union-roster note in
   # summarise_cleaning_logs.R) — full_join() keeps them rather than
   # dropping their cleaning-log flags, but the dashboard-flag columns
-  # (Submissions/Completed/Achieved/GPS outliers/...) are genuinely unknown
+  # (Submissions/Collected/Achieved/GPS outliers/...) are genuinely unknown
   # for them until their data is pulled in, so those coalesce to 0 rather
   # than showing NA/blank, consistent with how a "hasn't started" partner
   # is already shown elsewhere in this workbook.
   integrity_cols_p <- c(
-    "completed", "consent_refused", "achieved", "integrity_flagged",
+    "collected", "consent_refused", "achieved", "integrity_flagged",
     "gps_outliers", "duration_outliers", "hh_size_mismatches", "duplicates", "off_hours"
   )
   partners_merged <- integrity_by_partner %>%
@@ -256,7 +283,7 @@ build_partner_quality_digest_excel <- function(file, cleaning_log) {
     ) %>%
     arrange(desc(tier_a), desc(integrity_flag_rate)) %>%
     transmute(
-      Partner, Submissions = submissions, Completed = completed, `Consent refused` = consent_refused, Achieved = achieved,
+      Partner, Submissions = submissions, Collected = collected, `Consent refused` = consent_refused, Achieved = achieved,
       `Integrity flagged` = integrity_flagged, `Integrity flag rate` = integrity_flag_rate,
       `GPS outliers` = gps_outliers, `Duration outliers` = duration_outliers,
       `HH size mismatches` = hh_size_mismatches, Duplicates = duplicates, `Off-hours` = off_hours,
@@ -268,7 +295,7 @@ build_partner_quality_digest_excel <- function(file, cleaning_log) {
       `Oversampled clusters` = n_oversampled_clusters
     )
 
-  integrity_cols_e <- c("completed", "achieved", "integrity_flagged", "gps_outliers", "duration_outliers", "hh_size_mismatches", "duplicates", "off_hours")
+  integrity_cols_e <- c("collected", "achieved", "integrity_flagged", "gps_outliers", "duration_outliers", "hh_size_mismatches", "duplicates", "off_hours")
   enumerators_merged <- integrity_by_enum %>%
     full_join(cleaning_log$by_enumerator, by = "enum_id", suffix = c("", "_cl")) %>%
     mutate(
@@ -282,7 +309,7 @@ build_partner_quality_digest_excel <- function(file, cleaning_log) {
     ) %>%
     arrange(factor(priority, levels = c("HIGH", "MEDIUM", "LOW")), desc(tier_a), desc(integrity_flag_rate)) %>%
     transmute(
-      Partner, Enumerator = enum_id, Submissions = submissions, Completed = completed, Achieved = achieved,
+      Partner, Enumerator = enum_id, Submissions = submissions, Collected = collected, Achieved = achieved,
       `Integrity flagged` = integrity_flagged, `Integrity flag rate` = integrity_flag_rate,
       `GPS outliers` = gps_outliers, `Duration outliers` = duration_outliers,
       `HH size mismatches` = hh_size_mismatches, Duplicates = duplicates, `Off-hours` = off_hours,
@@ -390,8 +417,8 @@ build_partner_quality_digest_excel <- function(file, cleaning_log) {
     ),
     `What it shows` = c(
       "Submissions with a serious (tier A) issue, or already marked for removal by the cleaning script, cross-checked against whether they're still counted in your live achieved total.",
-      "One row per partner: progress, sample-integrity flags (GPS/duration/roster/off-hours/duplicates), cleaning-log flags (tier A/B/C, which issues, how many), and how many clusters they've oversampled.",
-      "Same as Partners, one row per enumerator — the individual-level view.",
+      "One row per partner: Collected vs. Achieved (capped, see \"A note on the numbers\" below) progress, sample-integrity flags (GPS/duration/roster/off-hours/duplicates), cleaning-log flags (tier A/B/C, which issues, how many), and how many clusters they've oversampled.",
+      "Same as Partners, one row per enumerator — the individual-level view. Achieved here is NOT capped the way Partners' is (see \"A note on the numbers\").",
       "Clusters that have received MORE completed interviews than their target. Wasted fieldwork effort, and likely surplus data that will need a deletion decision.",
       "Which check TYPES are most common overall, independent of who caused them — for spotting tool-level or systemic issues vs individual behaviour.",
       "Row-level detail behind the sample-integrity numbers (GPS/duration/roster/off-hours/duplicates) — find the exact record.",
@@ -429,6 +456,16 @@ build_partner_quality_digest_excel <- function(file, cleaning_log) {
 
   write_section("A note on the numbers")
   write_para(paste(
+    "\"Collected\" vs \"Achieved\" (Partners/Enumerators sheets): Collected is every completed interview,",
+    "full stop — includes oversampled surplus and duplicates, i.e. total field effort. Achieved is what",
+    "actually counts toward the sample frame — capped at each CLUSTER's own target before being summed up,",
+    "so a partner can't inflate their Achieved by overshooting an easy cluster while another goes unmet. A",
+    "big Collected-vs-Achieved gap on the Partners sheet usually means oversampling of easy-to-reach areas —",
+    "wasted operational resource, not real progress. Enumerators' \"Achieved\" is deliberately NOT capped the",
+    "same way (no individual per-enumerator target exists to cap against) — read it as their own",
+    "completed/matched/non-duplicate count, not a coverage figure."
+  ))
+  write_para(paste(
     "On the Partners/Enumerators sheets: \"Tier A/B/C\" are counts of DISTINCT SUBMISSIONS with an issue in",
     "that tier — a submission with issues in two tiers is counted in both, so these three columns can add up",
     "to MORE than \"Cleaning-log flagged\" (which is the distinct-submission count, no double-counting).",
@@ -449,7 +486,7 @@ build_partner_quality_digest_excel <- function(file, cleaning_log) {
   addWorksheet(wb, sheetP)
   priority_sheet <- cleaning_log$priority %>%
     transmute(
-      Partner, Enumerator = enum_id, State = admin1_name, LGA = admin2_name,
+      Partner, Enumerator = enum_id, State = admin1_name, LGA = admin2_name, Ward = admin3_name,
       `First flagged` = log_date, `Issue(s)` = issues, `Check type(s)` = checks,
       `Marked for removal by cleaning script` = yn(any_remove_survey),
       `Still in dataset` = yn(in_dataset), `Counting as achieved` = yn(counts_as_achieved)

@@ -51,7 +51,7 @@ mod_enumerator_server <- function(id, filtered_subs) {
     })
 
     output$kpi_n_enum <- renderText(comma(nrow(stats())))
-    output$kpi_avg_subs <- renderText(round(mean(stats()$submissions), 1))
+    output$kpi_avg_subs <- renderText(fmt_num(mean(stats()$submissions)))
     output$kpi_max_day <- renderText(ifelse(nrow(stats()) > 0, max(stats()$max_in_a_day), "-"))
     output$kpi_median_flag <- renderText(fmt_pct(median(stats()$flag_rate, na.rm = TRUE)))
 
@@ -101,7 +101,14 @@ mod_enumerator_server <- function(id, filtered_subs) {
 
       datatable(df, rownames = FALSE, filter = "top", options = list(pageLength = 15, order = list(list(10, "desc")))) %>%
         formatPercentage("Flag rate", 1) %>%
-        formatStyle("Busiest day", backgroundColor = styleInterval(MAX_PLAUSIBLE_INTERVIEWS_PER_DAY - 1, c("white", "#F7D6D3"))) %>%
+        # Fixed 2026-08-25: was MAX_PLAUSIBLE_INTERVIEWS_PER_DAY - 1, which
+        # highlighted a value AT the threshold (12) as flagged here while
+        # the Integrity tab's own "Implausible daily counts" table (n >
+        # MAX_PLAUSIBLE_INTERVIEWS_PER_DAY) does not flag exactly 12 — same
+        # day read as flagged in one tab, not the other. styleInterval's
+        # cut is the top of the UNFLAGGED bucket, so it should be the
+        # threshold itself, not one below it.
+        formatStyle("Busiest day", backgroundColor = styleInterval(MAX_PLAUSIBLE_INTERVIEWS_PER_DAY, c("white", "#F7D6D3"))) %>%
         formatStyle("Flag rate", background = styleColorBar(c(0, max(df$`Flag rate`, 0.01)), "#F7D6D3"), backgroundSize = "90% 70%", backgroundRepeat = "no-repeat")
     })
   })

@@ -58,8 +58,8 @@ mod_representativeness_server <- function(id, filtered_subs, filtered_stratum) {
         pull(v)
     })
 
-    output$kpi_design_hh <- renderText(round(design_hh_scope(), 1))
-    output$kpi_achieved_hh <- renderText(round(mean(completed()$hh_size, na.rm = TRUE), 1))
+    output$kpi_design_hh <- renderText(fmt_num(design_hh_scope()))
+    output$kpi_achieved_hh <- renderText(fmt_num(mean(completed()$hh_size, na.rm = TRUE)))
     output$kpi_resp_female <- renderText(fmt_pct(mean(completed()$resp_gender == "female", na.rm = TRUE)))
     output$kpi_hoh_male <- renderText(fmt_pct(mean(completed()$hoh_gender == "male", na.rm = TRUE)))
 
@@ -108,7 +108,14 @@ mod_representativeness_server <- function(id, filtered_subs, filtered_stratum) {
         group_by(state = admin1, pop_type) %>%
         summarise(achieved_avg_hh_size = mean(hh_size, na.rm = TRUE), n = n(), .groups = "drop")
       state_to_region <- strata_frame %>% distinct(adm1_name, region)
-      design <- design_avg_hh_size()
+      # Fixed 2026-08-25: was design_avg_hh_size() with no argument, which
+      # silently defaults to the full, unfiltered strata_frame — the
+      # "Achieved" side above is correctly scoped to filtered_stratum() via
+      # completed(), so an active filter was comparing a filtered achieved
+      # figure against a national design figure under the same table row.
+      # Same scoping pattern kpi_design_hh already uses (design_hh_scope()
+      # above) — reused here instead of duplicated.
+      design <- design_avg_hh_size(strata_frame %>% filter(strata_id %in% unique(filtered_stratum()$strata_id)))
 
       df <- achieved_by_state %>%
         left_join(state_to_region, by = c("state" = "adm1_name")) %>%

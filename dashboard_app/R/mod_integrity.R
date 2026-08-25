@@ -65,7 +65,10 @@ mod_integrity_server <- function(id, filtered_subs) {
     })
     output$kpi_whipple <- renderText({
       w <- whipples_index(filtered_subs()$resp_age)
-      paste0(round(w), " (", whipples_label(w), ")")
+      # was paste0(round(w), " (", whipples_label(w), ")") unconditionally —
+      # paste0() stringifies a bare NA as the literal text "NA", so an empty
+      # filtered slice showed "NA (n/a)" instead of a clean placeholder.
+      if (is.na(w)) "n/a" else paste0(round(w), " (", whipples_label(w), ")")
     })
 
     overmax <- reactive({

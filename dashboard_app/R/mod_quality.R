@@ -1,7 +1,8 @@
 # Data Quality tab: core review flags and flagged submissions. Per-
 # enumerator performance moved to its own, much richer "Enumerator
-# Performance" tab (under Analysis) — kept here only as a state string on
-# the flagged-submissions table, not duplicated as a full leaderboard.
+# Performance" tab (under Analysis) — enum_id is kept here only as a plain
+# identifying column on the flagged-submissions table, not duplicated as a
+# full leaderboard.
 
 mod_quality_ui <- function(id) {
   ns <- NS(id)

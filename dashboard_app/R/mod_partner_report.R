@@ -19,16 +19,27 @@ mod_partner_report_ui <- function(id) {
         downloadButton(ns("download_pdf"), "Download PDF report", class = "btn-outline-primary w-100")
       ),
       layout_columns(
-        col_widths = c(6, 6, 6, 6),
+        col_widths = c(4, 4, 4, 6, 6),
         value_box(title = "Target (their LGAs)", value = textOutput(ns("kpi_target")), showcase = icon("bullseye"), theme = "primary"),
-        value_box(title = "Achieved", value = textOutput(ns("kpi_achieved")), showcase = icon("clipboard-check"), theme = "success"),
-        value_box(title = "% achieved", value = textOutput(ns("kpi_pct")), showcase = icon("percent"), theme = "success"),
+        value_box(
+          title = info_title("Achieved", "Completed, matched, non-duplicate interviews — capped at each cluster's own target, so oversampling in one cluster can't count toward or mask coverage elsewhere."),
+          value = textOutput(ns("kpi_achieved")), showcase = icon("clipboard-check"), theme = "success"
+        ),
+        value_box(
+          title = info_title("Collected", "Every completed interview actually done, including oversampled surplus and duplicates — total field effort, not what counts toward target. A large gap vs. Achieved usually means oversampling of easy-to-reach clusters."),
+          value = textOutput(ns("kpi_collected")), showcase = icon("layer-group"), theme = "warning"
+        ),
+        value_box(
+          title = info_title("% achieved", "Achieved (capped, see that tile) as a share of target. Not inflated by oversampling."),
+          value = textOutput(ns("kpi_pct")), showcase = icon("percent"), theme = "success"
+        ),
         value_box(title = "Flagged for review", value = textOutput(ns("kpi_flagged")), showcase = icon("flag"), theme = "warning")
       )
     ),
     card(
       card_header(
         "Progress by LGA (their assigned coverage area)",
+        info_icon("ACHIEVED: completed, matched, non-duplicate, capped at each cluster's own target. COLLECTED: every completed interview, including oversampled surplus and duplicates."),
         span(
           class = "text-muted", style = "font-size: 0.8em; font-weight: normal; margin-left: 8px;",
           "Some LGAs are jointly covered by more than one partner (see \"Shared with\") — Achieved there reflects everyone's combined submissions, not this partner's alone."
@@ -60,6 +71,7 @@ mod_partner_report_server <- function(id, selected_partners) {
 
     output$kpi_target <- renderText({ comma(sum(lga_df()$target_sample)) })
     output$kpi_achieved <- renderText({ comma(sum(lga_df()$achieved_n)) })
+    output$kpi_collected <- renderText({ comma(sum(lga_df()$collected_n)) })
     output$kpi_pct <- renderText({ fmt_pct(sum(lga_df()$achieved_n) / sum(lga_df()$target_sample)) })
     output$kpi_flagged <- renderText({
       q <- qual()
@@ -70,7 +82,7 @@ mod_partner_report_server <- function(id, selected_partners) {
       df <- lga_df() %>%
         transmute(
           Region = factor(region), State = factor(adm1_name), LGA = adm2_name,
-          Target = target_sample, Achieved = achieved_n, `% achieved` = pct_achieved,
+          Target = target_sample, Achieved = achieved_n, Collected = collected_n, `% achieved` = pct_achieved,
           Status = factor(status, levels = names(STATUS_COLORS)),
           `Shared with` = shared_with
         )
@@ -99,16 +111,17 @@ build_partner_excel <- function(org_id_val, file) {
   label <- ORG_LABELS[[org_id_val]]
   total_target <- sum(lga_df$target_sample)
   total_achieved <- sum(lga_df$achieved_n)
+  total_collected <- sum(lga_df$collected_n)
 
   wb <- createWorkbook()
   addWorksheet(wb, "Summary")
   writeData(
     wb, "Summary",
     data.frame(
-      Field = c("Partner", "Report generated", "Target interviews (their LGAs)", "Achieved interviews", "% achieved",
-                "Submissions logged", "Flagged for review", "Flag rate", "Consent refusals"),
+      Field = c("Partner", "Report generated", "Target interviews (their LGAs)", "Achieved interviews", "Collected interviews",
+                "% achieved", "Submissions logged", "Flagged for review", "Flag rate", "Consent refusals"),
       Value = c(
-        label, format(Sys.time(), "%d %b %Y %H:%M"), comma(total_target), comma(total_achieved),
+        label, format(Sys.time(), "%d %b %Y %H:%M"), comma(total_target), comma(total_achieved), comma(total_collected),
         fmt_pct(total_achieved / total_target), comma(qual$submissions), comma(qual$flagged),
         fmt_pct(qual$flag_rate), comma(qual$consent_refused)
       )
@@ -116,13 +129,23 @@ build_partner_excel <- function(org_id_val, file) {
     colNames = FALSE
   )
   setColWidths(wb, "Summary", cols = 1:2, widths = c(28, 40))
-  addStyle(wb, "Summary", createStyle(textDecoration = "bold"), rows = 1:9, cols = 1)
+  addStyle(wb, "Summary", createStyle(textDecoration = "bold"), rows = 1:10, cols = 1)
+  writeData(
+    wb, "Summary",
+    paste(
+      "Achieved = capped at each cluster's own target (oversampling can't count toward or mask coverage elsewhere).",
+      "Collected = every completed interview actually done, including oversampled surplus and duplicates.",
+      "A large Collected-vs-Achieved gap usually means oversampling of easy-to-reach clusters, not real progress."
+    ),
+    startRow = 12
+  )
+  addStyle(wb, "Summary", createStyle(fontSize = 9, textDecoration = "italic", fontColour = "#666666", wrapText = TRUE), rows = 12, cols = 1)
 
   sheet2 <- "Progress by LGA"
   addWorksheet(wb, sheet2)
   export_df <- lga_df %>%
     transmute(Region = region, State = adm1_name, LGA = adm2_name, Target = target_sample,
-              Achieved = achieved_n, `% achieved` = pct_achieved, Status = status,
+              Achieved = achieved_n, Collected = collected_n, `% achieved` = pct_achieved, Status = status,
               `Shared with` = shared_with)
   writeDataTable(wb, sheet2, export_df, tableStyle = "TableStyleLight9")
   pct_col <- which(names(export_df) == "% achieved")
@@ -146,12 +169,15 @@ build_partner_pdf <- function(org_id_val, file) {
   label <- ORG_LABELS[[org_id_val]]
   total_target <- sum(lga_df$target_sample)
   total_achieved <- sum(lga_df$achieved_n)
+  total_collected <- sum(lga_df$collected_n)
   pct <- if (total_target > 0) total_achieved / total_target else NA_real_
 
   header_text <- paste0(
     label, "\nMSNA N-WEC 2026 — Progress Report\nGenerated: ", format(Sys.time(), "%d %b %Y %H:%M"),
     "\n\nTarget (their LGAs): ", comma(total_target), "     Achieved: ", comma(total_achieved), " (", fmt_pct(pct), ")",
-    "\nSubmissions logged: ", comma(qual$submissions), "     Flagged for review: ", comma(qual$flagged), " (", fmt_pct(qual$flag_rate), ")"
+    "     Collected: ", comma(total_collected),
+    "\nSubmissions logged: ", comma(qual$submissions), "     Flagged for review: ", comma(qual$flagged), " (", fmt_pct(qual$flag_rate), ")",
+    "\nAchieved = capped at each cluster's own target. Collected = every completed interview, incl. oversampled surplus/duplicates."
   )
   header_plot <- ggplot() + theme_void() + xlim(0, 1) + ylim(0, 1) +
     annotate("text", x = 0, y = 1, label = header_text, hjust = 0, vjust = 1, size = 4.2)

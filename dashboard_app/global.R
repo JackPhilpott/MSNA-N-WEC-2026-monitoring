@@ -228,6 +228,18 @@ UNMATCHED_COLOR <- "#9AA3AF"
 # vocabulary/colour set dashboard-wide instead of a different scheme per tab.
 STATUS_COLORS <- c("Complete" = "#1E7B4D", "In progress" = "#D99A2B", "Not started" = "#C1443C")
 
+# Coverage Map's per-cluster view: border colour for clusters that have
+# received MORE completed interviews than target_households (see
+# mod_map.R's cluster_status()/OVERSAMPLED_BORDER usage, and
+# reports_partner_digest.R's compute_oversampled_clusters() for the same
+# achieved > target definition applied dashboard-wide). Deliberately not a
+# red — STATUS_COLORS["Not started"] already owns red in the same legend,
+# and oversampled clusters are always "Complete" (green-filled), so a red
+# border there would read as a clash with "Not started" rather than as its
+# own thing, on top of red-vs-red being a bad pair for red-green
+# colourblindness (see POP_TYPE_COLORS above for the same concern).
+OVERSAMPLED_BORDER <- "#6C3483" # darkened 2026-08-24 (was #8E44AD) — Jack: outline wasn't clear enough
+
 # Overall app "chrome" theme — first pass, expected to be revised. Navbar
 # and sidebar (filter panel) get the dark blue/grey; the main body stays
 # the Bootstrap default white/black (not overridden here) so cards, tables
@@ -390,32 +402,83 @@ org_id_choices <- compute_filter_choices("partner", list())
 # date-range aware: app.R's `filtered_stratum` reactive calls this on
 # `filtered_subs()` (already scoped by date range + every other filter)
 # rather than on the full, unfiltered `submissions_raw`.
-# The single definition of "achieved" (counts toward a stratum's target)
-# used everywhere the dashboard reports achieved-vs-target: completed, not
-# a later duplicate copy, AND successfully linked to a sampling frame point
-# — an unmatched submission can't be attributed to any specific stratum's
-# target, so it must never be counted as achieved anywhere, even in a
-# tile/chart that isn't literally built from compute_progress_by_stratum()
-# below. Use this instead of writing the filter condition out again.
+# Two definitions, deliberately kept separate everywhere the dashboard
+# reports numbers (added 2026-08-24, per Jack — teams were treating
+# oversampling in easy clusters as compensating for undersampling
+# elsewhere, and the dashboard's own "% of target" figures were
+# unintentionally reinforcing that belief by counting the surplus):
+#
+# - COLLECTED: every completed interview that actually happened in the
+#   field, full stop — no dedup, no match requirement, no cap. "How much
+#   work was done." Use is_collected() for this.
+# - ACHIEVED: only what counts toward the sample frame — completed, not a
+#   duplicate, matched to a real point, AND capped at each CLUSTER's own
+#   target_households before being summed up to stratum/LGA/partner level.
+#   Capping has to happen at the cluster grain, not after summing to
+#   stratum: an oversampled cluster's surplus would otherwise still mask
+#   an undersampled cluster in the same LGA even after this fix, just one
+#   level up. Use is_achieved() + compute_progress_by_stratum() for this —
+#   never write either filter condition out again by hand.
+is_collected <- function(df) {
+  df$interview_outcome == "completed"
+}
 is_achieved <- function(df) {
   df$interview_outcome == "completed" & !df$is_duplicate & !is.na(df$matched_survey_id)
 }
 
+# cluster_id -> target_households, used only to CAP achieved at the
+# cluster level below — same source (psu_hexagons_sf/psu_sites_sf) the
+# Coverage Map's oversampled-cluster border and the partner digest's
+# "Oversampled clusters" sheet already use, so all three agree on what
+# counts as a cluster's target. Static (doesn't depend on subs), computed
+# once rather than inside compute_progress_by_stratum().
+cluster_targets <- bind_rows(
+  st_drop_geometry(psu_hexagons_sf) %>% select(cluster_id, target_households),
+  st_drop_geometry(psu_sites_sf) %>% select(cluster_id, target_households)
+) %>%
+  distinct(cluster_id, .keep_all = TRUE) %>%
+  mutate(target_households = as.numeric(target_households))
+
 compute_progress_by_stratum <- function(subs) {
   completed_matched <- subs %>% filter(is_achieved(.))
 
-  achieved <- completed_matched %>% count(matched_strata_id, name = "achieved_n")
+  # ---- ACHIEVED: cap at cluster level FIRST, then sum to stratum ----------
+  achieved_by_cluster <- completed_matched %>%
+    filter(!is.na(matched_cluster_id)) %>%
+    count(matched_cluster_id, matched_strata_id, name = "cluster_achieved_n") %>%
+    left_join(cluster_targets, by = c("matched_cluster_id" = "cluster_id")) %>%
+    mutate(
+      target_households = coalesce(target_households, 0),
+      # a cluster with no real target (missing/0) contributes nothing
+      # counted — never lets an unrecognised cluster inflate achieved
+      capped_achieved_n = pmin(cluster_achieved_n, target_households)
+    )
+  achieved <- achieved_by_cluster %>%
+    group_by(matched_strata_id) %>%
+    summarise(achieved_n = sum(capped_achieved_n), .groups = "drop")
+
   # separate count (not pivot_wider) so a filtered subset with zero reserve
-  # rows just produces a zero-row table, not a missing/erroring column
+  # rows just produces a zero-row table, not a missing/erroring column.
+  # NOT capped the same way as achieved_n — this is a diagnostic ratio
+  # (how much of the counted total came from the reserve list), not part
+  # of the target-tracking arithmetic, so it's out of scope for this fix.
   achieved_reserve <- completed_matched %>%
     filter(matched_status == "reserve") %>%
     count(matched_strata_id, name = "achieved_reserve_n")
   achieved <- achieved %>% left_join(achieved_reserve, by = "matched_strata_id")
 
+  # ---- COLLECTED: raw, uncapped, includes duplicates — matched to a
+  # stratum via the same (pop_type + admin2) key achieved_n uses, which
+  # (unlike matched_survey_id/matched_cluster_id) doesn't require a
+  # specific-point match, just that pop_type and admin2 were both present.
+  collected <- subs %>% filter(is_collected(.)) %>% count(matched_strata_id, name = "collected_n")
+
   strata_frame %>%
     left_join(achieved, by = c("strata_id" = "matched_strata_id")) %>%
+    left_join(collected, by = c("strata_id" = "matched_strata_id")) %>%
     mutate(
       achieved_n = coalesce(achieved_n, 0L),
+      collected_n = coalesce(collected_n, 0L),
       achieved_reserve_n = coalesce(achieved_reserve_n, 0L),
       pct_reserve_used = ifelse(achieved_n > 0, achieved_reserve_n / achieved_n, NA_real_),
       pct_achieved = ifelse(target_sample > 0, achieved_n / target_sample, NA_real_),
@@ -446,7 +509,10 @@ partner_progress_by_lga <- function(org_id_val) {
   progress_by_stratum %>%
     filter(adm2_pcode %in% my_adm2) %>%
     group_by(region, adm1_name, adm2_pcode, adm2_name) %>%
-    summarise(target_sample = sum(target_sample, na.rm = TRUE), achieved_n = sum(achieved_n, na.rm = TRUE), .groups = "drop") %>%
+    summarise(
+      target_sample = sum(target_sample, na.rm = TRUE), achieved_n = sum(achieved_n, na.rm = TRUE),
+      collected_n = sum(collected_n, na.rm = TRUE), .groups = "drop"
+    ) %>%
     mutate(
       pct_achieved = ifelse(target_sample > 0, achieved_n / target_sample, NA_real_),
       status = case_when(
@@ -583,6 +649,49 @@ pct_color <- function(pct) {
 }
 
 fmt_pct <- function(x) ifelse(is.na(x), "-", percent(x, accuracy = 1))
+# NA-safe numeric rounding for KPI tiles — added 2026-08-25 after finding
+# several KPIs (mod_representativeness.R's household-size boxes,
+# mod_enumerator.R's avg-submissions box) rendered the literal string
+# "NaN" on an empty filtered slice instead of the app's usual "-", because
+# they called round(mean(...)) directly with no NA guard. is.na(NaN) is
+# TRUE in R, so this catches both a genuine NA and an empty-vector NaN.
+fmt_num <- function(x, digits = 1) ifelse(is.na(x), "-", round(x, digits))
+
+# Small (i) icon + hover-tooltip, for attaching a plain-language definition
+# to any figure that could otherwise be misread (added 2026-08-24, for the
+# Collected/Achieved distinction — see is_collected()/is_achieved() above).
+# Use inside a value_box title or card_header: title = info_title("Label",
+# "definition text"). Bare info_icon() is for composing into a header that
+# already has its own layout (e.g. a table column name).
+#
+# `color`: the default (text-muted, a mid-grey) only reads well on light
+# backgrounds. bslib's value_box(theme=...) themes here (bs_theme() in
+# app.R: primary="#1B2A4A" navy, success="#1E7B4D", warning="#D99A2B")
+# render "primary" as a solid dark fill but "success"/"warning" as a much
+# lighter tint — text-muted grey has poor contrast on the first, fine on
+# the other two (confirmed 2026-08-25, Jack). Pass color = "white" (or
+# similar) for a tile on a dark/saturated theme instead of changing the
+# shared default, which would just break the cases that already work.
+info_icon <- function(definition, color = NULL) {
+  bslib::tooltip(
+    icon(
+      "circle-info",
+      class = if (is.null(color)) "text-muted" else NULL,
+      style = paste0(
+        "font-size: 0.75em; margin-left: 6px; cursor: help;",
+        if (!is.null(color)) paste0(" color: ", color, ";") else ""
+      )
+    ),
+    definition,
+    placement = "top"
+  )
+}
+info_title <- function(label, definition, icon_color = NULL) {
+  div(
+    style = "display: flex; align-items: center; justify-content: space-between;",
+    span(label), info_icon(definition, color = icon_color)
+  )
+}
 
 # ---- server-side histogram binning -----------------------------------------
 # plotly's type="histogram" ships the RAW column to the browser and bins it

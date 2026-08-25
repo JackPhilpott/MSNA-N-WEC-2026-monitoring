@@ -49,6 +49,20 @@ mod_home_ui <- function(id) {
             "pipeline output."
           ),
           p(
+            strong("Collected vs. Achieved: "),
+            "wherever this dashboard reports progress against target, it draws a hard line ",
+            "between ", strong("Collected"), " (every completed interview actually done in the ",
+            "field — includes oversampled surplus and duplicates) and ", strong("Achieved"),
+            " (completed, matched, non-duplicate interviews, capped at each CLUSTER's own ",
+            "target before being summed up to LGA/partner level — what actually counts toward ",
+            "the sample frame). A cluster that's been oversampled never contributes more than ",
+            "its own target to Achieved, so padding an easy-to-reach cluster can't compensate ",
+            "for, or mask, under-coverage somewhere else. A large Collected-vs-Achieved gap for ",
+            "a partner or LGA usually means wasted operational effort on oversampling, not real ",
+            "progress. Look for the ", icon("circle-info", class = "text-muted"), " icon next to ",
+            "a figure for its exact definition."
+          ),
+          p(
             strong("Administrative boundary sources: "),
             "LGA (admin-2) is always drawn from ", strong("OCHA/COD"), " — the officially ",
             "endorsed humanitarian boundary dataset — and is the authoritative source ",
@@ -85,7 +99,13 @@ mod_home_ui <- function(id) {
 mod_home_server <- function(id) {
   moduleServer(id, function(input, output, session) {
     output$glance <- renderUI({
-      total_achieved <- sum(is_achieved(submissions_raw))
+      # progress_by_stratum$achieved_n, not sum(is_achieved(submissions_raw))
+      # directly (2026-08-25 fix) — the latter is uncapped and has the same
+      # oversampling-inflation issue this whole Collected/Achieved split was
+      # built to fix; progress_by_stratum already applies the cluster-level
+      # cap (see compute_progress_by_stratum(), global.R).
+      total_achieved <- sum(progress_by_stratum$achieved_n)
+      total_collected <- sum(is_collected(submissions_raw))
       target_by_pop <- strata_frame %>% group_by(pop_type) %>% summarise(target = sum(target_sample, na.rm = TRUE), .groups = "drop")
       target_non_idp <- target_by_pop$target[target_by_pop$pop_type == "non_idp"]
       target_idp <- target_by_pop$target[target_by_pop$pop_type == "idp"]
@@ -96,7 +116,14 @@ mod_home_server <- function(id) {
         class = "table table-sm",
         tags$tr(tags$td("Fielding window"), tags$td(strong(paste(format(FIELDING_START, "%d %b"), "-", format(FIELDING_PLANNED_END, "%d %b %Y"))))),
         tags$tr(tags$td("Target interviews"), tags$td(strong(comma(TOTAL_PLANNED_INTERVIEWS)))),
-        tags$tr(tags$td("Achieved so far"), tags$td(strong(comma(total_achieved), " (", fmt_pct(total_achieved / TOTAL_PLANNED_INTERVIEWS), " of target)"))),
+        tags$tr(
+          tags$td("Achieved so far", info_icon("Completed, matched, non-duplicate interviews, capped at each cluster's own target. Oversampled surplus never counts here.")),
+          tags$td(strong(comma(total_achieved), " (", fmt_pct(total_achieved / TOTAL_PLANNED_INTERVIEWS), " of target)"))
+        ),
+        tags$tr(
+          tags$td("Collected so far", info_icon("Every completed interview actually done — includes oversampled surplus, duplicates, and unmatched submissions. Total field effort, not what counts toward target.")),
+          tags$td(strong(comma(total_collected)))
+        ),
         tags$tr(tags$td("Target by population group"), tags$td(strong("Non-IDP: ", comma(target_non_idp), " / IDP: ", comma(target_idp)))),
         tags$tr(tags$td("Covered LGAs"), tags$td(strong(TOTAL_COVERED_LGAS))),
         tags$tr(tags$td("States / regions"), tags$td(strong(n_states, " states across ", n_regions, " regions (", paste(sort(unique(strata_frame$adm1_name)), collapse = ", "), ")"))),
@@ -106,10 +133,16 @@ mod_home_server <- function(id) {
 
     output$snapshot <- renderUI({
       today_n <- max(submissions_raw$submission_date, na.rm = TRUE)
+      # "that day"/"the day before" are activity counts, not a cumulative
+      # figure with a target to cap against — left on the per-row
+      # is_achieved() flag deliberately, unlike total_achieved below.
       achieved_mask <- is_achieved(submissions_raw)
       yesterday_n <- sum(submissions_raw$submission_date == (today_n - 1) & achieved_mask)
       today_count <- sum(submissions_raw$submission_date == today_n & achieved_mask)
-      total_achieved <- sum(achieved_mask)
+      # capped (progress_by_stratum), not sum(achieved_mask) directly — see
+      # the matching note in output$glance above.
+      total_achieved <- sum(progress_by_stratum$achieved_n)
+      total_collected <- sum(is_collected(submissions_raw))
       total_target <- TOTAL_PLANNED_INTERVIEWS
       last_upload <- max(submissions_raw$uploaded_at, na.rm = TRUE)
 
@@ -118,7 +151,14 @@ mod_home_server <- function(id) {
         tags$tr(tags$td("Latest submission date in the data"), tags$td(strong(format(today_n, "%d %b %Y")))),
         tags$tr(tags$td("Submissions that day"), tags$td(strong(comma(today_count)))),
         tags$tr(tags$td("Submissions the day before"), tags$td(strong(comma(yesterday_n)))),
-        tags$tr(tags$td("Total achieved to date"), tags$td(strong(comma(total_achieved), " / ", comma(total_target), " (", fmt_pct(total_achieved / total_target), ")"))),
+        tags$tr(
+          tags$td("Total achieved to date", info_icon("Completed, matched, non-duplicate interviews, capped at each cluster's own target. Oversampled surplus never counts here.")),
+          tags$td(strong(comma(total_achieved), " / ", comma(total_target), " (", fmt_pct(total_achieved / total_target), ")"))
+        ),
+        tags$tr(
+          tags$td("Total collected to date", info_icon("Every completed interview actually done — includes oversampled surplus, duplicates, and unmatched submissions.")),
+          tags$td(strong(comma(total_collected)))
+        ),
         tags$tr(tags$td("Most recent upload timestamp"), tags$td(strong(format(last_upload, "%d %b %Y %H:%M"))))
       )
     })

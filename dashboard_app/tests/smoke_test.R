@@ -13,7 +13,7 @@ testServer(mod_progress_server, args = list(
   session$flushReact()
   cat("kpi_achieved:", output$kpi_achieved, "\n")
   cat("kpi_pct:", output$kpi_pct, "\n")
-  cat("kpi_refusal:", output$kpi_refusal, "\n")
+  cat("kpi_collected:", output$kpi_collected, "\n")
   cat("kpi_days_remaining:", output$kpi_days_remaining, "\n")
   cat("trend_plot class ok:", !is.null(output$trend_plot), "\n")
   cat("region_plot class ok:", !is.null(output$region_plot), "\n")
@@ -99,7 +99,21 @@ cat("Partners rows:", nrow(partners), "of", dplyr::n_distinct(submissions_raw$or
 # legitimately be larger than submissions_raw alone, never smaller.
 stopifnot(nrow(partners) >= dplyr::n_distinct(submissions_raw$org_id))
 stopifnot(sum(partners$Submissions) >= nrow(submissions_raw))
-stopifnot(sum(partners$Achieved) == sum(is_achieved(submissions_raw)))
+# Not == (2026-08-24): Partners$Achieved is now CAPPED at each cluster's
+# own target before summing (see reports_partner_digest.R, same
+# is_collected()/is_achieved() split as global.R's
+# compute_progress_by_stratum()). Compare instead against
+# progress_by_stratum's own (correctly deduplicated, one row per cluster)
+# capped national total — Partners$Achieved can legitimately be >= that,
+# never <, since a cluster shared by more than one org has its full capped
+# total attributed to EACH org present (deliberate non-splitting
+# convention, same as partner_progress_by_lga's "shared_with" handling)
+# rather than divided between them. NOT asserting an upper bound against
+# the raw is_achieved() total — capping usually pulls the sum down, but
+# that same shared-cluster double-counting could in principle push it back
+# above the raw figure if enough clusters are genuinely multi-org, so no
+# safe upper bound exists to assert here.
+stopifnot(sum(partners$Achieved) >= sum(progress_by_stratum$achieved_n))
 stopifnot(sum(partners$Integrity.flagged) == sum(submissions_raw$any_quality_flag))
 # each tier is a SUBSET of "flagged" (documented as such in Read me — the
 # three tiers can jointly exceed Cleaning-log.flagged since one submission

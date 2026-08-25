@@ -13,6 +13,7 @@ mod_table_ui <- function(id) {
       full_screen = TRUE,
       card_header(
         "Achieved vs. target, per LGA x population group",
+        info_icon("ACHIEVED: completed, matched, non-duplicate, capped at each cluster's own target. COLLECTED: every completed interview, including oversampled surplus and duplicates — total field effort, not what counts toward target."),
         span(
           class = "text-muted", style = "font-size: 0.8em; font-weight: normal; margin-left: 8px;",
           "ETA assumes each stratum keeps its own achieved-to-date pace — a rough projection, not a commitment."
@@ -47,7 +48,9 @@ mod_table_server <- function(id, filtered_stratum) {
           State = factor(adm1_name),
           LGA = adm2_name,
           `Pop. group` = factor(unname(POP_TYPE_LABELS[pop_type])),
+          `Partner coverage` = vapply(adm2_pcode, partner_coverage_label, character(1)),
           Target = target_sample,
+          Collected = collected_n,
           Achieved = achieved_n,
           `% achieved` = pct_achieved,
           # factor (not character) so DT's column filter row renders a
@@ -66,8 +69,11 @@ mod_table_server <- function(id, filtered_stratum) {
         filter = "top",
         options = list(
           pageLength = 20,
-          order = list(list(6, "asc")),
-          columnDefs = list(list(className = "dt-right", targets = 4:6))
+          # column indices shifted by 1 (2026-08-25) after inserting
+          # Partner coverage between Pop. group and Target — 8 is now
+          # "% achieved"
+          order = list(list(8, "asc")),
+          columnDefs = list(list(className = "dt-right", targets = 5:8))
         )
       ) %>%
         formatPercentage(c("% achieved", "% from reserve"), 1) %>%
