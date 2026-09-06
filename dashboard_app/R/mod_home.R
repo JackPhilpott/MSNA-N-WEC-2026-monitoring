@@ -53,14 +53,34 @@ mod_home_ui <- function(id) {
             "wherever this dashboard reports progress against target, it draws a hard line ",
             "between ", strong("Collected"), " (every completed interview actually done in the ",
             "field — includes oversampled surplus and duplicates) and ", strong("Achieved"),
-            " (completed, matched, non-duplicate interviews, capped at each CLUSTER's own ",
-            "target before being summed up to LGA/partner level — what actually counts toward ",
+            " (completed, matched, non-duplicate interviews not confirmed for a quality ",
+            "exclusion — currently interviews under our physically-plausible duration floor, or ",
+            "with implausible food-consumption answers — capped at each CLUSTER's own target ",
+            "before being summed up to LGA/partner level — what actually counts toward ",
             "the sample frame). A cluster that's been oversampled never contributes more than ",
             "its own target to Achieved, so padding an easy-to-reach cluster can't compensate ",
             "for, or mask, under-coverage somewhere else. A large Collected-vs-Achieved gap for ",
             "a partner or LGA usually means wasted operational effort on oversampling, not real ",
             "progress. Look for the ", icon("circle-info", class = "text-muted"), " icon next to ",
             "a figure for its exact definition."
+          ),
+          p(
+            strong("A live, evolving sampling frame: "),
+            "the sampling frame — and every target figure this dashboard shows, whether ",
+            "national, per-LGA, or per-cluster — reflects the ", strong("current"), " iteration ",
+            "of an ongoing sampling process, not a single design fixed at the start of ",
+            "fielding. As partners report on accessibility (insecurity, denied access, etc.), ",
+            "newly-inaccessible areas are excluded from potential sampling, and remaining ",
+            "accessible areas can gain supplementary clusters to help make up what was lost — ",
+            "so which specific clusters and wards are currently in scope, and occasionally the ",
+            "national target itself (see the revision note under ", em("Target interviews"),
+            " in \"At a glance\"), can genuinely change over the course of fielding without any ",
+            "data-quality issue. ",
+            if (!is.na(FRAME_AS_OF_LABEL)) {
+              tagList(strong(FRAME_AS_OF_LABEL), " — every figure on this dashboard reflects this version of the frame.")
+            } else {
+              "The frame's current version date isn't available right now."
+            }
           ),
           p(
             strong("Administrative boundary sources: "),
@@ -115,19 +135,41 @@ mod_home_server <- function(id) {
       tags$table(
         class = "table table-sm",
         tags$tr(tags$td("Fielding window"), tags$td(strong(paste(format(FIELDING_START, "%d %b"), "-", format(FIELDING_PLANNED_END, "%d %b %Y"))))),
-        tags$tr(tags$td("Target interviews"), tags$td(strong(comma(TOTAL_PLANNED_INTERVIEWS)))),
         tags$tr(
-          tags$td("Achieved so far", info_icon("Completed, matched, non-duplicate interviews, capped at each cluster's own target. Oversampled surplus never counts here.")),
+          tags$td("Target interviews", info_icon("The full national design total across all 176 covered LGAs — this page always shows the national picture and is not affected by the sidebar filters. For a filtered view (by state/LGA/partner/population group), see the Progress Overview tab.")),
+          tags$td(strong(comma(TOTAL_PLANNED_INTERVIEWS)))
+        ),
+        if (HAS_TARGET_REVISION) {
+          tags$tr(
+            tags$td(colspan = 2, class = "text-muted", style = "font-size: 0.82em; padding-top: 0;",
+              paste0(
+                "Original baseline at fielding start (", format(BASELINE_TARGET_DATE, "%d %b %Y"), "): ", comma(BASELINE_TARGET_SAMPLE), ". ",
+                "Revised ", format(LATEST_TARGET_REVISION$date, "%d %b %Y"), ": now ", comma(LATEST_TARGET_REVISION$total_target),
+                " — ", LATEST_TARGET_REVISION$reason, "."
+              )
+            )
+          )
+        },
+        tags$tr(
+          tags$td("Achieved so far", info_icon("Completed, matched, non-duplicate interviews not confirmed for a quality exclusion (currently: under our physically-plausible duration floor, or implausible food-consumption answers), capped at each cluster's own target. Oversampled surplus never counts here. National total, not affected by the sidebar filters.")),
           tags$td(strong(comma(total_achieved), " (", fmt_pct(total_achieved / TOTAL_PLANNED_INTERVIEWS), " of target)"))
         ),
         tags$tr(
           tags$td("Collected so far", info_icon("Every completed interview actually done — includes oversampled surplus, duplicates, and unmatched submissions. Total field effort, not what counts toward target.")),
           tags$td(strong(comma(total_collected)))
         ),
+        tags$tr(
+          tags$td("Oversampled clusters", info_icon("Clusters with more achieved interviews than their own target_households — the surplus never counts toward Achieved or masks under-coverage elsewhere, but represents field effort spent past target that will likely need reviewing for deletion. Not a new sample design; a cluster's target is unchanged.")),
+          tags$td(strong(comma(nrow(oversampled_clusters)), " (", comma(sum(oversampled_clusters$surplus)), " surplus interviews)"))
+        ),
         tags$tr(tags$td("Target by population group"), tags$td(strong("Non-IDP: ", comma(target_non_idp), " / IDP: ", comma(target_idp)))),
         tags$tr(tags$td("Covered LGAs"), tags$td(strong(TOTAL_COVERED_LGAS))),
         tags$tr(tags$td("States / regions"), tags$td(strong(n_states, " states across ", n_regions, " regions (", paste(sort(unique(strata_frame$adm1_name)), collapse = ", "), ")"))),
-        tags$tr(tags$td("Field partners"), tags$td(strong(length(setdiff(unique(partner_lga_assignment$org_id), "other")))))
+        tags$tr(tags$td("Field partners"), tags$td(strong(length(setdiff(unique(partner_lga_assignment$org_id), "other"))))),
+        tags$tr(
+          tags$td("Partners with zero submissions", info_icon("Partners assigned at least one LGA who haven't submitted any interviews yet — worth a direct follow-up.")),
+          tags$td(strong(if (length(PARTNERS_NOT_STARTED) == 0) "None" else paste(unname(ORG_LABELS[PARTNERS_NOT_STARTED]), collapse = ", ")))
+        )
       )
     })
 
@@ -152,7 +194,7 @@ mod_home_server <- function(id) {
         tags$tr(tags$td("Submissions that day"), tags$td(strong(comma(today_count)))),
         tags$tr(tags$td("Submissions the day before"), tags$td(strong(comma(yesterday_n)))),
         tags$tr(
-          tags$td("Total achieved to date", info_icon("Completed, matched, non-duplicate interviews, capped at each cluster's own target. Oversampled surplus never counts here.")),
+          tags$td("Total achieved to date", info_icon("Completed, matched, non-duplicate interviews not confirmed for a quality exclusion (currently: under our physically-plausible duration floor, or implausible food-consumption answers), capped at each cluster's own target. Oversampled surplus never counts here. National total, not affected by the sidebar filters — same figure as \"Achieved so far\" above, shown again here alongside today's daily activity for context.")),
           tags$td(strong(comma(total_achieved), " / ", comma(total_target), " (", fmt_pct(total_achieved / total_target), ")"))
         ),
         tags$tr(

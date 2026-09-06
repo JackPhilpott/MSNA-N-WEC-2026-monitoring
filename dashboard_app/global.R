@@ -90,10 +90,26 @@ submissions_meta <- readRDS(file.path(DATA_DIR, "real_meta.rds"))
 
 FIELDING_START <- min(submissions_raw$submission_date, na.rm = TRUE)
 
+
+# filter(coverage_status == "covered", exclusion_reason == "none") (2026-09-02,
+# same WORKING-shrinks-as-a-candidate-pool concern raised for the stage2
+# frame below): unlike stage2, there's no separate FULL file at the strata
+# level to switch to — this file already carries coverage_status/
+# exclusion_reason columns of its own, so the filter is applied directly to
+# it rather than swapping sources. Currently a no-op (verified 2026-09-02:
+# all 312 rows are coverage_status=="covered"/exclusion_reason=="none"
+# already, including idp_NG021014, the specific stratum 1_sampling's build
+# log flagged) — this just makes strata_frame defensive against a future
+# resample marking a stratum excluded-but-not-dropped the same way. If
+# 1_sampling's WORKING file ever instead fully DROPS a stratum row (not
+# just marks it), this filter can't recover it — that would need a
+# strata-level FULL file mirroring the stage2 one below; ask 1_sampling for
+# one if that's ever observed.
 strata_frame <- read_csv(
-  file.path(INPUT_DIR, "sampling_frame/NGA_MSNA_2026_strata_level_sampling_frame_v2_WORKING.csv"),
+  file.path(INPUT_DIR, "sampling_frame/NGA_MSNA_2026_strata_level_sampling_frame_v5_WORKING.csv"),
   show_col_types = FALSE
-)
+) %>%
+  filter(coverage_status == "covered", exclusion_reason == "none")
 
 # Single source of truth for the two headline design numbers — every place
 # that used to hardcode or separately recompute these (Home's intro
@@ -103,12 +119,43 @@ strata_frame <- read_csv(
 TOTAL_PLANNED_INTERVIEWS <- sum(strata_frame$target_sample, na.rm = TRUE)
 TOTAL_COVERED_LGAS <- length(unique(strata_frame$adm2_pcode))
 
+# Reads FULL (not WORKING), filtered to coverage_status=="covered" &
+# exclusion_reason=="none" — same fix already applied to
+# prep_psu_geometries.R's cluster universe (2026-09-01), same reason: this
+# table is only ever used below for adm1/adm2/adm3 name+pcode lookups
+# (get_ward_choices, ward_to_lga, KNOWN_*_NAMES, adm2_name_lookup) — "does
+# this place exist", not "what's left to sample" — so it needs the frame
+# that never drops a covered row, not the shrinking candidate pool. WORKING
+# was confirmed to already be dropping fully-achieved strata's clusters
+# entirely (1_sampling's build log: idp_NG021014), which would silently
+# remove that stratum's wards from the ward filter and (if it were ever the
+# LAST pop_type left in an LGA) that LGA's own name/pcode from
+# adm2_name_lookup. col_select limited to just the columns actually used
+# downstream — FULL is 2.4x WORKING's row count (109k vs 46.5k), so reading
+# only ~40 char columns' worth less than the full one avoids re-adding the
+# kind of startup-time cost the stage2_frame_v5_full fallback (removed
+# above) caused when it read the whole 47MB file. latitude/longitude/
+# target_households (previously converted to numeric here) were never
+# actually read by anything downstream in dashboard_app/ itself — dropped
+# along with the unused columns. cluster_id WAS still needed, just not by
+# anything in dashboard_app/: cleaning/real/summarise_cleaning_logs.R's
+# summarise_cleaning_logs() (called from generate_partner_digest.R, which
+# explicitly sources this file first — see that function's own header)
+# reads household_frame$cluster_id for its ward lookup. Missed 2026-09-03
+# when this col_select was first added, since the check only looked at
+# dashboard_app/'s own usage — caught the same day when a redeploy's
+# digest-generation step failed with "column cluster_id is not found".
+# Added back here rather than in summarise_cleaning_logs.R itself, since
+# household_frame is the single shared object both places read from.
 household_frame <- read_csv(
-  file.path(INPUT_DIR, "sampling_frame/NGA_MSNA_2026_stage2_sampling_frame_v2_WORKING.csv"),
+  file.path(INPUT_DIR, "sampling_frame/NGA_MSNA_2026_stage2_sampling_frame_v5_FULL.csv"),
   show_col_types = FALSE,
-  col_types = cols(.default = "c")
+  col_types = cols_only(
+    cluster_id = "c", adm1_pcode = "c", adm1_name = "c", adm2_pcode = "c",
+    adm2_name = "c", adm3_name = "c", coverage_status = "c", exclusion_reason = "c"
+  )
 ) %>%
-  mutate(across(c(latitude, longitude, target_households), as.numeric))
+  filter(coverage_status == "covered", exclusion_reason == "none")
 
 # Boundary/geometry layers are all read at full survey precision (~15
 # significant digits — sub-millimeter) but only ever displayed on a
@@ -143,6 +190,15 @@ reduce_coord_precision <- function(sf_obj, digits = 4) {
   st_write(sf_obj, tmp, quiet = TRUE, layer_options = paste0("COORDINATE_PRECISION=", digits))
   st_read(tmp, quiet = TRUE)
 }
+
+# The geometry-repair step for accessible_area_lga_ward_portions.shp
+# (needed because reduce_coord_precision() corrupts that layer specifically
+# — see accessibility_sf below) now lives in cleaning/prep/
+# prep_accessibility_layer.R, run at prep time rather than on every app
+# startup. It used to be a repair_accessibility_geometry() function defined
+# here and called live below; moved out 2026-09-02 (see accessibility_sf's
+# own comment for why) — no longer anything to call at runtime, so removed
+# from here rather than left as dead code.
 
 # National (unfiltered) — the Coverage Map wants full-Nigeria context (all
 # states, non-assessment ones shown greyed rather than just omitted).
@@ -266,6 +322,27 @@ ward_to_lga <- household_frame %>%
   filter(!is.na(adm3_name), adm3_name != "NA") %>%
   distinct(adm2_name, adm3_name)
 
+# ---- known state/LGA/ward names, straight from the current frame -----------
+# Root-caused 2026-09-01, per Jack (ZOA's Partner Report showed 152
+# collected, but Progress Overview/Coverage Map showed 146 even with every
+# filter reset): app.R's filtered_subs() excludes a row whenever its
+# submitted admin1/admin2_submitted/admin3_submitted isn't in the CURRENT
+# filter selection -- but "select all" only ever offers names the frame
+# currently recognises. A submitted ward that used to be valid but was
+# renamed/merged/dropped in a frame revision (exactly what just happened
+# with the resampling batches, e.g. ZOA's "Lahodu" and "Hamma Ali
+# Marabawa" — 5 + 1 = 6, precisely the gap) can never be "selected",
+# because it was never offered as a choice — so it silently vanishes from
+# every LGA-level view even though Partner Report (which doesn't route
+# through the ward/LGA picker at all) still counts it correctly. These
+# sets let filtered_subs() tell "genuinely no ward info" (NA — already
+# handled) apart from "a real value the frame just doesn't recognise
+# anymore" (should still count toward its LGA, just can't be individually
+# ward-filtered) rather than treating both as excludable.
+KNOWN_STATE_NAMES <- unique(household_frame$adm1_name)
+KNOWN_LGA_NAMES <- unique(household_frame$adm2_name)
+KNOWN_WARD_NAMES <- unique(ward_to_lga$adm3_name)
+
 # canonical partner id -> display name. irc/lhi split from a single-select
 # question (l_org_id) in the live tool (cleaning/MSNA_Data_Cleaning/kobo_tool/
 # NGA2605_MSNA_Kobo_10082026.xlsx) — they're separate organisations with
@@ -308,6 +385,176 @@ partner_coverage_label <- function(pc) {
   orgs <- coverage_orgs_by_adm2[[pc]]
   if (is.null(orgs)) "Not partner-assigned" else paste(unname(ORG_LABELS[orgs]), collapse = ", ")
 }
+
+# ---- accessibility layer (1_sampling/resampling/, copied in via cleaning/
+# prep/prep_accessibility_layer.R) — partners report which of their own
+# LGA-scoped ward portions are currently inaccessible (insecurity, denied
+# access, etc.); default is Accessible until a partner explicitly reports
+# otherwise. This reclassifies the already-delivered clusters partners are
+# actually fielding — it is NOT a new sample design, no clusters have been
+# added/removed/reallocated. Map layer + completeness indicator only for
+# now (2026-08-25) — the sampling frame itself isn't tagged with
+# accessibility yet in this dashboard, that's a deliberate separate
+# follow-up (Jack: pending decisions there).
+#
+# The source data spells partner names differently ("IMC", "Solidarités")
+# than this dashboard's canonical org_id/ORG_LABELS pair — this table
+# reconciles the two so hover popups and the completeness count below stay
+# consistent with the rest of the dashboard.
+#
+# FIXED 2026-08-28: this key was "Solidarité" (missing the trailing "s")
+# until today - stale since 1_sampling renamed the partner everywhere on
+# 2026-08-27 (a truncated name in their raw source data, unrelated to this
+# dashboard). The mismatch meant accessibility_partner_label() silently
+# produced the literal string "NA" in the Coverage Map's hover popup for
+# any ward Solidarités reported on, and accessibility_reported_org_ids
+# counted a phantom NA "partner" instead of crediting "si" (the national
+# total happened to still read 9 either way - one NA swapped for one real
+# entry - so this wasn't visible from the headline count alone). Re-
+# verified 2026-08-28 against the live, current-day ward CSV: every
+# distinct partner string maps 1:1 onto a real org_id, none unmapped.
+ACCESSIBILITY_PARTNER_TO_ORG <- c(
+  "ACF" = "acf", "CARE" = "care", "COOPI" = "coopi", "CRS" = "crs", "DRC" = "drc",
+  "FACT" = "fact", "FHI 360" = "fhi360", "IMC" = "imc", "INTERSOS" = "intersos",
+  "IRC" = "irc", "LHI" = "lhi", "Malteser" = "malteser", "MDM" = "mdm",
+  "NRC" = "nrc", "PLAN" = "plan", "Save the Children" = "sci",
+  "Solidarités" = "si", "Street Child of Nigeria" = "street_child", "ZOA" = "zoa"
+)
+
+# splits a "; "-separated multi-partner cell (joint-coverage LGAs, same
+# irc/lhi-style arrangement ORG_LABELS' header note describes — none of the
+# joint cells have actually been reported on yet as of 2026-08-25, but the
+# split handles it correctly whenever one does) into canonical ORG_LABELS
+# names; "" for a blank/NA cell (nothing reported yet on that ward portion).
+accessibility_partner_label <- function(raw) {
+  vapply(raw, function(x) {
+    if (is.na(x) || !nzchar(x)) return("")
+    org_ids <- unname(ACCESSIBILITY_PARTNER_TO_ORG[trimws(strsplit(x, ";")[[1]])])
+    paste(unname(ORG_LABELS[org_ids]), collapse = ", ")
+  }, character(1))
+}
+
+# Source shapefile is in a projected metre CRS (Yoff/UTM zone 28N, used
+# upstream for its own area_km2/pop_total zonal stats) — st_transform(4326)
+# before reduce_coord_precision() so it renders correctly in Leaflet, same
+# as every other boundary layer here. DBF's 10-character field name limit
+# truncated the source attribute names (confirmed against the shapefile's
+# own .csv sidecar) — renamed back to their full/readable form immediately
+# so the rest of the app never has to know about the truncation.
+# Reads the PRECOMPUTED, already-repaired file (2026-09-02, emergency perf
+# fix — dashboard failed to start on shinyapps.io, "startup took too
+# long"). Was previously st_read(the raw .shp) %>% st_transform(4326) %>%
+# reduce_coord_precision() %>% repair_accessibility_geometry() run fresh
+# on every single app startup (~3.7s locally, likely much more on a
+# shared/constrained shinyapps.io worker) — loading the precomputed file
+# back takes ~0.15s instead. That exact pipeline now runs at the END of
+# cleaning/prep/prep_accessibility_layer.R instead, right after it copies
+# in a fresh accessible_area_lga_ward_portions.shp from 1_sampling — so
+# this .gpkg regenerates automatically every time that prep script is
+# rerun (i.e. every accessibility refresh) rather than needing a separate
+# manual precompute step to remember. Don't repoint this line at the raw
+# .shp again — that reintroduces the startup cost this fixed.
+accessibility_sf <- st_read(file.path(INPUT_DIR, "accessibility/accessible_area_lga_ward_portions_repaired.gpkg"), quiet = TRUE) %>%
+  rename(
+    adm2_pcode = adm2_pc, adm2_name = adm2_nm, adm1_pcode = adm1_pc, adm1_name = adm1_nm,
+    wardname = wardnam, area_km2 = are_km2, pop_total = pop_ttl, pop_type = pop_typ,
+    accessible_status = accssb_, status_source = stts_sr,
+    reporting_partners = rprtng_, reason_category = rsn_ctg, covering_partners = cvrng_p
+  ) %>%
+  mutate(
+    reporting_partner_label = accessibility_partner_label(reporting_partners),
+    covering_partner_label = accessibility_partner_label(covering_partners)
+  )
+
+# Ward-level table (not the shapefile) is the source for the completeness
+# indicator below — one row per partner's own LGA-ward portion, the actual
+# grain a partner reports against (the shapefile's rows are the same
+# information geometrically re-split by LGA boundary for mapping, a
+# different portioning of the same underlying reports).
+accessibility_ward_df <- read_csv(
+  file.path(INPUT_DIR, "accessibility/master_accessibility_status_ward_level.csv"),
+  show_col_types = FALSE
+)
+
+# "X of 19 partners reported" — the completeness indicator every view of
+# this data must carry (Jack, 2026-08-25: as of the last copy only a
+# subset of partners have submitted a report, so this is a live, partial,
+# evolving picture that must never be presented as final). Computed live
+# off accessibility_ward_df each time it's refreshed, not hardcoded, so it
+# self-corrects as more reports land. TOTAL_ACCESSIBILITY_PARTNERS is the
+# dashboard's own canonical list of actually-active partners
+# (partner_lga_assignment's distinct org_id, the same 19 used everywhere
+# else, e.g. partner_adm2 above) — NOT ORG_LABELS itself (which also lists
+# "jrs" and "other", neither an active assigned partner) and NOT derived
+# from accessibility_ward_df (that would silently shrink if a partner
+# simply has no ward portion in a given extract).
+TOTAL_ACCESSIBILITY_PARTNERS <- length(unique(partner_lga_assignment$org_id))
+accessibility_reported_org_ids <- accessibility_ward_df %>%
+  filter(`Status source` == "confirmed_by_partner_report") %>%
+  pull(`Reporting partner(s)`) %>%
+  strsplit(";") %>%
+  unlist() %>%
+  trimws() %>%
+  {unique(unname(ACCESSIBILITY_PARTNER_TO_ORG[.]))}
+N_ACCESSIBILITY_PARTNERS_REPORTED <- length(accessibility_reported_org_ids)
+
+# ---- per-LGA accessibility summary for the Coverage Map's LGA hover popup
+# (2026-08-26): ward-portion accessible/inaccessible counts, and population
+# remaining accessible split by pop type. Both source files (copied by
+# prep_accessibility_layer.R) join cleanly against this dashboard's own
+# sampling frame with NO name-fuzzy-matching needed, since both come from
+# the same 1_sampling pipeline that produced the frame itself — verified
+# 2026-08-26: the LGA-level CSV's 176 (State, LGA) pairs all exact-match
+# strata_frame's own adm1_name/adm2_name, and the strata-level CSV's own
+# "Strata ID" column already matches strata_frame$strata_id's exact format.
+#
+# The population-remaining-accessible figure specifically comes from the
+# impact workbook's "Strata Level" sheet, NOT the LGA-level CSV's own
+# population columns — those turned out to be the unreduced full design
+# population (verified directly against the sampling frame: Mobbar's LGA-
+# CSV figure matched strata_frame's n_pop exactly, despite Mobbar being
+# 100% reported inaccessible), not a remaining-accessible figure.
+accessibility_lga_ward_counts <- read_csv(
+  file.path(INPUT_DIR, "accessibility/master_accessibility_status_lga_level.csv"),
+  show_col_types = FALSE
+) %>%
+  left_join(
+    strata_frame %>% distinct(adm1_name, adm2_name, adm2_pcode),
+    by = c("State" = "adm1_name", "LGA" = "adm2_name")
+  ) %>%
+  filter(!is.na(adm2_pcode)) %>%
+  transmute(
+    adm2_pcode,
+    n_ward_portions = `Total wards (LGA-scoped portions)`,
+    n_ward_portions_inaccessible = `Wards reported inaccessible`
+  )
+
+# One label per adm2_pcode, e.g. "Non-IDP: 92% (154,568 of 167,331) | IDP:
+# 88% (12,345 of 14,029)" — an LGA with only one pop-type stratum (most
+# LGAs) just shows that one; omitted (not shown as "0%") for a pop type the
+# LGA never had a stratum for at all, same sparse non_idp/idp coverage
+# strata_frame itself has.
+accessibility_pop_remaining_label <- read_csv(
+  file.path(INPUT_DIR, "accessibility/accessibility_strata_level.csv"),
+  show_col_types = FALSE
+) %>%
+  left_join(strata_frame %>% distinct(strata_id, adm2_pcode), by = c("Strata ID" = "strata_id")) %>%
+  filter(!is.na(adm2_pcode)) %>%
+  transmute(
+    adm2_pcode,
+    label = paste0(
+      `Pop type`, ": ", round(`% of population remaining`), "% (",
+      formatC(round(`Updated population within accessible area`), big.mark = ",", format = "d"), " of ",
+      formatC(round(`Total population (design, n_pop)`), big.mark = ",", format = "d"), ")"
+    )
+  ) %>%
+  group_by(adm2_pcode) %>%
+  summarise(pop_remaining_label = paste(label, collapse = " | "), .groups = "drop")
+
+accessibility_lga_summary <- accessibility_lga_ward_counts %>%
+  left_join(accessibility_pop_remaining_label, by = "adm2_pcode") %>%
+  mutate(pop_remaining_label = coalesce(pop_remaining_label, "n/a"))
+
 # submitted admin2 -> canonical (adm1_pcode, adm2_pcode) via the frame, used
 # to join submissions (which only carry names, as typed/selected in KoBo) to
 # the boundary/target data (keyed by pcode).
@@ -412,18 +659,29 @@ org_id_choices <- compute_filter_choices("partner", list())
 #   field, full stop — no dedup, no match requirement, no cap. "How much
 #   work was done." Use is_collected() for this.
 # - ACHIEVED: only what counts toward the sample frame — completed, not a
-#   duplicate, matched to a real point, AND capped at each CLUSTER's own
-#   target_households before being summed up to stratum/LGA/partner level.
-#   Capping has to happen at the cluster grain, not after summing to
-#   stratum: an oversampled cluster's surplus would otherwise still mask
-#   an undersampled cluster in the same LGA even after this fix, just one
-#   level up. Use is_achieved() + compute_progress_by_stratum() for this —
-#   never write either filter condition out again by hand.
+#   duplicate, matched to a real point, not a confirmed quality exclusion,
+#   AND capped at each CLUSTER's own target_households before being summed
+#   up to stratum/LGA/partner level. Capping has to happen at the cluster
+#   grain, not after summing to stratum: an oversampled cluster's surplus
+#   would otherwise still mask an undersampled cluster in the same LGA
+#   even after this fix, just one level up. Use is_achieved() +
+#   compute_progress_by_stratum() for this — never write either filter
+#   condition out again by hand.
+#   quality_exclusion_reason (added 2026-08-30, per Jack): a row confirmed
+#   for deletion on grounds beyond the duplicate/match checks above —
+#   currently duration_under_20 (audit-log interview length below the
+#   physically-plausible floor) or fcs_zero (implausible food-consumption
+#   answers). Sourced from data/CONFIRMED_QUALITY_EXCLUSIONS.csv, a
+#   decoupled/precomputed file (see prep_real_submissions.R's own comment
+#   on why) rather than computed live here. Deliberately excluded from
+#   Achieved only, NOT Collected — Collected stays "did the interview
+#   happen in the field," full stop.
 is_collected <- function(df) {
   df$interview_outcome == "completed"
 }
 is_achieved <- function(df) {
-  df$interview_outcome == "completed" & !df$is_duplicate & !is.na(df$matched_survey_id)
+  df$interview_outcome == "completed" & !df$is_duplicate & !is.na(df$matched_survey_id) &
+    is.na(df$quality_exclusion_reason)
 }
 
 # cluster_id -> target_households, used only to CAP achieved at the
@@ -432,6 +690,35 @@ is_achieved <- function(df) {
 # "Oversampled clusters" sheet already use, so all three agree on what
 # counts as a cluster's target. Static (doesn't depend on subs), computed
 # once rather than inside compute_progress_by_stratum().
+#
+# FULL-frame fallback (2026-09-01, per Jack): the WORKING frame is
+# deliberately a shrinking candidate pool — 1_sampling's own build log
+# confirms it drops a cluster's remaining rows once a) it's fully achieved
+# (nothing left to nominate) or b) its ward is newly marked inaccessible.
+# Both are expected outcomes of a resample, not data loss — but
+# psu_hexagons_sf/psu_sites_sf are geometry layers that may not have been
+# regenerated for every such cluster, so a handful drop out of the lookup
+# above entirely. Without this, an unrecognised cluster's target defaults
+# to 0 (see coalesce() below), silently zeroing every achieved interview
+# in it rather than leaving it uncapped — caught 2026-09-01 via a 361-
+# interview/37-cluster gap, 92% of it FACT. The FULL frame (unlike
+# WORKING) never drops a row regardless of achieved/accessibility status,
+# so it's a complete source for exactly the clusters WORKING no longer
+# carries. Only fills gaps — bind_rows() + distinct() keeps the spatial
+# layers' own value wherever they already have one.
+# stage2_frame_v5_full fallback REMOVED (2026-09-02, emergency perf fix
+# ahead of a live presentation — dashboard was failing to start on
+# shinyapps.io: "unable to connect to worker... startup took too long").
+# This was a 47MB full-column CSV read added as a target_households
+# fallback for clusters missing from the spatial layers. It's no longer
+# needed: prep_psu_geometries.R was fixed the same day to source its
+# cluster universe from FULL (not the shrinking WORKING pool), so
+# psu_hexagons_sf/psu_sites_sf now carry a target for 100% of covered
+# clusters on their own — verified this fallback was contributing 0 extra
+# rows before removing it. If a future resampling batch reintroduces a
+# gap here, re-run prep_psu_geometries.R first (that's the real fix) —
+# don't re-add this fallback as a bandage, it cost real startup time for
+# a case that shouldn't exist once the geometry source is current.
 cluster_targets <- bind_rows(
   st_drop_geometry(psu_hexagons_sf) %>% select(cluster_id, target_households),
   st_drop_geometry(psu_sites_sf) %>% select(cluster_id, target_households)
@@ -495,6 +782,176 @@ compute_progress_by_stratum <- function(subs) {
 # since a report handed to a partner should reflect total progress, not
 # whatever date range happened to be selected when it was generated).
 progress_by_stratum <- compute_progress_by_stratum(submissions_raw)
+
+# ---- oversampled clusters (2026-08-27) — moved here from reports_partner_
+# digest.R (that file's own copy removed, this is now the single source
+# both use) so the dashboard can show the same oversampling analytics the
+# partner digest already had — one cluster's surplus submissions can't
+# count toward or mask under-coverage elsewhere (see compute_progress_by_
+# stratum() above), but the surplus itself, and which partner is
+# responsible for it, was previously only visible in the digest workbook
+# and the Coverage Map's purple border/tooltip — no count, no table, no
+# assigned-vs-submitting-partner mismatch check anywhere else. A sampling-
+# DESIGN question (achieved vs. target_households), not a response-quality
+# one, so computed from cluster_targets (same source the Coverage Map's
+# border and Progress by LGA capping already use), not the cleaning logs.
+compute_oversampled_clusters <- function(subs) {
+  achieved_flag <- is_achieved(subs)
+
+  # FULL-frame fallback removed (2026-09-02, see cluster_targets above) —
+  # psu_hexagons_sf/psu_sites_sf alone now cover 100% of covered clusters.
+  cluster_target <- bind_rows(
+    st_drop_geometry(psu_hexagons_sf) %>% select(cluster_id, adm1_name, adm2_name, adm2_pcode, pop_type, target_households),
+    st_drop_geometry(psu_sites_sf) %>% select(cluster_id, adm1_name, adm2_name, adm2_pcode, pop_type, target_households)
+  ) %>%
+    distinct(cluster_id, .keep_all = TRUE) %>%
+    mutate(target_households = as.numeric(target_households))
+
+  achieved_by_cluster <- subs[achieved_flag, ] %>%
+    group_by(matched_cluster_id) %>%
+    summarise(achieved_n = n(), submitting_org_ids = paste(sort(unique(org_id)), collapse = ", "), .groups = "drop")
+
+  cluster_target %>%
+    left_join(achieved_by_cluster, by = c("cluster_id" = "matched_cluster_id")) %>%
+    mutate(achieved_n = coalesce(achieved_n, 0L), submitting_org_ids = coalesce(submitting_org_ids, "")) %>%
+    filter(target_households > 0, achieved_n > target_households) %>%
+    mutate(surplus = achieved_n - target_households, pct_over_target = achieved_n / target_households - 1) %>%
+    arrange(desc(surplus))
+}
+
+# Static/unfiltered default, same spirit as progress_by_stratum above — the
+# Home page's national headline and the Partner Report's per-partner count
+# both want total-to-date, not whatever the sidebar's date filter happens
+# to show.
+oversampled_clusters <- compute_oversampled_clusters(submissions_raw)
+
+# ---- partners with zero submissions so far (2026-08-27) — moved here from
+# reports_partner_digest.R (same reasoning as oversampled_clusters above).
+# "Assigned" means actually has an LGA in partner_lga_assignment (excludes
+# "other", the coalesce fallback for the one LGA with no confirmed match —
+# not a partner anyone can actually follow up with).
+PARTNERS_ASSIGNED <- setdiff(names(partner_adm2)[lengths(partner_adm2) > 0], "other")
+PARTNERS_NOT_STARTED <- setdiff(PARTNERS_ASSIGNED, submissions_raw$org_id)
+
+# ---- partner-vs-partner progress comparison (Progress Overview tab, added
+# 2026-08-30 at Jack's request) — one row per assigned partner: target vs
+# achieved to date, their OWN pace since their OWN first submission (not
+# the global FIELDING_START — a partner that started late shouldn't look
+# artificially behind just because the x-axis starts from day one of the
+# whole assessment), and a naive linear projection of their finish date
+# against the hard FIELDING_PLANNED_END deadline. v1 only: current pace is
+# a whole-period average since the partner's own start, not a trailing
+# window — Jack confirmed this is fine for now, a recent-pace variant can
+# follow later if the whole-period average proves too slow to react to a
+# partner actually speeding up or slowing down.
+#
+# "Target" here matches partner_progress_by_lga's definition below: every
+# stratum in every LGA assigned to this partner (partner_lga_assignment),
+# not just LGAs where this partner's own org_id has actually shown up —
+# consistent with how the rest of the dashboard scopes a partner's target.
+today_for_pace <- max(submissions_raw$submission_date, na.rm = TRUE)
+
+partner_progress_summary <- lapply(PARTNERS_ASSIGNED, function(org) {
+  my_adm2 <- partner_adm2[[org]]
+  if (is.null(my_adm2)) my_adm2 <- character(0)
+  totals <- progress_by_stratum %>%
+    filter(adm2_pcode %in% my_adm2) %>%
+    summarise(target_sample = sum(target_sample, na.rm = TRUE), achieved_n = sum(achieved_n, na.rm = TRUE))
+
+  start_date <- suppressWarnings(min(submissions_raw$submission_date[submissions_raw$org_id == org], na.rm = TRUE))
+  has_started <- is.finite(start_date)
+  days_active <- if (has_started) as.numeric(today_for_pace - start_date) + 1 else NA_real_
+  current_pace <- if (has_started && days_active > 0) totals$achieved_n / days_active else NA_real_
+  remaining <- max(totals$target_sample - totals$achieved_n, 0)
+  days_left_to_deadline <- as.numeric(FIELDING_PLANNED_END - today_for_pace) + 1
+  required_pace <- if (days_left_to_deadline > 0) remaining / days_left_to_deadline else NA_real_
+  projected_finish <- if (!is.na(current_pace) && current_pace > 0 && remaining > 0) {
+    today_for_pace + ceiling(remaining / current_pace)
+  } else if (remaining <= 0) {
+    as.Date(NA)
+  } else {
+    as.Date(NA)
+  }
+
+  status <- case_when(
+    totals$target_sample <= 0 ~ "Complete",
+    totals$achieved_n >= totals$target_sample ~ "Complete",
+    !has_started ~ "Not started",
+    is.na(current_pace) || current_pace <= 0 ~ "Behind pace",
+    projected_finish <= FIELDING_PLANNED_END ~ "On pace",
+    TRUE ~ "Behind pace"
+  )
+
+  # Who else is assigned any of this partner's LGAs, if anyone (same
+  # coverage_orgs_by_adm2 lookup partner_progress_by_lga's own shared_with
+  # uses below) — surfaced because achieved_n/pct_achieved above is the
+  # WHOLE LGA's progress, not this partner's own submissions alone. Without
+  # this, a partner who hasn't submitted anything yet but shares an LGA
+  # with an active partner shows a confusing "Not started" + nonzero %
+  # combination with no visible explanation (caught by Jack 2026-08-30:
+  # LHI showing ~5% while also "Not started").
+  shared_with <- {
+    others <- setdiff(unique(unlist(coverage_orgs_by_adm2[my_adm2])), org)
+    if (length(others) == 0) "" else paste(unname(ORG_LABELS[others]), collapse = ", ")
+  }
+
+  tibble(
+    org_id = org, partner_label = unname(ORG_LABELS[org]),
+    target_sample = totals$target_sample, achieved_n = totals$achieved_n,
+    pct_achieved = ifelse(totals$target_sample > 0, totals$achieved_n / totals$target_sample, NA_real_),
+    shared_with = shared_with,
+    start_date = if (has_started) start_date else as.Date(NA),
+    days_active = days_active, current_daily_pace = current_pace, required_daily_pace = required_pace,
+    projected_finish_date = projected_finish, status = status
+  )
+}) %>%
+  dplyr::bind_rows() %>%
+  # sorted by % of target achieved, lowest first (2026-08-30, per Jack — not
+  # by pace: besides being a second, redundant sort key once this one's in
+  # place, pace naturally reads as a partner ranking ("worst pace") in a way
+  # that could land badly, whereas sorting on the plain % figure doesn't
+  # editorialise beyond the number itself).
+  arrange(pct_achieved)
+
+# ---- baseline sampling target + revision history (added 2026-08-30, ahead
+# of the resampling/exclusion-area changes about to start) — see
+# cleaning/real/sanity_checks.R's check_target_revision() for the write
+# side. First row is always the original fielding-start baseline (31,506);
+# any later row is a dated, reasoned change to the live total. The live
+# total itself is never frozen anywhere — it's always just
+# sum(strata_frame$target_sample) as computed above — this is purely the
+# "here's what it used to be, and why it changed" narration layer for the
+# UI, so a partner (or Jack) glancing at Home doesn't just see 31,506
+# quietly become a different number with no explanation.
+target_revision_log <- read_csv(file.path(DATA_DIR, "TARGET_REVISION_LOG.csv"), show_col_types = FALSE) %>%
+  arrange(date)
+BASELINE_TARGET_SAMPLE <- target_revision_log$total_target[1]
+BASELINE_TARGET_DATE <- target_revision_log$date[1]
+HAS_TARGET_REVISION <- nrow(target_revision_log) > 1
+LATEST_TARGET_REVISION <- if (HAS_TARGET_REVISION) tail(target_revision_log, 1) else NULL
+
+# ---- "figures as of" caption source — the sampling frame's own version
+# stamp (written by 1_sampling, already copied in alongside the frame
+# files; see cleaning/real/sanity_checks.R's read_frame_version()), not
+# previously surfaced anywhere in the dashboard itself. Falls back to NA
+# gracefully if the stamp file isn't present for some reason — every UI
+# use of this must handle that (omit the caption, don't error).
+FRAME_AS_OF_DATE <- {
+  stamp_path <- file.path(INPUT_DIR, "sampling_frame/_frame_version.txt")
+  if (file.exists(stamp_path)) {
+    lines <- readLines(stamp_path, warn = FALSE)
+    m <- grep("^stamped_at:", lines, value = TRUE)
+    if (length(m) == 1) sub("^stamped_at: ", "", m) else NA_character_
+  } else {
+    NA_character_
+  }
+}
+# ready-to-drop-in caption text for any tab showing targets/achieved figures
+FRAME_AS_OF_LABEL <- if (!is.na(FRAME_AS_OF_DATE)) {
+  paste0("Sampling frame as of ", format(as.Date(substr(FRAME_AS_OF_DATE, 1, 10)), "%d %b %Y"))
+} else {
+  NA_character_
+}
 
 # ---- per-partner progress (for the Partner Report tab) ----------------------
 

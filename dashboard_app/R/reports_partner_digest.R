@@ -132,37 +132,6 @@ digest_section_divider <- function(wb, sheet, col, n_data_rows) {
   )
 }
 
-# ---- oversampled clusters ---------------------------------------------------
-# Sampling-DESIGN question (achieved vs. target_households), not a response-
-# quality one, so it's computed straight from the same target_households the
-# Coverage Map itself uses (psu_hexagons_sf/psu_sites_sf — see mod_map.R's
-# cluster_achieved()/cluster_status() for the pattern this mirrors), not
-# from the cleaning logs. Every oversampled cluster found here means
-# fieldwork days spent past target, and likely surplus submissions that
-# will need deleting once a decision's made on which ones to keep — see
-# Read me sheet.
-compute_oversampled_clusters <- function() {
-  achieved_flag <- is_achieved(submissions_raw)
-
-  cluster_target <- bind_rows(
-    st_drop_geometry(psu_hexagons_sf) %>% select(cluster_id, adm1_name, adm2_name, adm2_pcode, pop_type, target_households),
-    st_drop_geometry(psu_sites_sf) %>% select(cluster_id, adm1_name, adm2_name, adm2_pcode, pop_type, target_households)
-  ) %>%
-    distinct(cluster_id, .keep_all = TRUE) %>%
-    mutate(target_households = as.numeric(target_households))
-
-  achieved_by_cluster <- submissions_raw[achieved_flag, ] %>%
-    group_by(matched_cluster_id) %>%
-    summarise(achieved_n = n(), submitting_org_ids = paste(sort(unique(org_id)), collapse = ", "), .groups = "drop")
-
-  cluster_target %>%
-    left_join(achieved_by_cluster, by = c("cluster_id" = "matched_cluster_id")) %>%
-    mutate(achieved_n = coalesce(achieved_n, 0L), submitting_org_ids = coalesce(submitting_org_ids, "")) %>%
-    filter(target_households > 0, achieved_n > target_households) %>%
-    mutate(surplus = achieved_n - target_households, pct_over_target = achieved_n / target_households - 1) %>%
-    arrange(desc(surplus))
-}
-
 build_partner_quality_digest_excel <- function(file, cleaning_log) {
   achieved_flag <- is_achieved(submissions_raw)
 
@@ -221,14 +190,13 @@ build_partner_quality_digest_excel <- function(file, cleaning_log) {
       off_hours = sum(flag_off_hours), .groups = "drop"
     )
 
-  # assigned-but-zero-submissions partners, so this doesn't have to be
-  # worked out separately each time — excludes org codes with no LGA
-  # assignment at all (e.g. "jrs"), and "other", which isn't a real
-  # organisation but global.R's coalesce() fallback for the one LGA with
-  # no confirmed partner match (see filter_base) — not a partner anyone
-  # can actually follow up with.
-  assigned <- setdiff(names(partner_adm2)[lengths(partner_adm2) > 0], "other")
-  not_started <- setdiff(assigned, submissions_raw$org_id)
+  # assigned-but-zero-submissions partners — PARTNERS_NOT_STARTED (global.R,
+  # moved there 2026-08-27 so the dashboard's Home page can show the same
+  # rollup) already excludes org codes with no LGA assignment at all (e.g.
+  # "jrs") and "other" (global.R's coalesce() fallback for the one LGA with
+  # no confirmed partner match — not a partner anyone can actually follow
+  # up with).
+  not_started <- PARTNERS_NOT_STARTED
 
   flagged_detail <- submissions_raw %>%
     strip_row_level_pii() %>%
@@ -244,8 +212,9 @@ build_partner_quality_digest_excel <- function(file, cleaning_log) {
     ) %>%
     arrange(Partner, desc(Date))
 
-  # ---- oversampled clusters --------------------------------------------------
-  oversampled <- compute_oversampled_clusters()
+  # ---- oversampled clusters (compute_oversampled_clusters(), global.R —
+  # moved there 2026-08-27, same reasoning as PARTNERS_NOT_STARTED above) --
+  oversampled <- oversampled_clusters
   oversampled_by_org <- oversampled %>%
     tidyr::separate_rows(submitting_org_ids, sep = ", ") %>%
     filter(submitting_org_ids != "") %>%
@@ -458,12 +427,14 @@ build_partner_quality_digest_excel <- function(file, cleaning_log) {
   write_para(paste(
     "\"Collected\" vs \"Achieved\" (Partners/Enumerators sheets): Collected is every completed interview,",
     "full stop — includes oversampled surplus and duplicates, i.e. total field effort. Achieved is what",
-    "actually counts toward the sample frame — capped at each CLUSTER's own target before being summed up,",
+    "actually counts toward the sample frame — completed, matched, non-duplicate, and not a confirmed",
+    "quality exclusion (currently: under our physically-plausible duration floor, or implausible",
+    "food-consumption answers) — capped at each CLUSTER's own target before being summed up,",
     "so a partner can't inflate their Achieved by overshooting an easy cluster while another goes unmet. A",
     "big Collected-vs-Achieved gap on the Partners sheet usually means oversampling of easy-to-reach areas —",
     "wasted operational resource, not real progress. Enumerators' \"Achieved\" is deliberately NOT capped the",
     "same way (no individual per-enumerator target exists to cap against) — read it as their own",
-    "completed/matched/non-duplicate count, not a coverage figure."
+    "completed/matched/non-duplicate/not-quality-excluded count, not a coverage figure."
   ))
   write_para(paste(
     "On the Partners/Enumerators sheets: \"Tier A/B/C\" are counts of DISTINCT SUBMISSIONS with an issue in",

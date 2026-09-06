@@ -13,12 +13,15 @@ mod_table_ui <- function(id) {
       full_screen = TRUE,
       card_header(
         "Achieved vs. target, per LGA x population group",
-        info_icon("ACHIEVED: completed, matched, non-duplicate, capped at each cluster's own target. COLLECTED: every completed interview, including oversampled surplus and duplicates — total field effort, not what counts toward target."),
+        info_icon("ACHIEVED: completed, matched, non-duplicate, not a confirmed quality exclusion (under our duration floor, or implausible food-consumption answers), capped at each cluster's own target. COLLECTED: every completed interview, including oversampled surplus and duplicates — total field effort, not what counts toward target."),
         span(
           class = "text-muted", style = "font-size: 0.8em; font-weight: normal; margin-left: 8px;",
           "ETA assumes each stratum keeps its own achieved-to-date pace — a rough projection, not a commitment."
         )
       ),
+      if (!is.na(FRAME_AS_OF_LABEL)) {
+        div(class = "text-muted", style = "font-size: 0.8em; padding: 0 12px;", FRAME_AS_OF_LABEL)
+      },
       DTOutput(ns("table"))
     )
   )

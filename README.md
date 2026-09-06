@@ -2231,3 +2231,273 @@ drift 17→19 rows, negative-duration 22→23 — consistent with more of the
 CRS/Bassa-pattern (missing pop_type) submissions still arriving, not a
 new problem. Still unacknowledged in `SANITY_WARNINGS.txt`, still Jack's
 to review.
+
+## Update (2026-08-29/30) — partner data-recovery workbook initiative launched ("Households Worth Saving")
+
+Before deleting/resampling every flagged interview, checked whether a
+meaningful share could instead be RECOVERED via partner correction — an
+enumerator picking the wrong pre-assigned point/listing number nearby,
+rather than genuinely bad data. Investigated GPS duplicates/distant points
+(non-IDP), IDP listing-number duplicates, and missing household listings
+across all 19 assigned partners, working from the raw KoBo export
+(`raw_data.xlsx`) rather than the anonymised export, since only the raw
+file carries GPS/device fields like `dist_btn_sample_collected`.
+
+Turned the investigation into per-partner deliverables: a workbook +
+covering email per partner, with Excel dropdowns constrained to each
+cluster's own still-available households/listing numbers, a same-cluster-
+only recovery policy (tightened from an earlier same-state draft once it
+became clear several "confident" candidates weren't genuine in-cluster
+matches), and an auto-detected "frozen GPS" enumerator flag. Confirmed a
+device-side GPS hard-limit Jack introduced mid-collection (non-IDP: blocks
+>150m from the assigned point) explains most of the wandering-far pattern
+but only a third of the duplicate-point pattern — most duplicates are a
+genuinely nearby but WRONG point, which the buffer can't distinguish from
+a correct one.
+
+Full 19-partner batch generated the evening of 2026-08-30 (2 of 19 —
+FHI360, LHI — excluded, zero submissions to review). **Nothing sent to any
+partner yet** at this point — generation and sending are deliberately
+separate steps, confirmed explicitly before anything went out.
+
+## Update (2026-08-31) — sampling frame's resampling batch rebuilt
+
+Rebuilt `prep_psu_geometries.R`'s cluster-geometry union to include 9 new-
+cluster batch files from `1_sampling/resampling/output/resample_runs/`
+(FACT/IMC/INTERSOS with both non-IDP+IDP batches, COOPI/Save the
+Children/ZOA with non-IDP only) alongside the frozen 2026-08-06 design-
+frame archive, after 1_sampling's own session flagged that the archive
+alone was undercounting real coverage (~91% overlap, a real 334-cluster
+gap that the pipeline's then 90%-threshold sanity check wasn't tight
+enough to catch on its own). Verified 100% overlap afterward (3,639 of
+3,639 covered clusters found). Frame stamped 2026-08-31 23:38 (46,563
+stage2 rows, 3,192 clusters).
+
+## Update (2026-09-01) — frame drift quantified; target revised to 30,342; ZOA discrepancy fixed; accessibility-crash bug found; redeployed live
+
+Actioned a 3-issue diagnostic 1_sampling's own session had written up
+overnight (Jack: "before you action anything, I'm about to go to bed"):
+(1) a `stage2_frame_v4_full`-style filter needed on the household frame,
+(2) the frozen design-frame archive from 2026-08-31 above, (3) sourcing
+the cluster universe from FULL rather than the shrinking WORKING pool —
+`compute_progress_by_stratum()`'s cluster-target lookup was defaulting a
+cluster's target to 0 for anything not found in the spatial layers,
+silently zeroing every achieved interview in it rather than leaving it
+uncapped. Quantified the real damage before calling it fixed: 361
+interviews / 37 clusters (92% FACT) — the raw "frame drift" warning counts
+(thousands of rows) had made this look far larger than its actual
+Achieved-figure impact.
+
+**Target revised 31,506 → 30,342** (logged in
+`data/TARGET_REVISION_LOG.csv`): "Major re-definition of the accessibility
+areas at a Ward and Cluster level across the assessment area. Large areas
+are now excluded from potential sampling nomination, and other remaining
+accessible areas have received a large amount of additional clusters to
+supplement those lost within the inaccessible area exclusions."
+
+**ZOA discrepancy root-caused**: Partner Report showed 152 collected,
+Progress Overview/Coverage Map showed 146, with every sidebar filter reset
+to "everything selected." Cause: `filtered_subs()` excluded any submitted
+admin1/admin2/admin3 value not currently offered as a filter choice — a
+ward renamed/merged/dropped in the frame resample above (ZOA's "Lahodu"
+and "Hamma Ali Marabawa", 5+1=6, exactly the gap) could never be
+"selected" since it was never offered, so it silently vanished from every
+LGA-routed view even though Partner Report (no filter routing) still
+counted it correctly. Fixed via `KNOWN_STATE_NAMES`/`KNOWN_LGA_NAMES`/
+`KNOWN_WARD_NAMES` in `global.R` — a submitted value the current frame
+doesn't recognise now falls through rather than being excluded.
+
+**Accessibility-layer crash found and fixed**: toggling the Accessibility
+map layer crashed the whole browser session. Root-caused (reproduced
+offline, no browser needed) to `reduce_coord_precision()` — safe for every
+other boundary layer — corrupting `accessible_area_lga_ward_portions.shp`
+specifically: rounding to 4 decimal places collapsed nearby vertices in
+its fine-grained ward-portion polygons, leaving 23% invalid and 133 empty.
+Built `repair_accessibility_geometry()` (extract GEOMETRYCOLLECTION
+fragments, `st_union()` with s2 disabled, since s2 rejects this kind of
+near-degenerate input rather than resolving it).
+
+Accessibility layer refreshed from 1_sampling (stamped 14:45). Ran a full
+refresh + redeploy with everything above live.
+
+## Update (2026-09-02) — live outage from a startup-time regression, fixed; strata-level FULL-frame gap and three smaller hardening fixes
+
+Dashboard failed to start on shinyapps.io ("Unable to connect to worker
+after 60.00 seconds; startup took too long") roughly 30 minutes before
+Jack needed to present it. Root-caused to two additions from the prior
+day's frame-fix work: a 47MB `stage2_frame_v4_full` CSV read (a fallback
+that had since become unnecessary once `prep_psu_geometries.R`'s rebuild
+made the spatial layers alone cover 100% of clusters) and
+`repair_accessibility_geometry()` recomputing itself from scratch on every
+single app startup (~3.7s locally, more on a constrained shinyapps.io
+worker). Fixed by removing the former outright and precomputing the
+latter into a static file (`accessible_area_lga_ward_portions_repaired.gpkg`).
+Local `global.R` load time: 11.6s → 6.9s. Redeployed via a fast targeted
+path (skip the full refresh+digest, just re-bundle and push) given the
+time pressure — confirmed successful, past the "Starting instances" stage
+that had previously failed.
+
+Once resolved, worked through the outstanding-issues list from the whole
+two-day push:
+- Fixed the same WORKING-vs-FULL gap in `strata_frame`/`household_frame`
+  (`global.R`) already fixed at cluster level the day before — confirmed
+  a real, if currently small, impact (187 previously-invisible wards
+  recovered once `household_frame` switched to FULL).
+- Wired the accessibility geometry repair into `prep_accessibility_layer.R`
+  itself so the precomputed `.gpkg` regenerates automatically on every
+  accessibility refresh, instead of needing a separate manual precompute
+  step to remember.
+- Hardened `prep_real_submissions.R`'s "pick the latest anonymised export"
+  logic to break same-date ties by file mtime instead of `list.files()`
+  ordering luck (two 2026-09-01-dated files under different naming
+  conventions happened to resolve correctly, but only by luck).
+- Tightened `prep_psu_geometries.R`'s cluster-overlap sanity threshold
+  from 90% to 98% — the 91% real gap that started the whole 2026-08-31
+  investigation wouldn't have tripped the old threshold.
+- Added a Home-page paragraph explaining the sampling frame is live and
+  evolving (every target figure — national/LGA/cluster — reflects the
+  current iteration, not a fixed one-time design), closing with the
+  frame's own "as of" date (`FRAME_AS_OF_LABEL`) — the same convention
+  already used on Coverage Map/Partner Report/Progress tabs, now also on
+  Home.
+
+## Update (2026-09-03) — `reports/` reorganised around the recovery-workbook workflow
+
+`reports/` was flat (digest `.xlsx` files and `partner_data_recovery/`
+side by side) and the recovery-workbook tooling itself was split across
+three places — generated workbooks in `reports/partner_data_recovery/
+<Partner>/`, verification/repair tooling in `cleaning/real/
+data_recovery_responses/`, and the actual generation scripts sitting
+un-committed in a Claude scratchpad. Consolidated into one layout that
+mirrors the real workflow (develop workbook → send → receive response →
+review/verify → approve/reject → feed either the achieved-submissions
+overlay or a 1_sampling resampling handoff):
+
+- `reports/partner_digests/` — the daily `MSNA_2026_partner_digest_*.xlsx`
+  files, moved out of bare `reports/` (`generate_partner_digest.R` updated
+  to write here).
+- `reports/partner_data_recovery/outputs/<Partner>/` — generated workbooks
+  + email drafts (was directly under `partner_data_recovery/`).
+- `reports/partner_data_recovery/inputs/` — where a partner's returned
+  workbook goes before verification (was `cleaning/real/
+  data_recovery_responses/returned/`).
+- `reports/partner_data_recovery/scripts/` — every script in the pipeline,
+  now together: generation (`full_batch_pipeline.R`, `build_workbook_fn.R`,
+  `build_email_fn.R`, `run_full_batch.R` — rescued from the scratchpad,
+  never previously committed anywhere), verification (`verify_data_
+  recovery_response.py`, `xlsx_repair.py`), the per-partner correction
+  scripts (`build_idp_listing_duplicates_data.R`, `build_zoa_idp_listing_
+  supplement.py`), and the new `issue_tracker.R`/`issue_tracker.py`.
+
+`issue_tracker.R`/`.py` is new: a persistent `recovery_issue_tracker.csv`
+(one row per detected issue, status pending/sent/confirmed/rejected/
+contested) so a rerun of generation doesn't re-flag an issue a partner
+already resolved, and ingestion can apply the same resolution twice
+without creating a duplicate. Not yet wired into generation or
+verification — that's the next step. Two things it deliberately is NOT:
+the future overlay CSV that will apply confirmed recoveries to
+`real_submissions.csv`, or a separate data-officer-facing trace log (the
+tracker's own status/resolution columns are meant to serve that need
+directly rather than duplicating it).
+
+Also fixed while reviewing `build_idp_listing_duplicates_data.R` (built
+2026-09-03 to fix two bugs Jack found in ZOA's IDP Listing Duplicates
+sheet — see that script's own header): its admin-lookup and ceiling reads
+were still pointed at the WORKING sampling frame despite a comment
+directly above explaining they needed FULL — same WORKING-vs-FULL gap as
+`dashboard_app/global.R`'s `household_frame` two days earlier, just not
+carried through here. Confirmed harmless to the ZOA file already sent
+(its 3 clusters happened to still exist in WORKING with identical values
+either way) before fixing it for future partners.
+
+`full_batch_pipeline.R` is flagged in its own header as a frozen snapshot,
+not currently runnable — it depends on scratchpad-only intermediate `.rds`
+files and the sampling frame's superseded v2 paths. Kept for reference/as
+a rebuild starting point, not because it works today.
+
+Also built the "review, clean, and approve/reject" step the workflow was
+missing entirely: `review_recovery_response.py` — an interactive CLI that
+runs after verification, walks through every row with something to decide
+(a proposed correction, a Yes/No, a contest), and records Jack's call via
+`apply_resolution()`. Tested end to end against the FACT test fixture:
+correctly skipped ERROR-flagged rows, auto-resolved 132 uncontested
+deletions with no prompt, and correctly recorded 4 approvals + 1 overturned
+contest into the tracker.
+
+One leftover from the move: `ZOA_data_recovery_workbook_2026-08-30.xlsx`
+is still sitting in the old `reports/partner_data_recovery/ZOA/` location
+(not `outputs/ZOA/` with the rest) — the file is locked ("device or
+resource busy"), almost certainly open in Excel by someone right now.
+Close it and re-run the move (`mv` into `outputs/ZOA/`, then remove the
+now-empty old `ZOA/` folder) once it's free.
+
+**Later the same day**: confirmed the ZOA workbook above (now closed) and
+completed its move into `outputs/ZOA/`. Checked all 19 original partner
+workbooks directly — none of them (including FACT's) have the ceiling fix
+from earlier today; only ZOA has it, via the separate supplement file.
+
+Added a third rule to `build_idp_listing_duplicates_data.R`'s ceiling,
+per Jack: a cluster whose household listing is itself missing entirely
+has no real list for `households_in_cluster`/`max_observed_listing` to
+meaningfully reflect, so those clusters specifically fall back to
+`target_households` alone rather than the 3-way max. The "listing
+missing" signal itself is NOT live today — the only place it's ever been
+captured is `cleaning/combined_deletion_log.rds`, a one-time 2026-08-30
+snapshot (264 rows nationally), not refreshed since; `data/
+CONFIRMED_QUALITY_EXCLUSIONS.csv` (the currently-live deletion log) only
+tracks `duration_under_20`/`fcs_zero`, nothing listing-related. Confirmed
+this isn't a theoretical edge case: 11 real cluster/partner combinations
+currently hit it (e.g. `malteser`/`idp_NG021022_1`, `fact`/
+`idp_NG036014_7`). Worth deciding later whether "listing missing" should
+become a properly live/refreshed signal rather than a static snapshot.
+
+**Later still, same day**: the missing-listing proxy above was short-
+lived — Jack supplied the real HH Listing RandomSelect tool export
+(`cleaning/MSNA_Data_Cleaning/Kobo Downloads/hh_listing_tool/
+hh_listing.xlsx`), so the whole ceiling stopped being a proxy at all.
+Built `real_hh_listing.R`: for each cluster, take its most recent listing
+submission (re-listings grow monotonically over time — 24→30→30→42→42
+across 5 submissions for one cluster — not conflicting attempts) and use
+the union of its primary+reserve draw (not the raw full listing, and not
+the self-reported `hh_listed_count`, which hits an apparent 1000-
+submission form cap on two huge camps that primary/reserve sidesteps
+entirely). Confirmed this materially changes the numbers, not just their
+source: ZOA's 3 clusters went from a 74/69/42 proxy to a 74/47/19 real
+ceiling — the middle and last were substantially over-stated before.
+
+Rebuilt the "IDP Listing Duplicates" sheet in all 17 relevant partner
+workbooks in place (`rebuild_idp_listing_sheets.R`) — same row scope as
+each partner's original sheet, corrected ceiling, "Nearest Unclaimed
+Numbers" column dropped. Backed up `outputs/` before running. Hit and
+fixed a real bug along the way: R's `openxlsx::loadWorkbook()` →
+`saveWorkbook()` round-trip fails to re-escape the literal `&` already in
+the existing "GPS Duplicates & Distant Pts" sheet name, producing invalid
+XML that wouldn't open in Excel at all — caught by actually trying to
+re-open every rebuilt file afterward, not by trusting the R script's own
+success message. Fixed with a small targeted post-save patch
+(`fix_openxlsx_roundtrip.py`), now called automatically after every save.
+Verified all 17 rebuilt files open cleanly and every OTHER sheet
+(Confirmed Deletions, Missing HH Listings, Cluster Availability,
+Enumerator Performance, READ ME) has an identical row count to its
+backup — only the intended sheet changed. Regenerated ZOA's separate
+supplement the same way (superseded a few hours later, see below).
+Backups of all 19 original files sit in `reports/partner_data_recovery/
+_backup_before_real_listing_fix_2026-09-03/` — safe to delete once Jack's
+confirmed the rebuilt files look right.
+
+**Course-corrected, same evening**: the separate ZOA supplement file
+above was based on a misreading — Jack actually wanted ZOA's full-
+reconciliation treatment (every real IDP interview, not just flagged
+ones, plus an "Is Duplicate" column) delivered as their OWN "IDP Listing
+Duplicates" sheet, same name/position as everyone else, not a second
+file. Deleted the standalone supplement and its builder script
+(`build_zoa_idp_listing_supplement.py`), and taught
+`rebuild_idp_listing_sheets.R` a `FULL_MODE_ORGS` list (currently just
+`zoa`) — ZOA's own sheet now carries all 82 rows with the extra column
+and an explanatory note appended to their READ ME, while every other
+partner keeps the standard flagged-only scope untouched. Re-ran the full
+batch from backup again and re-verified: ZOA's sheet correctly sits
+between "GPS Duplicates & Distant Pts" and "Missing HH Listings" like
+everyone else's, its defined-name dropdown ranges resolve to the right
+cluster/count (74/19/47), and a spot-checked standard partner (ACF) is
+unaffected (still 11 columns, no "Is Duplicate", 32 rows).

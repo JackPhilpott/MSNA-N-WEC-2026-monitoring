@@ -8,6 +8,9 @@ mod_partner_report_ui <- function(id) {
   nav_panel(
     title = "Partner Report",
     icon = icon("file-export"),
+    if (!is.na(FRAME_AS_OF_LABEL)) {
+      div(class = "text-muted", style = "font-size: 0.8em; margin-bottom: 8px;", FRAME_AS_OF_LABEL)
+    },
     layout_columns(
       col_widths = c(4, 8),
       card(
@@ -19,10 +22,10 @@ mod_partner_report_ui <- function(id) {
         downloadButton(ns("download_pdf"), "Download PDF report", class = "btn-outline-primary w-100")
       ),
       layout_columns(
-        col_widths = c(4, 4, 4, 6, 6),
+        col_widths = c(4, 4, 4, 4, 4, 4),
         value_box(title = "Target (their LGAs)", value = textOutput(ns("kpi_target")), showcase = icon("bullseye"), theme = "primary"),
         value_box(
-          title = info_title("Achieved", "Completed, matched, non-duplicate interviews — capped at each cluster's own target, so oversampling in one cluster can't count toward or mask coverage elsewhere."),
+          title = info_title("Achieved", "Completed, matched, non-duplicate interviews not confirmed for a quality exclusion (under our duration floor, or implausible food-consumption answers) — capped at each cluster's own target, so oversampling in one cluster can't count toward or mask coverage elsewhere."),
           value = textOutput(ns("kpi_achieved")), showcase = icon("clipboard-check"), theme = "success"
         ),
         value_box(
@@ -33,13 +36,17 @@ mod_partner_report_ui <- function(id) {
           title = info_title("% achieved", "Achieved (capped, see that tile) as a share of target. Not inflated by oversampling."),
           value = textOutput(ns("kpi_pct")), showcase = icon("percent"), theme = "success"
         ),
-        value_box(title = "Flagged for review", value = textOutput(ns("kpi_flagged")), showcase = icon("flag"), theme = "warning")
+        value_box(title = "Flagged for review", value = textOutput(ns("kpi_flagged")), showcase = icon("flag"), theme = "warning"),
+        value_box(
+          title = info_title("Oversampled clusters", "Clusters in this partner's coverage where their own submissions have pushed the cluster's achieved count past its target_households. The surplus doesn't count toward Achieved above, but is field effort spent past target — worth reviewing before deciding which submissions to keep. A cluster jointly worked with another partner counts for both."),
+          value = textOutput(ns("kpi_oversampled")), showcase = icon("triangle-exclamation"), theme = "warning"
+        )
       )
     ),
     card(
       card_header(
         "Progress by LGA (their assigned coverage area)",
-        info_icon("ACHIEVED: completed, matched, non-duplicate, capped at each cluster's own target. COLLECTED: every completed interview, including oversampled surplus and duplicates."),
+        info_icon("ACHIEVED: completed, matched, non-duplicate, not a confirmed quality exclusion (under our duration floor, or implausible food-consumption answers), capped at each cluster's own target. COLLECTED: every completed interview, including oversampled surplus and duplicates."),
         span(
           class = "text-muted", style = "font-size: 0.8em; font-weight: normal; margin-left: 8px;",
           "Some LGAs are jointly covered by more than one partner (see \"Shared with\") — Achieved there reflects everyone's combined submissions, not this partner's alone."
@@ -76,6 +83,21 @@ mod_partner_report_server <- function(id, selected_partners) {
     output$kpi_flagged <- renderText({
       q <- qual()
       paste0(comma(q$flagged), " (", fmt_pct(q$flag_rate), ")")
+    })
+
+    # oversampled_clusters (global.R) is static/national — filtered here to
+    # clusters where THIS partner's own org_id shows up among the
+    # submitting orgs (split properly, not a substring match, so e.g. "irc"
+    # can't accidentally match within a longer combined string).
+    partner_oversampled <- reactive({
+      req(input$report_partner)
+      oversampled_clusters[
+        vapply(strsplit(oversampled_clusters$submitting_org_ids, ", "), function(x) input$report_partner %in% x, logical(1)),
+      ]
+    })
+    output$kpi_oversampled <- renderText({
+      o <- partner_oversampled()
+      paste0(comma(nrow(o)), " (", comma(sum(o$surplus)), " surplus)")
     })
 
     output$lga_table <- renderDT({
@@ -133,7 +155,7 @@ build_partner_excel <- function(org_id_val, file) {
   writeData(
     wb, "Summary",
     paste(
-      "Achieved = capped at each cluster's own target (oversampling can't count toward or mask coverage elsewhere).",
+      "Achieved = completed, matched, non-duplicate, not a confirmed quality exclusion (under our duration floor, or implausible food-consumption answers), capped at each cluster's own target (oversampling can't count toward or mask coverage elsewhere).",
       "Collected = every completed interview actually done, including oversampled surplus and duplicates.",
       "A large Collected-vs-Achieved gap usually means oversampling of easy-to-reach clusters, not real progress."
     ),
@@ -177,7 +199,7 @@ build_partner_pdf <- function(org_id_val, file) {
     "\n\nTarget (their LGAs): ", comma(total_target), "     Achieved: ", comma(total_achieved), " (", fmt_pct(pct), ")",
     "     Collected: ", comma(total_collected),
     "\nSubmissions logged: ", comma(qual$submissions), "     Flagged for review: ", comma(qual$flagged), " (", fmt_pct(qual$flag_rate), ")",
-    "\nAchieved = capped at each cluster's own target. Collected = every completed interview, incl. oversampled surplus/duplicates."
+    "\nAchieved = capped at each cluster's own target, excludes confirmed quality exclusions (duration/food-consumption). Collected = every completed interview, incl. oversampled surplus/duplicates."
   )
   header_plot <- ggplot() + theme_void() + xlim(0, 1) + ylim(0, 1) +
     annotate("text", x = 0, y = 1, label = header_text, hjust = 0, vjust = 1, size = 4.2)

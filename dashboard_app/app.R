@@ -108,6 +108,23 @@ ui <- tagList(
     theme = bs_theme(version = 5, primary = "#1B2A4A", success = "#1E7B4D", warning = "#D99A2B", danger = "#C1443C"),
     navbar_options = navbar_options(bg = THEME_NAVBAR_BG, theme = "dark"),
     sidebar = filter_sidebar,
+    # fillable is a page_navbar()-level setting, not a nav_panel() one —
+    # nav_panel() has no fillable argument at all (confirmed against the
+    # installed bslib 0.11.0's own formals()), so the fillable=FALSE
+    # previously passed to mod_progress.R's nav_panel() silently landed in
+    # its ... and was emitted as an inert fillable="FALSE" HTML attribute
+    # (visible in the rendered page, which is why that fix looked like it
+    # had taken effect) — it never actually removed the html-fill-item/
+    # html-fill-container classes bslib uses to squeeze a tab to the
+    # viewport, so Progress Overview stayed compressed. The real
+    # mechanism: pass a character vector of nav_panel *values* here to
+    # make ONLY those tabs fillable; every value left out of the vector
+    # scrolls instead. Progress Overview is deliberately excluded — see
+    # mod_progress.R's own comment.
+    fillable = c(
+      "Home", "Coverage Map", "Progress by LGA", "Data Quality", "Partner Report", "Data Export",
+      "Enumerator Performance", "Data Integrity Checks", "Sample Representativeness"
+    ),
     mod_home_ui("home"),
     mod_progress_ui("progress"),
     mod_map_ui("map"),
@@ -416,9 +433,16 @@ server <- function(input, output, session) {
     req(poptype_sel)
     submissions_raw %>%
       filter(
-        admin1 %in% filter_ui_state$state$selected,
-        admin2_submitted %in% effective_lgas(),
-        is.na(admin3_submitted) | admin3_submitted %in% filter_ui_state$ward$selected,
+        # !(x %in% KNOWN_*) rows (2026-09-01 fix, see KNOWN_STATE_NAMES/
+        # KNOWN_LGA_NAMES/KNOWN_WARD_NAMES in global.R): a submitted name the
+        # CURRENT frame doesn't recognise at all — most often after a frame
+        # revision renames/merges/drops it — was never offered as a filter
+        # choice, so it could never be "selected" and would otherwise vanish
+        # from every LGA-level view even on a full reset. Only a recognised
+        # name that's actively NOT selected should ever be excluded here.
+        is.na(admin1) | !(admin1 %in% KNOWN_STATE_NAMES) | admin1 %in% filter_ui_state$state$selected,
+        is.na(admin2_submitted) | !(admin2_submitted %in% KNOWN_LGA_NAMES) | admin2_submitted %in% effective_lgas(),
+        is.na(admin3_submitted) | !(admin3_submitted %in% KNOWN_WARD_NAMES) | admin3_submitted %in% filter_ui_state$ward$selected,
         is.na(pop_type) | pop_type %in% poptype_sel,
         submission_date >= input$f_daterange[1],
         submission_date <= input$f_daterange[2],

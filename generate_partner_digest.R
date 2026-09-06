@@ -23,8 +23,11 @@
 #
 # Run from this file's location (2_monitoring/ project root).
 #
-# Writes to reports/ (gitignored, like data/ and input_data/ — this is a
-# generated artifact you hand off directly, not something to track in git).
+# Writes to reports/partner_digests/ (gitignored, like data/ and
+# input_data/ — this is a generated artifact you hand off directly, not
+# something to track in git). Moved into its own subfolder 2026-09-03,
+# alongside reports/partner_data_recovery/, once the recovery-workbook
+# pipeline also needed a permanent home under reports/.
 
 source("cleaning/real/sanity_checks.R")
 print_sanity_banner_if_present() # re-announce any unacknowledged input-data warning — see that file's header
@@ -34,8 +37,8 @@ source("global.R")
 setwd("..")
 source("cleaning/real/summarise_cleaning_logs.R")
 
-dir.create("reports", showWarnings = FALSE)
-out_file <- file.path("reports", paste0("MSNA_2026_partner_digest_", Sys.Date(), ".xlsx"))
+dir.create("reports/partner_digests", showWarnings = FALSE, recursive = TRUE)
+out_file <- file.path("reports/partner_digests", paste0("MSNA_2026_partner_digest_", Sys.Date(), ".xlsx"))
 cleaning_log <- summarise_cleaning_logs()
 build_partner_quality_digest_excel(out_file, cleaning_log)
 
