@@ -72,8 +72,15 @@ mod_integrity_server <- function(id, filtered_subs) {
     })
 
     overmax <- reactive({
-      filtered_subs() %>%
-        filter(!is_duplicate) %>%
+      # FIX 2026-09-11: this counted every row regardless of outcome, so a
+      # batch of quick consent refusals on a busy day could trip "more than
+      # N COMPLETED interviews" without the enumerator ever exceeding a
+      # plausible number of real ~40min interviews - contradicting the tab's
+      # own label. Now scoped with the canonical is_collected() (global.R),
+      # not a hand-rolled interview_outcome check, so this can't drift from
+      # what "completed" means elsewhere on the dashboard.
+      df <- filtered_subs()
+      df[is_collected(df) & !df$is_duplicate, ] %>%
         count(enum_id, submission_date, name = "n") %>%
         filter(n > MAX_PLAUSIBLE_INTERVIEWS_PER_DAY) %>%
         arrange(desc(n))

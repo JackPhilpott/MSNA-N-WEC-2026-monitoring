@@ -94,7 +94,17 @@ mod_partner_report_server <- function(id, selected_partners) {
     output$kpi_collected <- renderText({ comma(sum(lga_df()$collected_n)) })
     output$kpi_confirmed_deletion <- renderText({ comma(sum(lga_df()$confirmed_deletion_n)) })
     output$kpi_pending_deletion <- renderText({ comma(sum(lga_df()$pending_deletion_n)) })
-    output$kpi_pct <- renderText({ fmt_pct(sum(lga_df()$achieved_n) / sum(lga_df()$target_sample_current)) })
+    output$kpi_pct <- renderText({
+      # FIX 2026-09-11: was an unguarded division - a partner whose assigned
+      # LGAs have all dropped to zero current target (fully accessibility-
+      # excluded, say) would show "Inf%" here (0/0 already rendered fine,
+      # fmt_pct()'s own NA guard catches NaN - but achieved>0/target==0 is
+      # Inf, not NaN, and slips past it). Same guard already used in the PDF
+      # export below (build_partner_pdf()) but missing here and in the Excel
+      # export.
+      denom <- sum(lga_df()$target_sample_current)
+      fmt_pct(if (denom > 0) sum(lga_df()$achieved_n) / denom else NA_real_)
+    })
     output$kpi_flagged <- renderText({
       q <- qual()
       paste0(comma(q$flagged), " (", fmt_pct(q$flag_rate), ")")
@@ -155,6 +165,9 @@ build_partner_excel <- function(org_id_val, file) {
   total_confirmed_deletion <- sum(lga_df$confirmed_deletion_n)
   total_pending_deletion <- sum(lga_df$pending_deletion_n)
   total_oversampling_surplus <- sum(lga_df$oversampling_surplus_n)
+  # FIX 2026-09-11: same zero-denominator gap as the live kpi_pct tile above -
+  # see that guard's comment for the failure case (achieved>0/target==0 -> Inf%).
+  pct_achieved_summary <- if (total_target_current > 0) total_achieved / total_target_current else NA_real_
 
   wb <- createWorkbook()
   addWorksheet(wb, "Summary")
@@ -167,7 +180,7 @@ build_partner_excel <- function(org_id_val, file) {
       Value = c(
         label, format(Sys.time(), "%d %b %Y %H:%M"), comma(total_target), comma(total_target_current),
         comma(total_achieved), comma(total_collected), comma(total_confirmed_deletion), comma(total_oversampling_surplus), comma(total_pending_deletion),
-        fmt_pct(total_achieved / total_target_current), comma(qual$submissions), comma(qual$flagged),
+        fmt_pct(pct_achieved_summary), comma(qual$submissions), comma(qual$flagged),
         fmt_pct(qual$flag_rate), comma(qual$consent_refused)
       )
     ),

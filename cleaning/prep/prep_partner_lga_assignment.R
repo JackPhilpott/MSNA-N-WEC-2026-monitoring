@@ -55,6 +55,10 @@ suppressPackageStartupMessages({
 # prep_real_submissions.R: there's no guarantee anyone's even looking at
 # stdout when it runs.
 source("cleaning/real/sanity_checks.R")
+# FIX 2026-09-11: frame_lga below was hardcoded to "_v5_", which no longer
+# exists (current: v7) - would have failed outright the next time this
+# one-time prep script was rerun, same bug class as prep_admin3_wards.R.
+source("scripts/shared/latest_frame_file.R")
 
 ORG_COL_MAP <- c(
   "FACT" = "fact", "IMC" = "imc", "FHI 360" = "fhi360", "PLAN" = "plan",
@@ -87,7 +91,7 @@ expand_joint_irc_lhi <- function(df) {
 }
 
 frame_lga <- read_csv(
-  "input_data/sampling_frame/NGA_MSNA_2026_stage2_sampling_frame_v5_WORKING.csv",
+  latest_frame_file("NGA_MSNA_2026_stage2_sampling_frame", "WORKING"),
   show_col_types = FALSE, col_types = cols(.default = "c")
 ) %>%
   distinct(adm1_name, adm1_pcode, adm2_name, adm2_pcode) %>%
@@ -196,7 +200,7 @@ if (nrow(still_unmatched) > 0) {
   msg <- paste0(
     nrow(still_unmatched), " partner-LGA row(s) could not be matched to the sampling frame (tried exact, substring, and fuzzy): ",
     paste(unique(paste0(still_unmatched$state, "/", still_unmatched$lga)), collapse = "; "),
-    ". These will show as 'Not partner-assigned' on the dashboard until fixed — check for a naming mismatch against input_data/sampling_frame/NGA_MSNA_2026_stage2_sampling_frame_v5_WORKING.csv."
+    ". These will show as 'Not partner-assigned' on the dashboard until fixed — check for a naming mismatch against the current stage2 sampling frame (input_data/sampling_frame/, latest _v<N>_WORKING.csv)."
   )
   cat("WARNING: ", msg, "\n", sep = "")
   write_sanity_warnings(msg, source_label = "prep_partner_lga_assignment.R")

@@ -429,6 +429,33 @@ stopifnot(sum(early_progress$achieved_n) < sum(full_progress$achieved_n))
 stopifnot(sum(early_progress$achieved_n) > 0)
 cat("Date-range awareness test passed.\n")
 
+cat("\n=== Collected = Achieved + Confirmed Deletion + Oversampling Surplus identity ===\n")
+# Regression test for the one real test-coverage gap flagged in both the
+# overnight audit (2026-09-11) and independently during the achieved-
+# definition redesign the same day: nothing previously asserted this
+# identity holds, so a future change to any of the three terms (or a
+# fourth term silently sneaking in) could break it with nothing to catch
+# it - exactly the class of bug that made mod_home.R's now-fixed Collected-
+# sourcing bug possible in the first place. Holds EXACTLY at every stratum/
+# cluster (not just in aggregate): oversampling_surplus_n's pmax(..., 0)
+# floor is defensive, never actually load-bearing under the current
+# is_achieved()/is_confirmed_deletion() split - every completed row is
+# exactly one of achieved or confirmed-deletion, so the raw pre-cap
+# residual can't go negative (see that mutate()'s own comment in global.R).
+stopifnot(all(
+  full_progress$collected_n ==
+    full_progress$achieved_n + full_progress$confirmed_deletion_n + full_progress$oversampling_surplus_n
+))
+cat("Holds at every one of", nrow(full_progress), "strata (stratum grain).\n")
+
+cluster_progress_check <- compute_cluster_progress(submissions_raw)
+stopifnot(all(
+  cluster_progress_check$collected_n ==
+    cluster_progress_check$achieved_n + cluster_progress_check$confirmed_deletion_n + cluster_progress_check$oversampling_surplus_n
+))
+cat("Holds at every one of", nrow(cluster_progress_check), "clusters (cluster grain).\n")
+cat("Collected/Achieved/Confirmed Deletion/Oversampling Surplus identity test passed.\n")
+
 cat("\n=== filter feedback-loop regression test (app.R server) ===\n")
 # Regression test for the "constant refreshing/jumping" bug: the mutual
 # cross-filter observers used to call update*Input() unconditionally on

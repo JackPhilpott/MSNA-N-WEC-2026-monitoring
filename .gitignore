@@ -33,13 +33,19 @@ data/
 field_verify/
 cleaning/MSNA_Data_Cleaning/
 cleaning/*.rds
+cleaning/_archive/
 cleaning/real/*.csv
 cleaning/real/handoff_for_resampling/
 reports/partner_digests/
 reports/partner_data_recovery/inputs/
 reports/partner_data_recovery/outputs/
-reports/partner_data_recovery/_backup_before_imc_merge_2026-09-03/
-reports/partner_data_recovery/_backup_before_real_listing_fix_2026-09-03/
+# FIX 2026-09-11 (later same night): the two backup dirs previously excluded
+# here by their old top-level names were archived into
+# reports/partner_data_recovery/_archive/<date>_<reason>/ as part of the
+# same night's cleanup pass - excluding the new parent instead so this
+# doesn't silently start tracking them again. Only ever holds data-backup
+# snapshots, unlike scripts/_archive/ below (mixed - see that line).
+reports/partner_data_recovery/_archive/
 reports/partner_data_recovery/scripts/_test_fixtures/
 reports/partner_data_recovery/scripts/_archive/2026-09-06_pre_tracker_migration_backups/
 reports/partner_data_recovery/scripts/*.csv

@@ -19,8 +19,13 @@ suppressPackageStartupMessages({
   library(dplyr)
 })
 
+# FIX 2026-09-11: was hardcoded to "_v5_", which no longer exists (current:
+# v7) - would have failed outright the next time this one-time prep script
+# was rerun. See scripts/shared/latest_frame_file.R for why this is now
+# resolved dynamically instead of just bumping the number again.
+source("scripts/shared/latest_frame_file.R")
 strata_frame <- read_csv(
-  "input_data/sampling_frame/NGA_MSNA_2026_strata_level_sampling_frame_v5_WORKING.csv",
+  latest_frame_file("NGA_MSNA_2026_strata_level_sampling_frame", "WORKING"),
   show_col_types = FALSE
 )
 our_states <- unique(strata_frame$adm1_name)
