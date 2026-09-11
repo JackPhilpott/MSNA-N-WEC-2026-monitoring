@@ -53,11 +53,14 @@ mod_home_ui <- function(id) {
             "wherever this dashboard reports progress against target, it draws a hard line ",
             "between ", strong("Collected"), " (every completed interview actually done in the ",
             "field — includes oversampled surplus and duplicates) and ", strong("Achieved"),
-            " (completed, matched, non-duplicate interviews not confirmed for a quality ",
-            "exclusion — currently interviews under our physically-plausible duration floor, or ",
-            "with implausible food-consumption answers — capped at each CLUSTER's own target ",
-            "before being summed up to LGA/partner level — what actually counts toward ",
-            "the sample frame). A cluster that's been oversampled never contributes more than ",
+            " (completed, matched, non-duplicate interviews not currently flagged for ",
+            "deletion — duration floor, implausible food-consumption answers, a duplicate ",
+            "point, consent, unusually high missingness, or a missing household listing — ",
+            "capped at each CLUSTER's own target before being summed up to LGA/partner level ",
+            "— what actually counts toward the sample frame). This is a PROVISIONAL figure: an ",
+            "interview drops out the moment it's flagged, before a partner even has a chance to ",
+            "respond — that's deliberate, the incentive to engage with the recovery workbook. ",
+            "A cluster that's been oversampled never contributes more than ",
             "its own target to Achieved, so padding an easy-to-reach cluster can't compensate ",
             "for, or mask, under-coverage somewhere else. A large Collected-vs-Achieved gap for ",
             "a partner or LGA usually means wasted operational effort on oversampling, not real ",
@@ -126,7 +129,13 @@ mod_home_server <- function(id) {
       # cap (see compute_progress_by_stratum(), global.R).
       total_achieved <- sum(progress_by_stratum$achieved_n)
       total_collected <- sum(is_collected(submissions_raw))
-      target_by_pop <- strata_frame %>% group_by(pop_type) %>% summarise(target = sum(target_sample, na.rm = TRUE), .groups = "drop")
+      total_confirmed_deletion <- sum(progress_by_stratum$confirmed_deletion_n)
+      total_pending_deletion <- sum(progress_by_stratum$pending_deletion_n)
+      # 2026-09-09: target_sample_current (revised/live), not target_sample
+      # (original) - matches every other "how much is left" figure on this
+      # page; the Original vs. Revised national totals get their own row
+      # below instead of forking this by-pop-type breakdown into two.
+      target_by_pop <- progress_by_stratum %>% group_by(pop_type) %>% summarise(target = sum(target_sample_current, na.rm = TRUE), .groups = "drop")
       target_non_idp <- target_by_pop$target[target_by_pop$pop_type == "non_idp"]
       target_idp <- target_by_pop$target[target_by_pop$pop_type == "idp"]
       n_states <- length(unique(strata_frame$adm1_name))
@@ -136,27 +145,35 @@ mod_home_server <- function(id) {
         class = "table table-sm",
         tags$tr(tags$td("Fielding window"), tags$td(strong(paste(format(FIELDING_START, "%d %b"), "-", format(FIELDING_PLANNED_END, "%d %b %Y"))))),
         tags$tr(
-          tags$td("Target interviews", info_icon("The full national design total across all 176 covered LGAs — this page always shows the national picture and is not affected by the sidebar filters. For a filtered view (by state/LGA/partner/population group), see the Progress Overview tab.")),
+          tags$td("Original Target", info_icon("The frozen design-time total across all covered LGAs, unchanged since fielding began — this page always shows the national picture and is not affected by the sidebar filters.")),
           tags$td(strong(comma(TOTAL_PLANNED_INTERVIEWS)))
+        ),
+        tags$tr(
+          tags$td("Revised Target", info_icon("The LIVE total — the sum of every currently-active cluster's own target across the whole sampling roster, recalculated on every refresh. Grows automatically the moment a resampling batch adds a replacement or supplementary cluster, so it can differ from Original Target once resampling has touched a stratum. Achieved/% achieved/Status everywhere on this dashboard are computed against THIS figure, not Original Target.")),
+          tags$td(strong(comma(TOTAL_PLANNED_INTERVIEWS_CURRENT)))
         ),
         if (HAS_TARGET_REVISION) {
           tags$tr(
             tags$td(colspan = 2, class = "text-muted", style = "font-size: 0.82em; padding-top: 0;",
               paste0(
-                "Original baseline at fielding start (", format(BASELINE_TARGET_DATE, "%d %b %Y"), "): ", comma(BASELINE_TARGET_SAMPLE), ". ",
+                "Separately, the design's own baseline has itself been revised at least once: original baseline at fielding start (", format(BASELINE_TARGET_DATE, "%d %b %Y"), "): ", comma(BASELINE_TARGET_SAMPLE), ". ",
                 "Revised ", format(LATEST_TARGET_REVISION$date, "%d %b %Y"), ": now ", comma(LATEST_TARGET_REVISION$total_target),
-                " — ", LATEST_TARGET_REVISION$reason, "."
+                " — ", LATEST_TARGET_REVISION$reason, ". (A different thing from Original vs. Revised Target above — this is a deliberate, reasoned change to the design itself; Revised Target above grows automatically with the live cluster roster.)"
               )
             )
           )
         },
         tags$tr(
-          tags$td("Achieved so far", info_icon("Completed, matched, non-duplicate interviews not confirmed for a quality exclusion (currently: under our physically-plausible duration floor, or implausible food-consumption answers), capped at each cluster's own target. Oversampled surplus never counts here. National total, not affected by the sidebar filters.")),
-          tags$td(strong(comma(total_achieved), " (", fmt_pct(total_achieved / TOTAL_PLANNED_INTERVIEWS), " of target)"))
+          tags$td("Achieved so far", info_icon("Completed, matched, non-duplicate interviews not currently flagged for deletion (duration floor, fcs_zero, duplicate point, consent, percentage missing, or a missing HH listing), capped at each cluster's own target. PROVISIONAL — an interview drops out the moment it's flagged, before a partner has responded; resampling uses a narrower, settled-only figure instead. Oversampled surplus never counts here. National total, not affected by the sidebar filters.")),
+          tags$td(strong(comma(total_achieved), " (", fmt_pct(total_achieved / TOTAL_PLANNED_INTERVIEWS_CURRENT), " of Revised Target)"))
         ),
         tags$tr(
           tags$td("Collected so far", info_icon("Every completed interview actually done — includes oversampled surplus, duplicates, and unmatched submissions. Total field effort, not what counts toward target.")),
           tags$td(strong(comma(total_collected)))
+        ),
+        tags$tr(
+          tags$td("Confirmed Deleted / Pending Deletion", info_icon("Of Collected but not Achieved: CONFIRMED DELETED is a settled tracker deletion — genuinely gone, feeds resampling. PENDING DELETION is everything else not yet counted — duplicates, unmatched submissions, a still-open tracker flag, and any oversampling surplus. None of the last three currently have a partner review path the way a tracker flag does, but none are confirmed gone either. Collected always equals Achieved + Confirmed Deleted + Pending Deletion, exactly.")),
+          tags$td(strong(comma(total_confirmed_deletion), " / ", comma(total_pending_deletion)))
         ),
         tags$tr(
           tags$td("Oversampled clusters", info_icon("Clusters with more achieved interviews than their own target_households — the surplus never counts toward Achieved or masks under-coverage elsewhere, but represents field effort spent past target that will likely need reviewing for deletion. Not a new sample design; a cluster's target is unchanged.")),
@@ -185,7 +202,7 @@ mod_home_server <- function(id) {
       # the matching note in output$glance above.
       total_achieved <- sum(progress_by_stratum$achieved_n)
       total_collected <- sum(is_collected(submissions_raw))
-      total_target <- TOTAL_PLANNED_INTERVIEWS
+      total_target <- TOTAL_PLANNED_INTERVIEWS_CURRENT
       last_upload <- max(submissions_raw$uploaded_at, na.rm = TRUE)
 
       tags$table(
@@ -194,7 +211,7 @@ mod_home_server <- function(id) {
         tags$tr(tags$td("Submissions that day"), tags$td(strong(comma(today_count)))),
         tags$tr(tags$td("Submissions the day before"), tags$td(strong(comma(yesterday_n)))),
         tags$tr(
-          tags$td("Total achieved to date", info_icon("Completed, matched, non-duplicate interviews not confirmed for a quality exclusion (currently: under our physically-plausible duration floor, or implausible food-consumption answers), capped at each cluster's own target. Oversampled surplus never counts here. National total, not affected by the sidebar filters — same figure as \"Achieved so far\" above, shown again here alongside today's daily activity for context.")),
+          tags$td("Total achieved to date", info_icon("Completed, matched, non-duplicate interviews not currently flagged for deletion (duration floor, fcs_zero, duplicate point, consent, percentage missing, or a missing HH listing), capped at each cluster's own target. PROVISIONAL — an interview drops out the moment it's flagged, before a partner has responded; resampling uses a narrower, settled-only figure instead. Oversampled surplus never counts here. National total, not affected by the sidebar filters — same figure as \"Achieved so far\" above, shown again here alongside today's daily activity for context.")),
           tags$td(strong(comma(total_achieved), " / ", comma(total_target), " (", fmt_pct(total_achieved / total_target), ")"))
         ),
         tags$tr(
@@ -207,7 +224,7 @@ mod_home_server <- function(id) {
 
     output$priorities <- renderUI({
       worst_lgas <- progress_by_stratum %>%
-        filter(status != "Complete", target_sample > 0) %>%
+        filter(status != "Complete", target_sample_current > 0) %>%
         arrange(pct_achieved) %>%
         head(5)
 
@@ -220,7 +237,7 @@ mod_home_server <- function(id) {
           if (nrow(worst_lgas) == 0) tags$li("None currently far behind.") else
             lapply(seq_len(nrow(worst_lgas)), function(i) {
               r <- worst_lgas[i, ]
-              tags$li(paste0(r$adm2_name, ", ", r$adm1_name, " (", unname(POP_TYPE_LABELS[r$pop_type]), ") — ", fmt_pct(r$pct_achieved), " (", r$achieved_n, "/", r$target_sample, ")"))
+              tags$li(paste0(r$adm2_name, ", ", r$adm1_name, " (", unname(POP_TYPE_LABELS[r$pop_type]), ") — ", fmt_pct(r$pct_achieved), " (", r$achieved_n, "/", r$target_sample_current, ")"))
             })
         ),
         p(strong("Enumerators with the highest flag rates (10+ submissions):")),

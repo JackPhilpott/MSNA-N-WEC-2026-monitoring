@@ -30,7 +30,7 @@ mod_progress_ui <- function(id) {
       value_box(
         title = info_title(
           "Interviews achieved / planned",
-          "ACHIEVED: completed, matched, non-duplicate interviews not confirmed for a quality exclusion (currently: under our duration floor, or implausible food-consumption answers) — capped at each cluster's own target. A cluster that's been oversampled only ever contributes up to its target here, never more, so oversampling in one cluster can't mask under-coverage in another. Reflects your current sidebar filter selection (state/LGA/partner/population group) — the Home tab always shows the fixed national total regardless of filters, so the two can legitimately differ.",
+          "ACHIEVED: completed, matched, non-duplicate interviews not currently flagged for deletion (duration floor, fcs_zero, duplicate point, consent, percentage missing, or a missing HH listing) — capped at each cluster's own target. This is a PROVISIONAL figure: an interview drops out the moment it's flagged, even before a partner has had a chance to respond, by design — it's the incentive to engage with the recovery workbook. Resampling uses a different, narrower figure that only excludes a deletion once it's actually settled, so the two can legitimately disagree while anything is still pending. A cluster that's been oversampled only ever contributes up to its target here, never more, so oversampling in one cluster can't mask under-coverage in another. Reflects your current sidebar filter selection (state/LGA/partner/population group) — the Home tab always shows the fixed national total regardless of filters, so the two can legitimately differ.",
           icon_color = "white"
         ),
         value = textOutput(ns("kpi_achieved")),
@@ -134,12 +134,12 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum) {
       # them, to show the "Unmatched" bar), so it must NOT be the source
       # for this tile, or the achieved count here would run ahead of what
       # the % implies whenever any submission fails to match.
-      paste0(comma(sum(s$achieved_n, na.rm = TRUE)), " / ", comma(sum(s$target_sample, na.rm = TRUE)))
+      paste0(comma(sum(s$achieved_n, na.rm = TRUE)), " / ", comma(sum(s$target_sample_current, na.rm = TRUE)))
     })
 
     output$kpi_pct <- renderText({
       s <- filtered_stratum()
-      tgt <- sum(s$target_sample, na.rm = TRUE)
+      tgt <- sum(s$target_sample_current, na.rm = TRUE)
       ach <- sum(s$achieved_n, na.rm = TRUE)
       fmt_pct(if (tgt > 0) ach / tgt else NA_real_)
     })
@@ -183,7 +183,7 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum) {
       # would look faster than it really is.
       s <- filtered_stratum()
       subs <- filtered_subs()
-      target <- sum(s$target_sample, na.rm = TRUE)
+      target <- sum(s$target_sample_current, na.rm = TRUE)
       achieved <- sum(s$achieved_n, na.rm = TRUE)
       remaining <- max(target - achieved, 0)
       if (remaining <= 0) return("Target met")
@@ -280,7 +280,7 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum) {
       # extrapolate the green cumulative line and see whether it's on
       # track to cross the red line by 11 Sept — not just where it stands
       # today.
-      target_total <- sum(filtered_stratum()$target_sample, na.rm = TRUE)
+      target_total <- sum(filtered_stratum()$target_sample_current, na.rm = TRUE)
       pace_line <- tibble(
         submission_date = seq(FIELDING_START, FIELDING_PLANNED_END, by = "day")
       ) %>%
@@ -317,13 +317,13 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum) {
     output$region_plot <- renderPlotly({
       by_region_pop <- filtered_stratum() %>%
         group_by(region, pop_type) %>%
-        summarise(target_sample = sum(target_sample, na.rm = TRUE), achieved_n = sum(achieved_n, na.rm = TRUE), .groups = "drop") %>%
-        mutate(pct = ifelse(target_sample > 0, achieved_n / target_sample, 0), series = unname(POP_TYPE_LABELS[pop_type]))
+        summarise(target_sample_current = sum(target_sample_current, na.rm = TRUE), achieved_n = sum(achieved_n, na.rm = TRUE), .groups = "drop") %>%
+        mutate(pct = ifelse(target_sample_current > 0, achieved_n / target_sample_current, 0), series = unname(POP_TYPE_LABELS[pop_type]))
 
       combined <- filtered_stratum() %>%
         group_by(region) %>%
-        summarise(target_sample = sum(target_sample, na.rm = TRUE), achieved_n = sum(achieved_n, na.rm = TRUE), .groups = "drop") %>%
-        mutate(pct = ifelse(target_sample > 0, achieved_n / target_sample, 0), series = "Combined")
+        summarise(target_sample_current = sum(target_sample_current, na.rm = TRUE), achieved_n = sum(achieved_n, na.rm = TRUE), .groups = "drop") %>%
+        mutate(pct = ifelse(target_sample_current > 0, achieved_n / target_sample_current, 0), series = "Combined")
 
       s <- bind_rows(
         by_region_pop %>% select(region, pct, series),
@@ -361,7 +361,7 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum) {
       plot_ly(
         df, y = ~partner_label, x = ~pct_achieved, color = ~status, colors = partner_pace_colors,
         type = "bar", orientation = "h",
-        text = ~paste0(comma(achieved_n), " / ", comma(target_sample), " (", percent(pct_achieved, accuracy = 1), ")"),
+        text = ~paste0(comma(achieved_n), " / ", comma(target_sample_current), " (", percent(pct_achieved, accuracy = 1), ")"),
         textposition = "outside", hoverinfo = "text"
       ) %>%
         layout(
@@ -375,7 +375,10 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum) {
     output$partner_table <- renderDT({
       df <- partner_progress_summary %>%
         transmute(
-          Partner = partner_label, Target = target_sample, Achieved = achieved_n,
+          Partner = partner_label,
+          `Original Target` = target_sample, `Revised Target` = target_sample_current,
+          Collected = collected_n, `Confirmed Deleted` = confirmed_deletion_n, `Pending Deletion` = pending_deletion_n,
+          Achieved = achieved_n,
           `% achieved` = pct_achieved,
           `Shared with` = shared_with,
           `Start date` = start_date,
@@ -385,9 +388,13 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum) {
           Status = factor(status, levels = c("Behind pace", "On pace", "Complete", "Not started"))
         )
 
+      # 0-based: 0 Partner, 1 Original Target, 2 Revised Target, 3 Collected,
+      # 4 Confirmed Deleted, 5 Pending Deletion, 6 Achieved, 7 % achieved,
+      # 8 Shared with, 9 Start date, 10 Current pace, 11 Required pace,
+      # 12 Projected finish, 13 Status.
       datatable(
         df, rownames = FALSE, filter = "top",
-        options = list(pageLength = 20, order = list(list(3, "asc")), columnDefs = list(list(className = "dt-right", targets = c(1, 2, 3, 5, 6, 7, 8))))
+        options = list(pageLength = 20, order = list(list(7, "asc")), columnDefs = list(list(className = "dt-right", targets = c(1:7, 10, 11))))
       ) %>%
         formatPercentage("% achieved", 1) %>%
         formatStyle(

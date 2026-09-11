@@ -33,6 +33,24 @@ suppressPackageStartupMessages({
 DATA_DIR <- if (dir.exists("../data")) "../data" else "data"
 INPUT_DIR <- if (dir.exists("../input_data")) "../input_data" else "input_data"
 
+# 2026-09-08 rebuild: latest_frame_file() finds the CURRENT version number
+# dynamically rather than hardcoding it. Found live during this rebuild: the
+# strata/household frame reads below were hardcoded to "_v5_" while
+# 1_sampling had already moved to v6 - meaning this app's dashboard_app/
+# input_data/ mirror (what actually gets deployed) was still reading v5,
+# three versions' worth of resampling batches behind, because nothing
+# forces a hardcoded filename to get updated at each version bump. That's
+# exactly the class of bug this whole rebuild exists to close - fixing it
+# generically here, not just bumping the number to v6 and recreating the
+# identical problem at the next bump.
+latest_frame_file <- function(prefix, suffix, dir = file.path(INPUT_DIR, "sampling_frame")) {
+  pat <- paste0("^", prefix, "_v([0-9]+)_", suffix, "\\.csv$")
+  candidates <- list.files(dir, pattern = pat)
+  if (length(candidates) == 0) stop(sprintf("latest_frame_file(): no file matching %s_v<N>_%s.csv found in %s", prefix, suffix, dir))
+  versions <- as.integer(sub(pat, "\\1", candidates))
+  file.path(dir, candidates[which.max(versions)])
+}
+
 # ---- feature flags -----------------------------------------------------------
 # Analysis menu (Enumerator Performance / Data Integrity Checks / Sample
 # Representativeness) hidden from the navbar for the 2026-08-15 go-live —
@@ -106,7 +124,7 @@ FIELDING_START <- min(submissions_raw$submission_date, na.rm = TRUE)
 # strata-level FULL file mirroring the stage2 one below; ask 1_sampling for
 # one if that's ever observed.
 strata_frame <- read_csv(
-  file.path(INPUT_DIR, "sampling_frame/NGA_MSNA_2026_strata_level_sampling_frame_v5_WORKING.csv"),
+  latest_frame_file("NGA_MSNA_2026_strata_level_sampling_frame", "WORKING"),
   show_col_types = FALSE
 ) %>%
   filter(coverage_status == "covered", exclusion_reason == "none")
@@ -148,7 +166,7 @@ TOTAL_COVERED_LGAS <- length(unique(strata_frame$adm2_pcode))
 # Added back here rather than in summarise_cleaning_logs.R itself, since
 # household_frame is the single shared object both places read from.
 household_frame <- read_csv(
-  file.path(INPUT_DIR, "sampling_frame/NGA_MSNA_2026_stage2_sampling_frame_v5_FULL.csv"),
+  latest_frame_file("NGA_MSNA_2026_stage2_sampling_frame", "FULL"),
   show_col_types = FALSE,
   col_types = cols_only(
     cluster_id = "c", adm1_pcode = "c", adm1_name = "c", adm2_pcode = "c",
@@ -667,21 +685,74 @@ org_id_choices <- compute_filter_choices("partner", list())
 #   even after this fix, just one level up. Use is_achieved() +
 #   compute_progress_by_stratum() for this — never write either filter
 #   condition out again by hand.
-#   quality_exclusion_reason (added 2026-08-30, per Jack): a row confirmed
-#   for deletion on grounds beyond the duplicate/match checks above —
-#   currently duration_under_20 (audit-log interview length below the
-#   physically-plausible floor) or fcs_zero (implausible food-consumption
-#   answers). Sourced from data/CONFIRMED_QUALITY_EXCLUSIONS.csv, a
-#   decoupled/precomputed file (see prep_real_submissions.R's own comment
-#   on why) rather than computed live here. Deliberately excluded from
-#   Achieved only, NOT Collected — Collected stays "did the interview
+#   flagged_deletion_reason (added 2026-08-30 as quality_exclusion_reason,
+#   redefined 2026-09-06 per the deletion/recovery-confirmation model,
+#   STALE COMMENT FIXED 2026-09-11): a row currently flagged for deletion by
+#   any of the five ACTIVE deletion reasons (no_consent, duration floor,
+#   duplicate point, listing missing, percentage missing) — independently
+#   recomputed by cleaning/real/independent_deletion_checks.R as of
+#   2026-09-11, no longer sourced from the DO's deletion_log.R directly, see
+#   CLAUDE.md's "Independent deletion checks" section — via
+#   recovery_issue_tracker.csv — REGARDLESS of whether that flag has been
+#   confirmed, contested, or is still awaiting a partner's response.
+#   fcs_zero downgraded 2026-09-10 from an automatic deletion reason to a
+#   no-op logical-error flag — it no longer excludes anything here; see
+#   issue_tracker.R's NO_APPEAL_DELETION_REASONS header comment for the full
+#   history. This is deliberately the WIDER of two possible
+#   bases: the intended incentive is that a partner sees a flagged interview
+#   drop out of Achieved immediately, before any recovery-workbook round has
+#   even gone out, not just once it's finally settled. Deliberately excluded
+#   from Achieved only, NOT Collected — Collected stays "did the interview
 #   happen in the field," full stop.
+#   Resampling reads a DIFFERENT, narrower basis — data/
+#   CONFIRMED_DELETIONS_OVERLAY.csv, only settled (confirmed/contested)
+#   deletions — since a flagged-but-still-open record might yet be
+#   recovered and shouldn't be treated as gone for that purpose. The two
+#   numbers WILL disagree while anything is pending; that's by design, not a
+#   bug — see cleaning/real/build_confirmed_deletions_overlay.R's header for
+#   the full reasoning and both overlays.
 is_collected <- function(df) {
   df$interview_outcome == "completed"
 }
+# BUG FIX 2026-09-09: was is.na(df$flagged_deletion_reason) - found while
+# adding deletion_status (below): 10 IMC uuids registered 2026-09-03, before
+# deletion_reason existed as a tracker column, sit in the tracker at
+# status="contested" (a TERMINAL status - deletion upheld on appeal) with
+# deletion_reason genuinely NA (never backfilled). Keying exclusion off
+# `reason` meant these 10 completed/matched/non-duplicate interviews were
+# silently counting as Achieved despite being a settled deletion - reason is
+# a legacy/display field, not guaranteed non-NA; status IS guaranteed
+# non-NA for every tracker row since day one (set at registration, never
+# left blank). deletion_status mirrors the tracker's status for whatever
+# row (if any) exists for this uuid in FLAGGED_DELETIONS_OVERLAY.csv -
+# NA only when no such row exists at all, i.e. genuinely not flagged.
+# Verified this only TIGHTENS the exclusion, never loosens it: zero rows
+# have flagged_deletion_reason set with deletion_status NA (checked
+# directly against real_submissions.csv), only the reverse (these 10).
 is_achieved <- function(df) {
   df$interview_outcome == "completed" & !df$is_duplicate & !is.na(df$matched_survey_id) &
-    is.na(df$quality_exclusion_reason)
+    is.na(df$deletion_status)
+}
+# Settled deletion (status confirmed/contested) - a SUBSET of "flagged"
+# (is.na(deletion_status) is FALSE), used to split the Collected-Achieved
+# gap into Confirmed vs Pending Deletion (2026-09-09) - see
+# compute_progress_by_stratum()'s confirmed_deletion_n/pending_deletion_n
+# below for the full breakdown and why Pending also absorbs duplicates/
+# unmatched/oversampling surplus (Jack, 2026-09-09: none of those three
+# currently have any partner-facing review path either, same as a genuinely
+# pending tracker row - "not yet confirmed gone, not yet saved" either way;
+# revisit giving duplicates/unmatched an actual review path separately).
+is_confirmed_deletion <- function(df) {
+  # interview_outcome check added defensively, matching is_collected()/
+  # is_achieved()'s own scoping - a tracker row keys purely on uuid, so
+  # nothing stops one existing (in principle) for a consent_refused uuid,
+  # which is_collected() would already exclude; without this, such a row
+  # would inflate confirmed_deletion_n with no matching presence in
+  # collected_n, silently breaking the Collected = Achieved + Confirmed +
+  # Pending identity for that uuid's stratum (masked by pending_deletion_n's
+  # own floor at 0, not caught). Not observed in real data as of 2026-09-09
+  # (checked), but the condition costs nothing and removes the possibility.
+  df$interview_outcome == "completed" & !is.na(df$deletion_status) & df$deletion_status %in% c("confirmed", "contested")
 }
 
 # cluster_id -> target_households, used only to CAP achieved at the
@@ -720,11 +791,47 @@ is_achieved <- function(df) {
 # don't re-add this fallback as a bandage, it cost real startup time for
 # a case that shouldn't exist once the geometry source is current.
 cluster_targets <- bind_rows(
-  st_drop_geometry(psu_hexagons_sf) %>% select(cluster_id, target_households),
-  st_drop_geometry(psu_sites_sf) %>% select(cluster_id, target_households)
+  st_drop_geometry(psu_hexagons_sf) %>% select(cluster_id, strata_id, target_households),
+  st_drop_geometry(psu_sites_sf) %>% select(cluster_id, strata_id, target_households)
 ) %>%
   distinct(cluster_id, .keep_all = TRUE) %>%
   mutate(target_households = as.numeric(target_households))
+
+# ---- current (live) stratum target, 2026-09-08 rebuild ---------------------
+# strata_frame$target_sample is the ORIGINAL design-time figure and is
+# deliberately never touched again (kept as a stable baseline for "Original
+# target" in the dashboard). It never grew when resampling added
+# supplementary/replacement clusters, which let a stratum read "Complete"
+# once a skewed subset of the REAL roster cleared the OLD, now-too-low bar,
+# while other real, currently-open clusters sat untouched (found 2026-09-07,
+# Augie/Kebbi: 5 real open clusters at zero achieved, LGA still read
+# Complete). target_sample_current is the live figure - sum of
+# target_households across the CURRENT cluster roster per stratum, from the
+# same cluster_targets source the achieved-capping above already uses, so
+# both numbers are always computed from the one live roster, never two
+# separately-drifting sources. This is what "Complete" is now tied to;
+# target_sample stays purely for the "Original target" display column.
+strata_target_current <- cluster_targets %>%
+  group_by(strata_id) %>%
+  summarise(target_sample_current = sum(target_households, na.rm = TRUE), .groups = "drop")
+
+# TOTAL_PLANNED_INTERVIEWS_CURRENT - the live-roster counterpart to
+# TOTAL_PLANNED_INTERVIEWS (2026-09-09). Defined here, not alongside
+# TOTAL_PLANNED_INTERVIEWS above, because strata_target_current (like
+# cluster_targets) isn't available until psu_hexagons_sf/psu_sites_sf have
+# loaded - can't move earlier without moving those too. TOTAL_PLANNED_
+# INTERVIEWS itself is left untouched (still sum(strata_frame$target_sample)
+# - the frozen original) rather than repurposed, since smoke_test.R already
+# has regression tests asserting it against target_sample-based sums; adding
+# a second constant is the non-breaking way to get both numbers available.
+# Filtered to strata_frame's own covered-strata universe first (inner_join,
+# not a bare sum over every strata_id in cluster_targets) so a stray/
+# excluded stratum's clusters can't inflate this beyond what strata_frame
+# itself would ever count.
+TOTAL_PLANNED_INTERVIEWS_CURRENT <- strata_frame %>%
+  inner_join(strata_target_current, by = "strata_id") %>%
+  pull(target_sample_current) %>%
+  sum(na.rm = TRUE)
 
 compute_progress_by_stratum <- function(subs) {
   completed_matched <- subs %>% filter(is_achieved(.))
@@ -760,17 +867,52 @@ compute_progress_by_stratum <- function(subs) {
   # specific-point match, just that pop_type and admin2 were both present.
   collected <- subs %>% filter(is_collected(.)) %>% count(matched_strata_id, name = "collected_n")
 
+  # ---- CONFIRMED DELETION: settled (status confirmed/contested) tracker
+  # rows only - genuinely, permanently gone, feeds resampling too (2026-09-09,
+  # Jack's 3-status model). Counted directly (a real per-row condition),
+  # unlike Pending below.
+  confirmed_deletion <- subs %>% filter(is_confirmed_deletion(.)) %>%
+    count(matched_strata_id, name = "confirmed_deletion_n")
+
+  # ---- PENDING DELETION: deliberately a RESIDUAL, not an independently
+  # summed set of conditions (2026-09-09, Jack's call after discussion) -
+  # everything in the Collected-Achieved gap that isn't a settled deletion:
+  # duplicates, unmatched, a still-open tracker flag, AND oversampling
+  # surplus, all folded into one number ("not yet confirmed gone, not yet
+  # saved either" - none of the first three currently have any partner
+  # review path distinct from a genuinely pending tracker row, so treating
+  # them the same is honest, not a simplification that hides something).
+  # Computing this as collected_n - achieved_n - confirmed_deletion_n
+  # (rather than unioning is_duplicate/unmatched/pending-flagged/oversampling
+  # excess by hand) makes Collected = Achieved + Confirmed + Pending hold
+  # EXACTLY by construction, with no risk of a double-counted row (e.g. one
+  # that's both a duplicate AND flagged) silently breaking the reconciliation
+  # - verified against real data below this function's definition.
   strata_frame %>%
     left_join(achieved, by = c("strata_id" = "matched_strata_id")) %>%
     left_join(collected, by = c("strata_id" = "matched_strata_id")) %>%
+    left_join(confirmed_deletion, by = c("strata_id" = "matched_strata_id")) %>%
+    left_join(strata_target_current, by = "strata_id") %>%
     mutate(
       achieved_n = coalesce(achieved_n, 0L),
       collected_n = coalesce(collected_n, 0L),
+      confirmed_deletion_n = coalesce(confirmed_deletion_n, 0L),
+      pending_deletion_n = pmax(collected_n - achieved_n - confirmed_deletion_n, 0L),
       achieved_reserve_n = coalesce(achieved_reserve_n, 0L),
       pct_reserve_used = ifelse(achieved_n > 0, achieved_reserve_n / achieved_n, NA_real_),
-      pct_achieved = ifelse(target_sample > 0, achieved_n / target_sample, NA_real_),
+      # 2026-09-08: target_sample kept, unrenamed, as "Original target" - the
+      # untouched design-time figure (naming convention used consistently
+      # across this file - never let it mean something else elsewhere).
+      # target_sample_current (just joined) is the live roster total;
+      # Complete/coloring/pct_achieved now key off THAT, not the frozen
+      # original - see strata_target_current's own note above for why.
+      # coalesce guards a stratum with no live cluster in cluster_targets at
+      # all (shouldn't happen, but 0 is the safe fallback, same convention
+      # as achieved_n/collected_n above).
+      target_sample_current = coalesce(target_sample_current, 0),
+      pct_achieved = ifelse(target_sample_current > 0, achieved_n / target_sample_current, NA_real_),
       status = case_when(
-        target_sample <= 0 | achieved_n >= target_sample ~ "Complete",
+        target_sample_current <= 0 | achieved_n >= target_sample_current ~ "Complete",
         achieved_n > 0 ~ "In progress",
         TRUE ~ "Not started"
       )
@@ -782,6 +924,40 @@ compute_progress_by_stratum <- function(subs) {
 # since a report handed to a partner should reflect total progress, not
 # whatever date range happened to be selected when it was generated).
 progress_by_stratum <- compute_progress_by_stratum(submissions_raw)
+
+# ---- per-cluster Confirmed/Pending Deletion (2026-09-09, Coverage Map's
+# per-cluster popup) — deliberately NOT capped the way achieved_n is at
+# stratum grain: capping exists to stop one cluster's surplus masking
+# ANOTHER cluster's shortfall when SUMMING across several - a non-issue at
+# a single cluster's own grain, where there's nothing else to mask. So
+# achieved_n here is the same raw, uncapped figure the Coverage Map's
+# oversampled-cluster border already uses (mod_map.R's existing
+# cluster_achieved()), and there's no oversampling-excess term in Pending
+# here either (unlike the stratum version) - a cluster's own surplus is
+# still genuinely "achieved" at its own grain, just flagged separately via
+# the existing oversampled border/badge. Pending is still the residual
+# (collected - achieved - confirmed), for the same double-counting-proof
+# reason as compute_progress_by_stratum() above. Unmatched submissions
+# (no matched_cluster_id at all) can't appear in ANY cluster's numbers here,
+# same limitation cluster-level achieved already had before this change.
+compute_cluster_progress <- function(subs) {
+  scoped <- subs %>% filter(!is.na(matched_cluster_id))
+  achieved <- scoped %>% filter(is_achieved(.)) %>% count(matched_cluster_id, name = "achieved_n")
+  collected <- scoped %>% filter(is_collected(.)) %>% count(matched_cluster_id, name = "collected_n")
+  confirmed_deletion <- scoped %>% filter(is_confirmed_deletion(.)) %>% count(matched_cluster_id, name = "confirmed_deletion_n")
+
+  cluster_targets %>%
+    select(cluster_id) %>%
+    left_join(achieved, by = c("cluster_id" = "matched_cluster_id")) %>%
+    left_join(collected, by = c("cluster_id" = "matched_cluster_id")) %>%
+    left_join(confirmed_deletion, by = c("cluster_id" = "matched_cluster_id")) %>%
+    mutate(
+      achieved_n = coalesce(achieved_n, 0L),
+      collected_n = coalesce(collected_n, 0L),
+      confirmed_deletion_n = coalesce(confirmed_deletion_n, 0L),
+      pending_deletion_n = pmax(collected_n - achieved_n - confirmed_deletion_n, 0L)
+    )
+}
 
 # ---- oversampled clusters (2026-08-27) — moved here from reports_partner_
 # digest.R (that file's own copy removed, this is now the single source
@@ -854,15 +1030,25 @@ today_for_pace <- max(submissions_raw$submission_date, na.rm = TRUE)
 partner_progress_summary <- lapply(PARTNERS_ASSIGNED, function(org) {
   my_adm2 <- partner_adm2[[org]]
   if (is.null(my_adm2)) my_adm2 <- character(0)
+  # 2026-09-08: now sums both target_sample (original) and
+  # target_sample_current (live) from progress_by_stratum - remaining/
+  # pace/status below key off _current, same reasoning as compute_progress_
+  # by_stratum()'s own switch above. target_sample (original) carried
+  # through to the output tibble for display only.
   totals <- progress_by_stratum %>%
     filter(adm2_pcode %in% my_adm2) %>%
-    summarise(target_sample = sum(target_sample, na.rm = TRUE), achieved_n = sum(achieved_n, na.rm = TRUE))
+    summarise(target_sample = sum(target_sample, na.rm = TRUE),
+              target_sample_current = sum(target_sample_current, na.rm = TRUE),
+              achieved_n = sum(achieved_n, na.rm = TRUE),
+              collected_n = sum(collected_n, na.rm = TRUE),
+              confirmed_deletion_n = sum(confirmed_deletion_n, na.rm = TRUE),
+              pending_deletion_n = sum(pending_deletion_n, na.rm = TRUE))
 
   start_date <- suppressWarnings(min(submissions_raw$submission_date[submissions_raw$org_id == org], na.rm = TRUE))
   has_started <- is.finite(start_date)
   days_active <- if (has_started) as.numeric(today_for_pace - start_date) + 1 else NA_real_
   current_pace <- if (has_started && days_active > 0) totals$achieved_n / days_active else NA_real_
-  remaining <- max(totals$target_sample - totals$achieved_n, 0)
+  remaining <- max(totals$target_sample_current - totals$achieved_n, 0)
   days_left_to_deadline <- as.numeric(FIELDING_PLANNED_END - today_for_pace) + 1
   required_pace <- if (days_left_to_deadline > 0) remaining / days_left_to_deadline else NA_real_
   projected_finish <- if (!is.na(current_pace) && current_pace > 0 && remaining > 0) {
@@ -874,8 +1060,8 @@ partner_progress_summary <- lapply(PARTNERS_ASSIGNED, function(org) {
   }
 
   status <- case_when(
-    totals$target_sample <= 0 ~ "Complete",
-    totals$achieved_n >= totals$target_sample ~ "Complete",
+    totals$target_sample_current <= 0 ~ "Complete",
+    totals$achieved_n >= totals$target_sample_current ~ "Complete",
     !has_started ~ "Not started",
     is.na(current_pace) || current_pace <= 0 ~ "Behind pace",
     projected_finish <= FIELDING_PLANNED_END ~ "On pace",
@@ -897,8 +1083,15 @@ partner_progress_summary <- lapply(PARTNERS_ASSIGNED, function(org) {
 
   tibble(
     org_id = org, partner_label = unname(ORG_LABELS[org]),
-    target_sample = totals$target_sample, achieved_n = totals$achieved_n,
-    pct_achieved = ifelse(totals$target_sample > 0, totals$achieved_n / totals$target_sample, NA_real_),
+    # Naming convention, consistent with compute_progress_by_stratum() above
+    # and partner_progress_by_lga() below: target_sample = ORIGINAL (frozen),
+    # target_sample_current = live. Don't let "target_sample" silently mean
+    # different things in different functions - that ambiguity is exactly
+    # the kind of thing this rebuild exists to close.
+    target_sample = totals$target_sample, target_sample_current = totals$target_sample_current,
+    achieved_n = totals$achieved_n, collected_n = totals$collected_n,
+    confirmed_deletion_n = totals$confirmed_deletion_n, pending_deletion_n = totals$pending_deletion_n,
+    pct_achieved = ifelse(totals$target_sample_current > 0, totals$achieved_n / totals$target_sample_current, NA_real_),
     shared_with = shared_with,
     start_date = if (has_started) start_date else as.Date(NA),
     days_active = days_active, current_daily_pace = current_pace, required_daily_pace = required_pace,
@@ -967,13 +1160,21 @@ partner_progress_by_lga <- function(org_id_val) {
     filter(adm2_pcode %in% my_adm2) %>%
     group_by(region, adm1_name, adm2_pcode, adm2_name) %>%
     summarise(
-      target_sample = sum(target_sample, na.rm = TRUE), achieved_n = sum(achieved_n, na.rm = TRUE),
-      collected_n = sum(collected_n, na.rm = TRUE), .groups = "drop"
+      # 2026-09-08: target_sample = original (unchanged convention),
+      # target_sample_current = live - Complete/pct_achieved below now key
+      # off the live figure, same as compute_progress_by_stratum() and
+      # partner_progress_summary above.
+      target_sample = sum(target_sample, na.rm = TRUE),
+      target_sample_current = sum(target_sample_current, na.rm = TRUE),
+      achieved_n = sum(achieved_n, na.rm = TRUE),
+      collected_n = sum(collected_n, na.rm = TRUE),
+      confirmed_deletion_n = sum(confirmed_deletion_n, na.rm = TRUE),
+      pending_deletion_n = sum(pending_deletion_n, na.rm = TRUE), .groups = "drop"
     ) %>%
     mutate(
-      pct_achieved = ifelse(target_sample > 0, achieved_n / target_sample, NA_real_),
+      pct_achieved = ifelse(target_sample_current > 0, achieved_n / target_sample_current, NA_real_),
       status = case_when(
-        target_sample <= 0 | achieved_n >= target_sample ~ "Complete",
+        target_sample_current <= 0 | achieved_n >= target_sample_current ~ "Complete",
         achieved_n > 0 ~ "In progress",
         TRUE ~ "Not started"
       ),

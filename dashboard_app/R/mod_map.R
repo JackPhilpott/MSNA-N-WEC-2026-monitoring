@@ -16,7 +16,7 @@ mod_map_ui <- function(id) {
           style = "display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;",
           span(
             "Coverage map",
-            info_icon("Fill colour and \"% of target\" reflect ACHIEVED — completed, matched, non-duplicate, not a confirmed quality exclusion (under our duration floor, or implausible food-consumption answers), capped at each cluster's own target, so oversampling can't count toward or mask under-coverage elsewhere. Hover a cluster/LGA for its COLLECTED figure too (every completed interview, including oversampled surplus)."),
+            info_icon("Fill colour and \"% of target\" reflect ACHIEVED — completed, matched, non-duplicate, not currently flagged for deletion (duration floor, fcs_zero, duplicate point, consent, percentage missing, or a missing HH listing), capped at each cluster's own target, measured against the REVISED (live, resampling-aware) target — see the Original Target figure in each popup for the unchanged design baseline. PROVISIONAL — a flagged interview drops out immediately, before a partner responds; resampling uses a narrower, settled-only figure. Hover a cluster/LGA for its COLLECTED, CONFIRMED DELETED (settled, genuinely gone) and PENDING DELETION (everything else not yet counted — duplicates, unmatched, a still-open flag, oversampling surplus) figures too — Collected always equals Achieved + Confirmed Deleted + Pending Deletion."),
             if (!is.na(FRAME_AS_OF_LABEL)) {
               span(class = "text-muted", style = "font-size: 0.75em; font-weight: normal; margin-left: 10px;", FRAME_AS_OF_LABEL)
             }
@@ -55,14 +55,28 @@ mod_map_ui <- function(id) {
 
 mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active = reactive(TRUE)) {
   moduleServer(id, function(input, output, session) {
+    # BUG FIX 2026-09-09: pct_achieved/status here (and lga_map_data()'s own
+    # status below) used to key off target_sample (original, frozen) while
+    # compute_progress_by_stratum() itself already switched to
+    # target_sample_current (live) on 2026-09-08 - meaning the Coverage
+    # Map's own LGA "Complete" status/colour could disagree with the
+    # Progress by LGA table's status for the exact same LGA. target_sample
+    # (original) still summed and carried through for display alongside the
+    # live figure, same convention as everywhere else this split now
+    # appears - never silently dropped, just no longer what drives status.
     filtered_lga <- reactive({
       filtered_stratum() %>%
         group_by(region, adm1_pcode, adm1_name, adm2_pcode, adm2_name) %>%
         summarise(
-          target_sample = sum(target_sample, na.rm = TRUE), achieved_n = sum(achieved_n, na.rm = TRUE),
-          collected_n = sum(collected_n, na.rm = TRUE), .groups = "drop"
+          target_sample = sum(target_sample, na.rm = TRUE),
+          target_sample_current = sum(target_sample_current, na.rm = TRUE),
+          achieved_n = sum(achieved_n, na.rm = TRUE),
+          collected_n = sum(collected_n, na.rm = TRUE),
+          confirmed_deletion_n = sum(confirmed_deletion_n, na.rm = TRUE),
+          pending_deletion_n = sum(pending_deletion_n, na.rm = TRUE),
+          .groups = "drop"
         ) %>%
-        mutate(pct_achieved = ifelse(target_sample > 0, achieved_n / target_sample, NA_real_))
+        mutate(pct_achieved = ifelse(target_sample_current > 0, achieved_n / target_sample_current, NA_real_))
     })
 
     # in-scope admin2 polygons — used for the LGA fill, the zoom-to-extent,
@@ -72,7 +86,9 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
     # joining with duplicates of those present on both sides would produce
     # suffixed .x/.y columns instead.
     scope_admin2_sf <- reactive({
-      lga <- filtered_lga() %>% select(adm2_pcode, target_sample, achieved_n, collected_n, pct_achieved)
+      lga <- filtered_lga() %>%
+        select(adm2_pcode, target_sample, target_sample_current, achieved_n, collected_n,
+               confirmed_deletion_n, pending_deletion_n, pct_achieved)
       admin2_sf %>% inner_join(lga, by = "adm2_pcode")
     })
 
@@ -85,11 +101,14 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
     # number, via pmax()). Kept separate from filtered_lga() above (which
     # deliberately collapses pop_type when summing target/achieved for the
     # fill colour and overall % achieved) since this needs the split kept.
+    # BUG FIX 2026-09-09: was target_sample (original) - "remaining" could
+    # read 0 for a pop type whose LGA/stratum isn't actually Complete per
+    # the revised-target-based status elsewhere, a direct contradiction.
     remaining_by_pop_type <- reactive({
       filtered_stratum() %>%
         group_by(adm2_pcode, pop_type) %>%
-        summarise(target_sample = sum(target_sample, na.rm = TRUE), achieved_n = sum(achieved_n, na.rm = TRUE), .groups = "drop") %>%
-        mutate(remaining = pmax(target_sample - achieved_n, 0)) %>%
+        summarise(target_sample_current = sum(target_sample_current, na.rm = TRUE), achieved_n = sum(achieved_n, na.rm = TRUE), .groups = "drop") %>%
+        mutate(remaining = pmax(target_sample_current - achieved_n, 0)) %>%
         select(adm2_pcode, pop_type, remaining) %>%
         pivot_wider(names_from = pop_type, values_from = remaining, names_prefix = "remaining_", values_fill = 0) %>%
         # a filtered-down view could in principle contain only one pop
@@ -120,7 +139,7 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
           fill_color = pct_color(pct_achieved),
           label_pct = fmt_pct(pct_achieved),
           status = case_when(
-            target_sample <= 0 | achieved_n >= target_sample ~ "Complete",
+            target_sample_current <= 0 | achieved_n >= target_sample_current ~ "Complete",
             achieved_n > 0 ~ "In progress",
             TRUE ~ "Not started"
           ),
@@ -185,17 +204,24 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
     # not a replacement — it's needed for the count(matched_cluster_id) grain
     # itself (nothing to attribute to a hexagon without it), not as the
     # achieved test.
+    # 2026-09-09: now calls global.R's compute_cluster_progress() (built for
+    # this same purpose) instead of hand-rolling just the achieved_n count -
+    # picks up collected_n/confirmed_deletion_n/pending_deletion_n for the
+    # popups below at zero extra cost (same is_achieved() condition as
+    # before, still keyed on matched_cluster_id, still uncapped - see that
+    # function's own header for why capping doesn't apply at cluster grain).
     cluster_achieved <- reactive({
-      subs <- filtered_subs()
-      subs[is_achieved(subs) & !is.na(subs$matched_cluster_id), ] %>%
-        count(matched_cluster_id, name = "achieved_n")
+      compute_cluster_progress(filtered_subs())
     })
 
     cluster_status <- function(psu_sf) {
       psu_sf %>%
-        left_join(cluster_achieved(), by = c("cluster_id" = "matched_cluster_id")) %>%
+        left_join(cluster_achieved(), by = "cluster_id") %>%
         mutate(
           achieved_n = coalesce(achieved_n, 0L),
+          collected_n = coalesce(collected_n, 0L),
+          confirmed_deletion_n = coalesce(confirmed_deletion_n, 0L),
+          pending_deletion_n = coalesce(pending_deletion_n, 0L),
           target_households = as.numeric(target_households),
           status = case_when(
             achieved_n >= target_households ~ "Complete",
@@ -389,9 +415,11 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
             paste0(
               "<b>", adm2_name, "</b>, ", adm1_name, "<br>",
               "Partner(s): ", partner_coverage, "<br>",
-              "Achieved: ", coalesce(achieved_n, 0), " / ", coalesce(target_sample, 0),
-              " (", label_pct, ")<br>",
+              "Achieved: ", coalesce(achieved_n, 0), " / ", coalesce(target_sample_current, 0),
+              " (", label_pct, ") <span style='color:#8894A6;'>(original target: ", coalesce(target_sample, 0), ")</span><br>",
               "Collected: ", coalesce(collected_n, 0), "<br>",
+              "Confirmed Deleted: ", coalesce(confirmed_deletion_n, 0),
+              " | Pending Deletion: ", coalesce(pending_deletion_n, 0), "<br>",
               "Samples required: ", coalesce(remaining_idp, 0), " IDPs | ", coalesce(remaining_non_idp, 0), " Non-IDPs<br>",
               "Inaccessible ward portions: ", coalesce(n_ward_portions_inaccessible, 0), " of ", coalesce(n_ward_portions, 0), "<br>",
               # gsub to <br> here (not baked into pop_remaining_label
@@ -430,6 +458,8 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
             paste0(
               "<b>", cluster_id, "</b><br>", adm2_name, ", ", adm1_name, "<br>",
               "Achieved: ", achieved_n, " / ", target_households, " (", label_pct, ")<br>",
+              "Collected: ", collected_n, "<br>",
+              "Confirmed Deleted: ", confirmed_deletion_n, " | Pending Deletion: ", pending_deletion_n, "<br>",
               "Status: ", status, "<br>",
               ifelse(oversampled, paste0("<b style='color:", OVERSAMPLED_BORDER, ";'>&#9888; Oversampled by ", achieved_n - target_households, "</b><br>"), ""),
               "Partner(s): ", partner_coverage
@@ -464,6 +494,8 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
             paste0(
               "<b>", coalesce(iom_site_name, cluster_id), "</b><br>", adm2_name, ", ", adm1_name, "<br>",
               "Achieved: ", achieved_n, " / ", target_households, " (", label_pct, ")<br>",
+              "Collected: ", collected_n, "<br>",
+              "Confirmed Deleted: ", confirmed_deletion_n, " | Pending Deletion: ", pending_deletion_n, "<br>",
               "Status: ", status, "<br>",
               ifelse(oversampled, paste0("<b style='color:", OVERSAMPLED_BORDER, ";'>&#9888; Oversampled by ", achieved_n - target_households, "</b><br>"), ""),
               "Partner(s): ", partner_coverage

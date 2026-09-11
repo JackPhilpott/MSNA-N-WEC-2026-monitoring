@@ -40,23 +40,88 @@ library(rsconnect)
 # own sanity banner at both start and end.
 source("cleaning/real/prep_real_submissions.R")
 
+# 2026-09-09 (Jack, via cross-session flag from msna-n-wec-2026-80): neither
+# of these was ever called from anywhere automated (confirmed by grepping the
+# whole workspace) - PIPELINE_AUDIT_2026-09-07.md already flagged this the
+# night before the 2026-09-08 rebuild, still open until now. In practice this
+# was only ever correct because someone happened to rerun build_confirmed_
+# deletions_overlay.R by hand after a recovery-tracker change and before the
+# next deploy - the next resolution that wasn't followed by a manual rerun
+# would have silently gone stale (a recovered interview staying excluded from
+# Achieved forever, or a freshly no-appeal-confirmed one never reaching the
+# resampling-facing overlay).
+#
+# Deliberate ordering note - a real circular dependency, not an oversight:
+# register_deletion_log_issues.R needs TODAY's data/real_submissions.csv
+# (just built above) to attach cluster_id/strata_id to newly-registered
+# issues, but prep_real_submissions.R's own flagged_deletion_reason column
+# is read from whatever FLAGGED_DELETIONS_OVERLAY.csv already exists on
+# disk BEFORE this run - so a deletion-log flag that's brand new today won't
+# reach Achieved's exclusion until TOMORROW's refresh. Confirmed with Jack
+# 2026-09-09: accepted, same one-day-behind shape as the existing partner-
+# workbook-refresh lag, not worth a second prep_real_submissions.R pass to
+# close same-day. Both scripts are explicitly designed to be safe to call
+# every run - register_issues()/apply_resolution() are idempotent no-ops on
+# already-seen data (see register_deletion_log_issues.R's own header) - so
+# this isn't gated behind "only when a new deletion-log file lands".
+source("reports/partner_data_recovery/scripts/register_deletion_log_issues.R")
+# 2026-09-10/11 (Jack): the DO's deletion log has real, evidenced under-
+# flagging (no_consent alone missed 11 of 31 real refusals) traced to a
+# structural flaw - each day's log file is a permanent, never-regenerated
+# snapshot, so one incomplete day's run is unrecoverable in every later
+# day's file too. Being replaced reason-by-reason with independent
+# computations that never depend on the DO's execution reliability - see
+# that file's own header for the build order and what's done vs. pending.
+# Safe to run every time (idempotent, same as register_deletion_log_issues.R
+# above) - order between the two doesn't matter.
+source("cleaning/real/independent_deletion_checks.R")
+# Order matches the DO's own reason priority (no_consent > duration_under_20 >
+# duplicate_point > ...) - register_issues() only sets deletion_reason on a
+# row's first insert (issue_tracker.R), so a uuid tripping more than one check
+# must see the higher-priority one register first, or a lower-priority reason
+# could win the race. See that file's own header for duplicate_point's
+# key-based-only scope and the still-open GPS-proximity question.
+run_independent_no_consent_check()
+run_independent_duration_check()
+run_independent_duplicate_check()
+run_independent_listing_missing_check()
+run_independent_percentage_missing_check()
+source("cleaning/real/build_confirmed_deletions_overlay.R")
+
 source("cleaning/real/sanity_checks.R")
 print_sanity_banner_if_present() # most important checkpoint: right before this goes live and public
 
 # ---- report generation, before the deploy itself — same freshly-refreshed data, one run ----
 source("generate_partner_digest.R")
 
-for (d in c("dashboard_app/data", "dashboard_app/input_data")) {
-  if (dir.exists(d)) unlink(d, recursive = TRUE)
-}
-dir.create("dashboard_app/data")
-dir.create("dashboard_app/input_data")
-file.copy(list.files("data", full.names = TRUE), "dashboard_app/data", recursive = TRUE)
-file.copy(list.files("input_data", full.names = TRUE), "dashboard_app/input_data", recursive = TRUE)
+# 2026-09-08 (Jack): accessibility + sampling-frame mirrors were both found
+# stuck on stale versions (accessibility's own stamp file claimed 09-03 data
+# three days after a rebuild; input_data/sampling_frame/ was stuck on v5/v6
+# while 1_sampling had already moved to v7 — Dandume/Faskari were missing
+# from the LGA dropdown as a direct result). Root cause: propagating from
+# 1_sampling had always been a manual "someone copies the files" step with
+# nothing in code enforcing it — happened again despite a sync script
+# already existing (sync_accessibility_mirrors.R), because that script was
+# never actually wired into anything, contrary to its own header comment's
+# claim. Fixed generically here rather than patched again as a one-off:
+# both scripts live in 1_sampling (they read its output/ as source of
+# truth) and each setwd()s there as a side effect of being sourced, so
+# restore this script's own working directory immediately after each call —
+# everything below this block still expects cwd = 2_monitoring project root.
+.deploy_root_wd <- getwd()
+source("../1_sampling/resampling/scripts/sync_accessibility_mirrors.R")
+sync_accessibility_mirrors()
+setwd(.deploy_root_wd)
+source("../1_sampling/resampling/scripts/sync_sampling_frame_mirrors.R")
+sync_sampling_frame_mirrors()
+setwd(.deploy_root_wd)
 
-cat("Bundled data/ (", sum(file.info(list.files("dashboard_app/data", recursive = TRUE, full.names = TRUE))$size, na.rm = TRUE) %/% 1e6,
-    "MB) and input_data/ (", sum(file.info(list.files("dashboard_app/input_data", recursive = TRUE, full.names = TRUE))$size, na.rm = TRUE) %/% 1e6,
-    "MB) into dashboard_app/\n", sep = "")
+# 2026-09-08: bundling step extracted to scripts/shared/bundle_dashboard_
+# mirrors.R so it can also run standalone (assert_fresh-triggered, between
+# full deploys) instead of only ever happening as a side effect of this
+# whole heavier sequence - see that file's header for why.
+source("scripts/shared/bundle_dashboard_mirrors.R")
+bundle_dashboard_mirrors(".")
 
 deployApp(
   appDir = "dashboard_app",
