@@ -444,8 +444,20 @@ server <- function(input, output, session) {
         is.na(admin2_submitted) | !(admin2_submitted %in% KNOWN_LGA_NAMES) | admin2_submitted %in% effective_lgas(),
         is.na(admin3_submitted) | !(admin3_submitted %in% KNOWN_WARD_NAMES) | admin3_submitted %in% filter_ui_state$ward$selected,
         is.na(pop_type) | pop_type %in% poptype_sel,
-        submission_date >= input$f_daterange[1],
-        submission_date <= input$f_daterange[2],
+        # FIXED 2026-09-11: was submission_date >= .../<= ... with no NA
+        # guard - a date_outlier row now has submission_date deliberately
+        # nulled (see prep_real_submissions.R's "7b" step), and NA >= x
+        # evaluates to NA, which filter() drops. That made these rows
+        # invisible from every date-filtered view (Coverage Map, Progress by
+        # LGA, Progress Overview) regardless of which range was selected -
+        # even the default "everything" range - while still being counted
+        # in the Home page's unfiltered national total. Same is.na()-passes-
+        # through pattern already used for ward/pop_type above, applied here
+        # too, rather than guessing a fallback date (Jack explicitly
+        # rejected that approach on 2026-08-27 for the same reason this
+        # field gets nulled in the first place).
+        is.na(submission_date) | submission_date >= input$f_daterange[1],
+        is.na(submission_date) | submission_date <= input$f_daterange[2],
         org_id %in% filter_ui_state$partner$selected
       )
   })

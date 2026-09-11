@@ -22,8 +22,10 @@ and, in detail, on the rebuild.
   replicate — see "Independent deletion checks" below) and `real/`
   (`prep_real_submissions.R` builds the canonical `data/real_submissions.csv`
   from the cleaning pipeline's output; `independent_deletion_checks.R` +
-  `audit_duration.R` + `audit_missingness.R` independently recompute every
-  one of the DO's six deletion reasons, see below; `sanity_checks.R`;
+  `audit_duration.R` + `audit_missingness.R` independently recompute five of
+  the DO's six deletion reasons (**not** `fcs_zero` — see below, that one
+  was deliberately REMOVED from deletion consideration entirely, not
+  recomputed), see below; `sanity_checks.R`;
   `build_confirmed_deletions_overlay.R` builds the two deletion overlays —
   see below).
 - `reports/partner_data_recovery/` — the deletion/recovery-confirmation
@@ -129,6 +131,23 @@ that always runs against the CURRENT full dataset, never a day-snapshot.
   currently covers `duration_under_20` and `no_consent` — both validated
   methodology, no partner judgment call, auto-confirmed immediately;
   `duplicate_point`/`pct_missing_flagged` stay appeal-eligible.
+- **`fcs_zero` is deliberately absent from this file** — not a gap, a
+  2026-09-10 policy decision (Jack): downgraded from an automatic
+  no-appeal deletion reason to a plain logical-error flag. It does
+  nothing in the deletion pipeline any more — an fcs_zero interview is
+  kept, same as any other, as long as it clears every other criterion.
+  Existing tracker rows that had `deletion_reason=fcs_zero` were bulk-
+  recovered (`recovery_type=false_positive`) the same night so they
+  stopped being excluded from Achieved retroactively too. Verified
+  2026-09-11 (re-checked in response to a direct question about whether
+  this needed building) — confirmed this decision, not a missed check,
+  after searching the whole `cleaning/real/`/`reports/partner_data_
+  recovery/` tree turned up no other fcs_zero deletion logic anywhere.
+  Still genuinely unbuilt, separately: the actual "blank the FCS survey
+  module's fields" mechanism this decision implies — see
+  `_working_files/master_deletion_log_design.md` for the open item, this
+  is data-cleaning work, not tracker/deletion logic, and needs its own
+  build.
 - `cleaning/real/audit_duration.R` / `audit_missingness.R` — the two reasons
   needing a real recompute rather than just reading an existing column: both
   reuse the SAME `cleaningtools` functions the DO's own pipeline uses
@@ -168,12 +187,16 @@ that always runs against the CURRENT full dataset, never a day-snapshot.
   specific interview's household number against the now-existing listing,
   so they stay in the normal per-interview flow rather than being silently
   resolved or converted.
-- `reports/partner_data_recovery/scripts/register_deletion_log_issues.R`
-  (the DO-log-reading script) now drops ALL SIX reasons from its own
-  ingestion at read-time, to avoid two mechanisms ever disagreeing about the
-  same reason — its only remaining live job is a one-time legacy
-  `CONFIRMED_QUALITY_EXCLUSIONS.csv` bridge, itself a permanent no-op once
-  absorbed.
+- `register_deletion_log_issues.R` (the DO-log-reading script) — **retired
+  2026-09-11**, moved to `reports/partner_data_recovery/scripts/_archive/
+  2026-09-11_do_log_ingestion_retired/`. By this date it had already been
+  dropping all six reasons from its own ingestion at read-time (to avoid
+  two mechanisms ever disagreeing about the same reason), leaving its
+  daily-ingestion path a structural no-op; its one remaining live job — a
+  one-time legacy `CONFIRMED_QUALITY_EXCLUSIONS.csv` bridge — was verified
+  fully executed (all 578 legacy uuids already in the tracker) before
+  archiving. `deploy_dashboard.R` no longer sources it. Kept in the
+  archive folder, not deleted, in case this ever needs reviving.
 
 ## The review-queue engine (2026-09-08 rebuild)
 

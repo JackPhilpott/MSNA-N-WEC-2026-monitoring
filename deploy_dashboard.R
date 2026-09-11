@@ -51,29 +51,21 @@ source("cleaning/real/prep_real_submissions.R")
 # Achieved forever, or a freshly no-appeal-confirmed one never reaching the
 # resampling-facing overlay).
 #
-# Deliberate ordering note - a real circular dependency, not an oversight:
-# register_deletion_log_issues.R needs TODAY's data/real_submissions.csv
-# (just built above) to attach cluster_id/strata_id to newly-registered
-# issues, but prep_real_submissions.R's own flagged_deletion_reason column
-# is read from whatever FLAGGED_DELETIONS_OVERLAY.csv already exists on
-# disk BEFORE this run - so a deletion-log flag that's brand new today won't
-# reach Achieved's exclusion until TOMORROW's refresh. Confirmed with Jack
-# 2026-09-09: accepted, same one-day-behind shape as the existing partner-
-# workbook-refresh lag, not worth a second prep_real_submissions.R pass to
-# close same-day. Both scripts are explicitly designed to be safe to call
-# every run - register_issues()/apply_resolution() are idempotent no-ops on
-# already-seen data (see register_deletion_log_issues.R's own header) - so
-# this isn't gated behind "only when a new deletion-log file lands".
-source("reports/partner_data_recovery/scripts/register_deletion_log_issues.R")
-# 2026-09-10/11 (Jack): the DO's deletion log has real, evidenced under-
-# flagging (no_consent alone missed 11 of 31 real refusals) traced to a
-# structural flaw - each day's log file is a permanent, never-regenerated
-# snapshot, so one incomplete day's run is unrecoverable in every later
-# day's file too. Being replaced reason-by-reason with independent
-# computations that never depend on the DO's execution reliability - see
-# that file's own header for the build order and what's done vs. pending.
-# Safe to run every time (idempotent, same as register_deletion_log_issues.R
-# above) - order between the two doesn't matter.
+# RETIRED 2026-09-11 (Jack, explicit decision): this step used to also
+# source register_deletion_log_issues.R here first (wiring the DO's daily
+# deletion log into the tracker) - removed entirely. The DO's deletion log
+# has real, evidenced under-flagging (no_consent alone missed 11 of 31 real
+# refusals) traced to a structural flaw - each day's log file is a
+# permanent, never-regenerated snapshot, so one incomplete day's run is
+# unrecoverable in every later day's file too. By 2026-09-11 all six
+# reasons it could emit had already been independently replaced below, and
+# its one remaining live job (a one-time legacy CONFIRMED_QUALITY_
+# EXCLUSIONS.csv bridge) had already fully executed - verified before
+# retiring, nothing is lost. Script moved to reports/partner_data_recovery/
+# scripts/_archive/2026-09-11_do_log_ingestion_retired/ (not deleted) if
+# this ever needs reviving. The old circular-dependency ordering note this
+# comment used to carry (about register_deletion_log_issues.R needing
+# today's real_submissions.csv) no longer applies with it gone.
 source("cleaning/real/independent_deletion_checks.R")
 # Order matches the DO's own reason priority (no_consent > duration_under_20 >
 # duplicate_point > ...) - register_issues() only sets deletion_reason on a

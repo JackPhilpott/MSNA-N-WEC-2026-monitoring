@@ -30,7 +30,7 @@ mod_progress_ui <- function(id) {
       value_box(
         title = info_title(
           "Interviews achieved / planned",
-          "ACHIEVED: completed, matched, non-duplicate interviews not currently flagged for deletion (duration floor, fcs_zero, duplicate point, consent, percentage missing, or a missing HH listing) — capped at each cluster's own target. This is a PROVISIONAL figure: an interview drops out the moment it's flagged, even before a partner has had a chance to respond, by design — it's the incentive to engage with the recovery workbook. Resampling uses a different, narrower figure that only excludes a deletion once it's actually settled, so the two can legitimately disagree while anything is still pending. A cluster that's been oversampled only ever contributes up to its target here, never more, so oversampling in one cluster can't mask under-coverage in another. Reflects your current sidebar filter selection (state/LGA/partner/population group) — the Home tab always shows the fixed national total regardless of filters, so the two can legitimately differ.",
+          "ACHIEVED: completed, matched interviews that are not a SETTLED (confirmed/contested) tracker deletion — capped at each cluster's own target. Policy changed 2026-09-11: a pending/unresolved flag (duplicate, unmatched, a still-open recovery-workbook item) no longer excludes an interview here, only an actually-confirmed deletion does — matching the same figure resampling uses. A cluster that's been oversampled only ever contributes up to its target here, never more, so oversampling in one cluster can't mask under-coverage in another. Reflects your current sidebar filter selection (state/LGA/partner/population group) — the Home tab always shows the fixed national total regardless of filters, so the two can legitimately differ.",
           icon_color = "white"
         ),
         value = textOutput(ns("kpi_achieved")),
@@ -197,7 +197,15 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum) {
     })
 
     output$trend_plot <- renderPlotly({
-      df <- completed_subs()
+      # FIXED 2026-09-11: a date_outlier row now flows through with
+      # submission_date deliberately NA (see prep_real_submissions.R's "7b"
+      # step) instead of being dropped outright - correctly counted
+      # everywhere else, but a day-by-day trend line has no axis position
+      # to put an undated row on. Without this filter, seq(min(...),
+      # max(...)) below errors outright the moment one exists (NA in, NA
+      # out, seq() can't build a range to/from NA). Excluded from THIS
+      # chart specifically, not from Achieved/Collected/the KPI totals.
+      df <- completed_subs() %>% filter(!is.na(submission_date))
       if (nrow(df) == 0) return(plotly_empty(type = "scatter", mode = "markers"))
 
       pop_cats <- c("Non-IDP", "IDP", "Unmatched")
@@ -377,7 +385,8 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum) {
         transmute(
           Partner = partner_label,
           `Original Target` = target_sample, `Revised Target` = target_sample_current,
-          Collected = collected_n, `Confirmed Deleted` = confirmed_deletion_n, `Pending Deletion` = pending_deletion_n,
+          Collected = collected_n, `Confirmed Deleted` = confirmed_deletion_n, `Oversampling Surplus` = oversampling_surplus_n,
+          `Pending Deletion` = pending_deletion_n,
           Achieved = achieved_n,
           `% achieved` = pct_achieved,
           `Shared with` = shared_with,

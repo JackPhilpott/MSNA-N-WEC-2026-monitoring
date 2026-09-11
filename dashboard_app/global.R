@@ -109,33 +109,59 @@ submissions_meta <- readRDS(file.path(DATA_DIR, "real_meta.rds"))
 FIELDING_START <- min(submissions_raw$submission_date, na.rm = TRUE)
 
 
-# filter(coverage_status == "covered", exclusion_reason == "none") (2026-09-02,
-# same WORKING-shrinks-as-a-candidate-pool concern raised for the stage2
-# frame below): unlike stage2, there's no separate FULL file at the strata
-# level to switch to — this file already carries coverage_status/
-# exclusion_reason columns of its own, so the filter is applied directly to
-# it rather than swapping sources. Currently a no-op (verified 2026-09-02:
-# all 312 rows are coverage_status=="covered"/exclusion_reason=="none"
-# already, including idp_NG021014, the specific stratum 1_sampling's build
-# log flagged) — this just makes strata_frame defensive against a future
-# resample marking a stratum excluded-but-not-dropped the same way. If
-# 1_sampling's WORKING file ever instead fully DROPS a stratum row (not
-# just marks it), this filter can't recover it — that would need a
-# strata-level FULL file mirroring the stage2 one below; ask 1_sampling for
-# one if that's ever observed.
+# CHANGED 2026-09-11 (Jack, explicit): the old filter(coverage_status ==
+# "covered", exclusion_reason == "none") against WORKING was found to have
+# a real, if dormant, bug - 1_sampling's strata-level WORKING file doesn't
+# just FLAG an excluded stratum, it OMITS the row entirely (confirmed
+# directly against the live v7 files: WORKING's 314 rows are the exact
+# subset of FULL's 571 with coverage_status=="covered"). That means the
+# moment a stratum's coverage_status flips to "excluded" (the
+# accessibility_loss_below_population_threshold mechanism - the same one
+# behind the whole Dandume/Faskari/Matazu/Musawa/Sabuwa saga on the
+# 1_sampling side), every real submission already collected there becomes
+# invisible to every stratum-level Collected/Achieved/Confirmed/Pending
+# total for as long as it stays excluded - not miscounted, never summed at
+# all. Cluster-level progress was already protected against this
+# (cluster_targets below is FULL-sourced, fixed 2026-09-01) - stratum-level
+# wasn't. Zero strata were excluded when checked (2026-09-11), so this
+# wasn't producing a wrong number that day, but it's a live landmine given
+# how often this mechanism has flipped on the 1_sampling side.
+#
+# Fix: read the strata-level FULL file (confirmed to exist,
+# NGA_MSNA_2026_strata_level_sampling_frame_v7_FULL.csv, 571 rows) instead
+# of WORKING, and include two categories: normally covered rows, PLUS rows
+# currently excluded specifically for accessibility_loss_below_population_
+# threshold (11 rows as of 2026-09-11) - Jack's explicit requirement: a
+# stratum dropped for inaccessibility should stay visible in the
+# progress-by-LGA table with its real target/collected/achieved figures,
+# not disappear, with its own status shown as "Dropped" (see
+# compute_progress_by_stratum()'s status case_when below). Deliberately
+# NOT included: the 245 rows that were never covered at all
+# (partner_coverage_declined / certainty_stratum_below_moe_threshold at
+# not_covered) - those never had real data collected against them, so
+# showing them as "Dropped" would be confusing clutter for something that
+# was never live, not a data-visibility fix.
 strata_frame <- read_csv(
-  latest_frame_file("NGA_MSNA_2026_strata_level_sampling_frame", "WORKING"),
+  latest_frame_file("NGA_MSNA_2026_strata_level_sampling_frame", "FULL"),
   show_col_types = FALSE
 ) %>%
-  filter(coverage_status == "covered", exclusion_reason == "none")
+  filter(
+    (coverage_status == "covered" & exclusion_reason == "none") |
+      (coverage_status == "excluded" & exclusion_reason == "accessibility_loss_below_population_threshold")
+  )
 
 # Single source of truth for the two headline design numbers — every place
 # that used to hardcode or separately recompute these (Home's intro
 # paragraph, "At a glance", "Today's snapshot") reads from here instead, so
 # they can't drift out of sync with each other or with the sampling frame
 # again the way the intro's hardcoded "31,051"/old FIELDING dates did.
-TOTAL_PLANNED_INTERVIEWS <- sum(strata_frame$target_sample, na.rm = TRUE)
-TOTAL_COVERED_LGAS <- length(unique(strata_frame$adm2_pcode))
+# Filtered to coverage_status=="covered" (2026-09-11): a Dropped stratum's
+# original design target shouldn't inflate "what we're currently trying to
+# achieve" - it stays visible in the per-stratum table (above) but drops
+# out of this aggregate the same way it drops out of TOTAL_PLANNED_
+# INTERVIEWS_CURRENT below.
+TOTAL_PLANNED_INTERVIEWS <- sum(strata_frame$target_sample[strata_frame$coverage_status == "covered"], na.rm = TRUE)
+TOTAL_COVERED_LGAS <- length(unique(strata_frame$adm2_pcode[strata_frame$coverage_status == "covered"]))
 
 # Reads FULL (not WORKING), filtered to coverage_status=="covered" &
 # exclusion_reason=="none" — same fix already applied to
@@ -714,24 +740,44 @@ org_id_choices <- compute_filter_choices("partner", list())
 is_collected <- function(df) {
   df$interview_outcome == "completed"
 }
-# BUG FIX 2026-09-09: was is.na(df$flagged_deletion_reason) - found while
-# adding deletion_status (below): 10 IMC uuids registered 2026-09-03, before
-# deletion_reason existed as a tracker column, sit in the tracker at
-# status="contested" (a TERMINAL status - deletion upheld on appeal) with
-# deletion_reason genuinely NA (never backfilled). Keying exclusion off
-# `reason` meant these 10 completed/matched/non-duplicate interviews were
-# silently counting as Achieved despite being a settled deletion - reason is
-# a legacy/display field, not guaranteed non-NA; status IS guaranteed
-# non-NA for every tracker row since day one (set at registration, never
-# left blank). deletion_status mirrors the tracker's status for whatever
-# row (if any) exists for this uuid in FLAGGED_DELETIONS_OVERLAY.csv -
-# NA only when no such row exists at all, i.e. genuinely not flagged.
-# Verified this only TIGHTENS the exclusion, never loosens it: zero rows
-# have flagged_deletion_reason set with deletion_status NA (checked
-# directly against real_submissions.csv), only the reverse (these 10).
+# POLICY CHANGE 2026-09-11 (Jack, explicit, donor-facing decision — traced
+# back to a conversation the night of 2026-09-10 that got lost in that
+# night's session mix-up, then re-confirmed directly the next day):
+# Achieved now excludes ONLY settled/confirmed deletions - a pending or
+# unresolved flag of ANY kind (duplicate, unmatched, still-open tracker
+# item) counts as Achieved until it's actually confirmed. Reasoning, in
+# Jack's own words: real, limited time/money to collect data, hopeful most
+# pending items resolve favourably, and the team would rather risk asking
+# a field team to go back for a specific interview later than have them
+# oversample/waste effort now against a pessimistic count that includes
+# items likely to turn out fine. This is a full reversal of the "pessimistic
+# dashboard" policy documented everywhere in this file/CLAUDE.md before
+# today - is_achieved() is now defined as exactly "collected, and not a
+# confirmed deletion", nothing else, by construction (calls
+# is_confirmed_deletion() directly below so the two can never drift apart).
+#
+# Practical consequence, quantified against live data before this changed
+# (2026-09-11): national Achieved jumped from 14,749 to 15,995 (+1,246)
+# the moment this flipped. 1,110 of that 1,246 (89%) is completed
+# interviews the raw, automated is_duplicate key-match flags as a likely
+# duplicate but that have NOT yet been through the tracker/recovery
+# process at all - these now count as Achieved immediately, same as any
+# other not-yet-confirmed item, per the letter of Jack's decision. 19 are
+# currently-unmatched (matched_survey_id NA) rows - notable because
+# crs_unmatched has no independent check built yet (see CLAUDE.md), so
+# these currently have NO path to ever being registered/reviewed/
+# confirmed at all; they'll simply sit counted as Achieved indefinitely
+# until that check exists. Flagged to Jack; standing until told otherwise.
+#
+# The old is_duplicate/matched_survey_id checks were REMOVED from this
+# function entirely (not just loosened) - keeping either would have meant
+# Achieved excludes more than "only confirmed deletions", contradicting
+# the policy as stated. A genuinely confirmed duplicate (deletion_reason=
+# duplicate_point, status=confirmed) is still excluded correctly, via
+# is_confirmed_deletion() below - this only changes what happens BEFORE
+# that confirmation.
 is_achieved <- function(df) {
-  df$interview_outcome == "completed" & !df$is_duplicate & !is.na(df$matched_survey_id) &
-    is.na(df$deletion_status)
+  df$interview_outcome == "completed" & !is_confirmed_deletion(df)
 }
 # Settled deletion (status confirmed/contested) - a SUBSET of "flagged"
 # (is.na(deletion_status) is FALSE), used to split the Collected-Achieved
@@ -828,7 +874,11 @@ strata_target_current <- cluster_targets %>%
 # not a bare sum over every strata_id in cluster_targets) so a stray/
 # excluded stratum's clusters can't inflate this beyond what strata_frame
 # itself would ever count.
+# Filtered to coverage_status=="covered" (2026-09-11): now that strata_frame
+# includes Dropped strata (see its own header above), the live active total
+# must explicitly exclude them - same reasoning as TOTAL_PLANNED_INTERVIEWS.
 TOTAL_PLANNED_INTERVIEWS_CURRENT <- strata_frame %>%
+  filter(coverage_status == "covered") %>%
   inner_join(strata_target_current, by = "strata_id") %>%
   pull(target_sample_current) %>%
   sum(na.rm = TRUE)
@@ -874,30 +924,48 @@ compute_progress_by_stratum <- function(subs) {
   confirmed_deletion <- subs %>% filter(is_confirmed_deletion(.)) %>%
     count(matched_strata_id, name = "confirmed_deletion_n")
 
-  # ---- PENDING DELETION: deliberately a RESIDUAL, not an independently
-  # summed set of conditions (2026-09-09, Jack's call after discussion) -
-  # everything in the Collected-Achieved gap that isn't a settled deletion:
-  # duplicates, unmatched, a still-open tracker flag, AND oversampling
-  # surplus, all folded into one number ("not yet confirmed gone, not yet
-  # saved either" - none of the first three currently have any partner
-  # review path distinct from a genuinely pending tracker row, so treating
-  # them the same is honest, not a simplification that hides something).
-  # Computing this as collected_n - achieved_n - confirmed_deletion_n
-  # (rather than unioning is_duplicate/unmatched/pending-flagged/oversampling
-  # excess by hand) makes Collected = Achieved + Confirmed + Pending hold
-  # EXACTLY by construction, with no risk of a double-counted row (e.g. one
-  # that's both a duplicate AND flagged) silently breaking the reconciliation
-  # - verified against real data below this function's definition.
+  # ---- OVERSAMPLING SURPLUS (renamed 2026-09-11, was "pending_deletion_n"):
+  # collected_n - achieved_n - confirmed_deletion_n is STILL a meaningful
+  # residual, but it no longer means "pending deletion" now that
+  # is_achieved() (above) already counts every not-yet-confirmed row as
+  # achieved. The only thing that can still make achieved_n fall short of
+  # collected_n - confirmed_deletion_n is the per-cluster capping above
+  # (pmin(cluster_achieved_n, target_households)) - i.e. real completed
+  # interviews beyond what a cluster's target calls for. Kept as an exact
+  # residual (not independently summed) for the same reason as before: no
+  # risk of a double-counted row breaking the identity.
+  # Collected = Achieved + Confirmed Deletion + Oversampling Surplus,
+  # exactly, by construction - the SAME 3-term identity as before, just
+  # with its third term meaning something different now.
+  #
+  # ---- PENDING DELETION (redefined 2026-09-11): now a genuinely
+  # independent, directly-counted INFORMATIONAL subset of Achieved, not a
+  # peer bucket in the identity above - how many of this stratum's
+  # achieved interviews still carry an unresolved tracker flag (pending/
+  # sent/rejected, not yet confirmed/contested). Jack's explicit intent:
+  # keep this visible so it's obvious how much of "achieved" could still
+  # move if a pending item resolves as a real deletion, without it being
+  # subtracted from the headline number the way it used to be. Not capped
+  # the same way achieved_n is (a genuinely different question - "how much
+  # of what's currently counted is still at risk", not part of the
+  # target-tracking arithmetic).
+  pending_flagged <- subs %>%
+    filter(interview_outcome == "completed", !is.na(deletion_status),
+           !deletion_status %in% c("confirmed", "contested")) %>%
+    count(matched_strata_id, name = "pending_deletion_n")
+
   strata_frame %>%
     left_join(achieved, by = c("strata_id" = "matched_strata_id")) %>%
     left_join(collected, by = c("strata_id" = "matched_strata_id")) %>%
     left_join(confirmed_deletion, by = c("strata_id" = "matched_strata_id")) %>%
+    left_join(pending_flagged, by = c("strata_id" = "matched_strata_id")) %>%
     left_join(strata_target_current, by = "strata_id") %>%
     mutate(
       achieved_n = coalesce(achieved_n, 0L),
       collected_n = coalesce(collected_n, 0L),
       confirmed_deletion_n = coalesce(confirmed_deletion_n, 0L),
-      pending_deletion_n = pmax(collected_n - achieved_n - confirmed_deletion_n, 0L),
+      oversampling_surplus_n = pmax(collected_n - achieved_n - confirmed_deletion_n, 0L),
+      pending_deletion_n = coalesce(pending_deletion_n, 0L),
       achieved_reserve_n = coalesce(achieved_reserve_n, 0L),
       pct_reserve_used = ifelse(achieved_n > 0, achieved_reserve_n / achieved_n, NA_real_),
       # 2026-09-08: target_sample kept, unrenamed, as "Original target" - the
@@ -911,7 +979,13 @@ compute_progress_by_stratum <- function(subs) {
       # as achieved_n/collected_n above).
       target_sample_current = coalesce(target_sample_current, 0),
       pct_achieved = ifelse(target_sample_current > 0, achieved_n / target_sample_current, NA_real_),
+      # DROPPED status (2026-09-11): a stratum currently excluded for
+      # accessibility_loss_below_population_threshold - see strata_frame's
+      # own header above. Checked FIRST: such a stratum's target_sample_
+      # current can legitimately read 0 (nothing currently accessible),
+      # which would otherwise misleadingly read "Complete".
       status = case_when(
+        coverage_status == "excluded" ~ "Dropped",
         target_sample_current <= 0 | achieved_n >= target_sample_current ~ "Complete",
         achieved_n > 0 ~ "In progress",
         TRUE ~ "Not started"
@@ -945,17 +1019,25 @@ compute_cluster_progress <- function(subs) {
   achieved <- scoped %>% filter(is_achieved(.)) %>% count(matched_cluster_id, name = "achieved_n")
   collected <- scoped %>% filter(is_collected(.)) %>% count(matched_cluster_id, name = "collected_n")
   confirmed_deletion <- scoped %>% filter(is_confirmed_deletion(.)) %>% count(matched_cluster_id, name = "confirmed_deletion_n")
+  # 2026-09-11: same split as compute_progress_by_stratum() above - see
+  # that function's own comments for the full reasoning.
+  pending_flagged <- scoped %>%
+    filter(interview_outcome == "completed", !is.na(deletion_status),
+           !deletion_status %in% c("confirmed", "contested")) %>%
+    count(matched_cluster_id, name = "pending_deletion_n")
 
   cluster_targets %>%
     select(cluster_id) %>%
     left_join(achieved, by = c("cluster_id" = "matched_cluster_id")) %>%
     left_join(collected, by = c("cluster_id" = "matched_cluster_id")) %>%
     left_join(confirmed_deletion, by = c("cluster_id" = "matched_cluster_id")) %>%
+    left_join(pending_flagged, by = c("cluster_id" = "matched_cluster_id")) %>%
     mutate(
       achieved_n = coalesce(achieved_n, 0L),
       collected_n = coalesce(collected_n, 0L),
       confirmed_deletion_n = coalesce(confirmed_deletion_n, 0L),
-      pending_deletion_n = pmax(collected_n - achieved_n - confirmed_deletion_n, 0L)
+      oversampling_surplus_n = pmax(collected_n - achieved_n - confirmed_deletion_n, 0L),
+      pending_deletion_n = coalesce(pending_deletion_n, 0L)
     )
 }
 
@@ -1042,7 +1124,8 @@ partner_progress_summary <- lapply(PARTNERS_ASSIGNED, function(org) {
               achieved_n = sum(achieved_n, na.rm = TRUE),
               collected_n = sum(collected_n, na.rm = TRUE),
               confirmed_deletion_n = sum(confirmed_deletion_n, na.rm = TRUE),
-              pending_deletion_n = sum(pending_deletion_n, na.rm = TRUE))
+              pending_deletion_n = sum(pending_deletion_n, na.rm = TRUE),
+              oversampling_surplus_n = sum(oversampling_surplus_n, na.rm = TRUE))
 
   start_date <- suppressWarnings(min(submissions_raw$submission_date[submissions_raw$org_id == org], na.rm = TRUE))
   has_started <- is.finite(start_date)
@@ -1091,6 +1174,7 @@ partner_progress_summary <- lapply(PARTNERS_ASSIGNED, function(org) {
     target_sample = totals$target_sample, target_sample_current = totals$target_sample_current,
     achieved_n = totals$achieved_n, collected_n = totals$collected_n,
     confirmed_deletion_n = totals$confirmed_deletion_n, pending_deletion_n = totals$pending_deletion_n,
+    oversampling_surplus_n = totals$oversampling_surplus_n,
     pct_achieved = ifelse(totals$target_sample_current > 0, totals$achieved_n / totals$target_sample_current, NA_real_),
     shared_with = shared_with,
     start_date = if (has_started) start_date else as.Date(NA),
@@ -1169,7 +1253,8 @@ partner_progress_by_lga <- function(org_id_val) {
       achieved_n = sum(achieved_n, na.rm = TRUE),
       collected_n = sum(collected_n, na.rm = TRUE),
       confirmed_deletion_n = sum(confirmed_deletion_n, na.rm = TRUE),
-      pending_deletion_n = sum(pending_deletion_n, na.rm = TRUE), .groups = "drop"
+      pending_deletion_n = sum(pending_deletion_n, na.rm = TRUE),
+      oversampling_surplus_n = sum(oversampling_surplus_n, na.rm = TRUE), .groups = "drop"
     ) %>%
     mutate(
       pct_achieved = ifelse(target_sample_current > 0, achieved_n / target_sample_current, NA_real_),

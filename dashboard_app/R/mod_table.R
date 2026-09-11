@@ -17,7 +17,7 @@ mod_table_ui <- function(id) {
       full_screen = TRUE,
       card_header(
         "Achieved vs. target, per LGA x population group",
-        info_icon("ACHIEVED: completed, matched, non-duplicate, not currently flagged for deletion (duration floor, fcs_zero, duplicate point, consent, percentage missing, or a missing HH listing), capped at each cluster's own target. PROVISIONAL — a flagged interview drops out immediately, before a partner responds; resampling uses a narrower, settled-only figure. COLLECTED: every completed interview, including oversampled surplus and duplicates — total field effort, not what counts toward target. CONFIRMED DELETED: a settled tracker deletion (partner didn't contest, or a contest was reviewed and the deletion upheld) — genuinely gone, feeds resampling. PENDING DELETION: everything else not yet counted as Achieved — duplicates, unmatched submissions, a still-open tracker flag, and any oversampling surplus. None of the last three currently have a partner review path the way a tracker flag does, but none are confirmed gone either — Collected always equals Achieved + Confirmed Deleted + Pending Deletion, exactly."),
+        info_icon("ACHIEVED: completed, matched interviews that are not a SETTLED (confirmed/contested) tracker deletion, capped at each cluster's own target. Policy changed 2026-09-11: a pending/unresolved flag no longer excludes an interview, only a confirmed deletion does. COLLECTED: every completed interview, including oversampled surplus — total field effort, not what counts toward target. CONFIRMED DELETED: a settled tracker deletion (partner didn't contest, or a contest was reviewed and the deletion upheld) — genuinely gone, feeds resampling. OVERSAMPLING SURPLUS: real completed interviews beyond a cluster's own target, capped out of Achieved by design — likely needs reviewing so an over-collected cluster isn't asked for more. PENDING DELETION (informational only, already included in Achieved above): how much of Achieved still carries an unresolved flag (duplicate, unmatched, a still-open tracker item) that could still become a confirmed deletion — Collected always equals Achieved + Confirmed Deleted + Oversampling Surplus, exactly."),
         span(
           class = "text-muted", style = "font-size: 0.8em; font-weight: normal; margin-left: 8px;",
           "Original Target = the design's fixed sample size for this stratum, unchanged since fielding began. Revised Target = the live total across whichever clusters currently make up this stratum's roster — grows automatically the moment a resampling batch adds a replacement or supplementary cluster, so it can differ from Original once resampling has touched a stratum. Status and % achieved are computed against the Revised figure."
@@ -45,6 +45,7 @@ mod_table_server <- function(id, filtered_stratum) {
           `Revised Target` = target_sample_current,
           Collected = collected_n,
           `Confirmed Deleted` = confirmed_deletion_n,
+          `Oversampling Surplus` = oversampling_surplus_n,
           `Pending Deletion` = pending_deletion_n,
           Achieved = achieved_n,
           `% achieved` = pct_achieved,

@@ -1,0 +1,6 @@
+# Design docs, audit reports, and one-off scripts (.md/.txt/scripts/*.R) are
+# tracked - durable reference material. Data extracts pulled from real
+# submissions for verification purposes are not - same policy as
+# cleaning/real/ and reports/ at the repo root.
+*.csv
+duration_verification_examples/

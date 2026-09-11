@@ -426,17 +426,16 @@ build_partner_quality_digest_excel <- function(file, cleaning_log) {
   write_section("A note on the numbers")
   write_para(paste(
     "\"Collected\" vs \"Achieved\" (Partners/Enumerators sheets): Collected is every completed interview,",
-    "full stop — includes oversampled surplus and duplicates, i.e. total field effort. Achieved is what",
-    "actually counts toward the sample frame — completed, matched, non-duplicate, and not currently",
-    "flagged for deletion (duration floor, implausible food-consumption answers, a duplicate point,",
-    "consent, unusually high missingness, or a missing household listing) — capped at each CLUSTER's",
+    "full stop — includes oversampled surplus, i.e. total field effort. Achieved is what",
+    "actually counts toward the sample frame — completed, matched interviews that are not a SETTLED",
+    "(confirmed/contested) tracker deletion — capped at each CLUSTER's",
     "own target before being summed up, so a partner can't inflate their Achieved by overshooting an",
-    "easy cluster while another goes unmet. This is a PROVISIONAL figure — a flagged interview drops",
-    "out immediately, before a response is due; resampling uses a narrower, settled-only figure. A",
-    "big Collected-vs-Achieved gap on the Partners sheet usually means oversampling of easy-to-reach areas —",
+    "easy cluster while another goes unmet. Policy changed 2026-09-11: a pending/unresolved flag no",
+    "longer excludes an interview here, only a confirmed deletion does — same figure resampling now",
+    "uses too. A big Collected-vs-Achieved gap on the Partners sheet is now genuine oversampling —",
     "wasted operational resource, not real progress. Enumerators' \"Achieved\" is deliberately NOT capped the",
     "same way (no individual per-enumerator target exists to cap against) — read it as their own",
-    "completed/matched/non-duplicate/not-quality-excluded count, not a coverage figure."
+    "completed/matched/not-a-settled-deletion count, not a coverage figure."
   ))
   write_para(paste(
     "On the Partners/Enumerators sheets: \"Tier A/B/C\" are counts of DISTINCT SUBMISSIONS with an issue in",

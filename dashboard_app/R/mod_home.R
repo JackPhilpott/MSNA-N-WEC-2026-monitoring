@@ -52,19 +52,17 @@ mod_home_ui <- function(id) {
             strong("Collected vs. Achieved: "),
             "wherever this dashboard reports progress against target, it draws a hard line ",
             "between ", strong("Collected"), " (every completed interview actually done in the ",
-            "field — includes oversampled surplus and duplicates) and ", strong("Achieved"),
-            " (completed, matched, non-duplicate interviews not currently flagged for ",
-            "deletion — duration floor, implausible food-consumption answers, a duplicate ",
-            "point, consent, unusually high missingness, or a missing household listing — ",
-            "capped at each CLUSTER's own target before being summed up to LGA/partner level ",
-            "— what actually counts toward the sample frame). This is a PROVISIONAL figure: an ",
-            "interview drops out the moment it's flagged, before a partner even has a chance to ",
-            "respond — that's deliberate, the incentive to engage with the recovery workbook. ",
-            "A cluster that's been oversampled never contributes more than ",
+            "field — includes oversampled surplus) and ", strong("Achieved"),
+            " (completed, matched interviews that are not a SETTLED, confirmed tracker ",
+            "deletion — capped at each CLUSTER's own target before being summed up to ",
+            "LGA/partner level — what actually counts toward the sample frame). Policy changed ",
+            "2026-09-11: a pending/unresolved flag (duplicate, unmatched, a still-open ",
+            "recovery-workbook item) no longer excludes an interview from Achieved — only an ",
+            "actually-confirmed deletion does. A cluster that's been oversampled never contributes more than ",
             "its own target to Achieved, so padding an easy-to-reach cluster can't compensate ",
             "for, or mask, under-coverage somewhere else. A large Collected-vs-Achieved gap for ",
-            "a partner or LGA usually means wasted operational effort on oversampling, not real ",
-            "progress. Look for the ", icon("circle-info", class = "text-muted"), " icon next to ",
+            "a partner or LGA usually means real oversampling, worth reviewing so an over-collected ",
+            "cluster isn't asked for more. Look for the ", icon("circle-info", class = "text-muted"), " icon next to ",
             "a figure for its exact definition."
           ),
           p(
@@ -128,9 +126,19 @@ mod_home_server <- function(id) {
       # built to fix; progress_by_stratum already applies the cluster-level
       # cap (see compute_progress_by_stratum(), global.R).
       total_achieved <- sum(progress_by_stratum$achieved_n)
-      total_collected <- sum(is_collected(submissions_raw))
+      # FIXED 2026-09-11: was sum(is_collected(submissions_raw)) - a raw,
+      # unscoped sum over every submission, computed independently from the
+      # other three figures on this row (which all come from
+      # progress_by_stratum, itself scoped to strata_frame's current
+      # roster). A completed interview whose cluster has since been
+      # retired/dropped would inflate this while staying invisible to
+      # Achieved/Confirmed/Pending - breaking the very identity this row
+      # claims to hold exactly. Now sourced from the same roster-scoped
+      # place as the other three, so the identity can't drift.
+      total_collected <- sum(progress_by_stratum$collected_n)
       total_confirmed_deletion <- sum(progress_by_stratum$confirmed_deletion_n)
       total_pending_deletion <- sum(progress_by_stratum$pending_deletion_n)
+      total_oversampling_surplus <- sum(progress_by_stratum$oversampling_surplus_n)
       # 2026-09-09: target_sample_current (revised/live), not target_sample
       # (original) - matches every other "how much is left" figure on this
       # page; the Original vs. Revised national totals get their own row
@@ -164,16 +172,20 @@ mod_home_server <- function(id) {
           )
         },
         tags$tr(
-          tags$td("Achieved so far", info_icon("Completed, matched, non-duplicate interviews not currently flagged for deletion (duration floor, fcs_zero, duplicate point, consent, percentage missing, or a missing HH listing), capped at each cluster's own target. PROVISIONAL — an interview drops out the moment it's flagged, before a partner has responded; resampling uses a narrower, settled-only figure instead. Oversampled surplus never counts here. National total, not affected by the sidebar filters.")),
+          tags$td("Achieved so far", info_icon("Completed, matched interviews that are not a SETTLED (confirmed/contested) tracker deletion, capped at each cluster's own target. Policy changed 2026-09-11: a pending/unresolved flag (duplicate, unmatched, still-open tracker item) no longer excludes an interview from Achieved - only an actually-confirmed deletion does. See 'Pending Deletion' below for how much of this is still at risk of moving. Oversampled surplus never counts here. National total, not affected by the sidebar filters.")),
           tags$td(strong(comma(total_achieved), " (", fmt_pct(total_achieved / TOTAL_PLANNED_INTERVIEWS_CURRENT), " of Revised Target)"))
         ),
         tags$tr(
-          tags$td("Collected so far", info_icon("Every completed interview actually done — includes oversampled surplus, duplicates, and unmatched submissions. Total field effort, not what counts toward target.")),
+          tags$td("Collected so far", info_icon("Every completed interview actually done — includes oversampled surplus and any interview since removed by a confirmed deletion. Total field effort, not what counts toward target.")),
           tags$td(strong(comma(total_collected)))
         ),
         tags$tr(
-          tags$td("Confirmed Deleted / Pending Deletion", info_icon("Of Collected but not Achieved: CONFIRMED DELETED is a settled tracker deletion — genuinely gone, feeds resampling. PENDING DELETION is everything else not yet counted — duplicates, unmatched submissions, a still-open tracker flag, and any oversampling surplus. None of the last three currently have a partner review path the way a tracker flag does, but none are confirmed gone either. Collected always equals Achieved + Confirmed Deleted + Pending Deletion, exactly.")),
-          tags$td(strong(comma(total_confirmed_deletion), " / ", comma(total_pending_deletion)))
+          tags$td("Confirmed Deleted / Oversampling Surplus", info_icon("Of Collected but not Achieved (changed 2026-09-11 — see Achieved above): CONFIRMED DELETED is a settled tracker deletion — genuinely gone, feeds resampling. OVERSAMPLING SURPLUS is real, completed interviews beyond what a cluster's own target calls for — capped out of Achieved by design, not a data problem, but likely needs reviewing so a genuinely over-collected cluster doesn't keep being asked for more. Collected always equals Achieved + Confirmed Deleted + Oversampling Surplus, exactly.")),
+          tags$td(strong(comma(total_confirmed_deletion), " / ", comma(total_oversampling_surplus)))
+        ),
+        tags$tr(
+          tags$td("Pending Deletion", info_icon("Informational only (changed 2026-09-11 — no longer part of the Collected/Achieved/Confirmed/Surplus identity above): how many of the interviews already counted in Achieved still carry an unresolved tracker flag (duplicate, unmatched, a still-open recovery-workbook item) that could still result in a confirmed deletion later. Included in Achieved for now, per Jack's explicit decision — not subtracted.")),
+          tags$td(strong(comma(total_pending_deletion)))
         ),
         tags$tr(
           tags$td("Oversampled clusters", info_icon("Clusters with more achieved interviews than their own target_households — the surplus never counts toward Achieved or masks under-coverage elsewhere, but represents field effort spent past target that will likely need reviewing for deletion. Not a new sample design; a cluster's target is unchanged.")),
@@ -211,7 +223,7 @@ mod_home_server <- function(id) {
         tags$tr(tags$td("Submissions that day"), tags$td(strong(comma(today_count)))),
         tags$tr(tags$td("Submissions the day before"), tags$td(strong(comma(yesterday_n)))),
         tags$tr(
-          tags$td("Total achieved to date", info_icon("Completed, matched, non-duplicate interviews not currently flagged for deletion (duration floor, fcs_zero, duplicate point, consent, percentage missing, or a missing HH listing), capped at each cluster's own target. PROVISIONAL — an interview drops out the moment it's flagged, before a partner has responded; resampling uses a narrower, settled-only figure instead. Oversampled surplus never counts here. National total, not affected by the sidebar filters — same figure as \"Achieved so far\" above, shown again here alongside today's daily activity for context.")),
+          tags$td("Total achieved to date", info_icon("Completed, matched interviews that are not a SETTLED (confirmed/contested) tracker deletion, capped at each cluster's own target. Policy changed 2026-09-11: a pending/unresolved flag no longer excludes an interview here, only a confirmed deletion does — same figure resampling now uses too. Oversampled surplus never counts here. National total, not affected by the sidebar filters — same figure as \"Achieved so far\" above, shown again here alongside today's daily activity for context.")),
           tags$td(strong(comma(total_achieved), " / ", comma(total_target), " (", fmt_pct(total_achieved / total_target), ")"))
         ),
         tags$tr(

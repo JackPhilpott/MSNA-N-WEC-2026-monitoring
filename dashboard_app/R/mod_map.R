@@ -16,7 +16,7 @@ mod_map_ui <- function(id) {
           style = "display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;",
           span(
             "Coverage map",
-            info_icon("Fill colour and \"% of target\" reflect ACHIEVED — completed, matched, non-duplicate, not currently flagged for deletion (duration floor, fcs_zero, duplicate point, consent, percentage missing, or a missing HH listing), capped at each cluster's own target, measured against the REVISED (live, resampling-aware) target — see the Original Target figure in each popup for the unchanged design baseline. PROVISIONAL — a flagged interview drops out immediately, before a partner responds; resampling uses a narrower, settled-only figure. Hover a cluster/LGA for its COLLECTED, CONFIRMED DELETED (settled, genuinely gone) and PENDING DELETION (everything else not yet counted — duplicates, unmatched, a still-open flag, oversampling surplus) figures too — Collected always equals Achieved + Confirmed Deleted + Pending Deletion."),
+            info_icon("Fill colour and \"% of target\" reflect ACHIEVED — completed, matched interviews that are not a SETTLED (confirmed/contested) tracker deletion, capped at each cluster's own target, measured against the REVISED (live, resampling-aware) target — see the Original Target figure in each popup for the unchanged design baseline. Policy changed 2026-09-11: a pending/unresolved flag no longer excludes an interview, only a confirmed deletion does. Hover a cluster/LGA for its COLLECTED, CONFIRMED DELETED (settled, genuinely gone) and OVERSAMPLING SURPLUS (real completed interviews beyond target, capped out of Achieved) figures too — Collected always equals Achieved + Confirmed Deleted + Oversampling Surplus. PENDING DELETION is shown separately, informationally — how much of Achieved still carries an unresolved flag."),
             if (!is.na(FRAME_AS_OF_LABEL)) {
               span(class = "text-muted", style = "font-size: 0.75em; font-weight: normal; margin-left: 10px;", FRAME_AS_OF_LABEL)
             }
@@ -74,6 +74,7 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
           collected_n = sum(collected_n, na.rm = TRUE),
           confirmed_deletion_n = sum(confirmed_deletion_n, na.rm = TRUE),
           pending_deletion_n = sum(pending_deletion_n, na.rm = TRUE),
+          oversampling_surplus_n = sum(oversampling_surplus_n, na.rm = TRUE),
           .groups = "drop"
         ) %>%
         mutate(pct_achieved = ifelse(target_sample_current > 0, achieved_n / target_sample_current, NA_real_))
@@ -88,7 +89,7 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
     scope_admin2_sf <- reactive({
       lga <- filtered_lga() %>%
         select(adm2_pcode, target_sample, target_sample_current, achieved_n, collected_n,
-               confirmed_deletion_n, pending_deletion_n, pct_achieved)
+               confirmed_deletion_n, pending_deletion_n, oversampling_surplus_n, pct_achieved)
       admin2_sf %>% inner_join(lga, by = "adm2_pcode")
     })
 
@@ -419,7 +420,8 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
               " (", label_pct, ") <span style='color:#8894A6;'>(original target: ", coalesce(target_sample, 0), ")</span><br>",
               "Collected: ", coalesce(collected_n, 0), "<br>",
               "Confirmed Deleted: ", coalesce(confirmed_deletion_n, 0),
-              " | Pending Deletion: ", coalesce(pending_deletion_n, 0), "<br>",
+              " | Oversampling Surplus: ", coalesce(oversampling_surplus_n, 0), "<br>",
+              "Pending Deletion (informational, in Achieved above): ", coalesce(pending_deletion_n, 0), "<br>",
               "Samples required: ", coalesce(remaining_idp, 0), " IDPs | ", coalesce(remaining_non_idp, 0), " Non-IDPs<br>",
               "Inaccessible ward portions: ", coalesce(n_ward_portions_inaccessible, 0), " of ", coalesce(n_ward_portions, 0), "<br>",
               # gsub to <br> here (not baked into pop_remaining_label

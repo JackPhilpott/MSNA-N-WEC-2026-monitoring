@@ -538,6 +538,19 @@ testServer(app_env$server, {
   # since only touched dimensions are guaranteed fresh.
   full_lga_choices <- compute_filter_choices("lga", list())
   cat("Full LGA count / total planned interviews:", length(full_lga_choices), "/", comma(TOTAL_PLANNED_INTERVIEWS), "\n")
+  # CAPTURED 2026-09-11: the actual pre-narrowing baseline from
+  # filtered_stratum() itself, not TOTAL_PLANNED_INTERVIEWS - those are no
+  # longer the same number now that Dropped strata exist (see below) and
+  # equating them was masking a real, separate finding: the LGA/state
+  # picker choice-lists only let a Dropped stratum through when it shares
+  # an LGA with a still-covered one, so "select everything" doesn't
+  # actually reach every Dropped stratum via the sidebar filters even
+  # though compute_progress_by_stratum() itself returns all of them - a
+  # real UI-wiring gap, flagged for a follow-up pass through the
+  # choice-list-building code, not fixed here. This test's actual job is
+  # narrower and still valid regardless: does resetting the region filter
+  # restore exactly what you had before narrowing.
+  target_full <- sum(filtered_stratum()$target_sample, na.rm = TRUE)
   session$setInputs(f_region = setdiff(unname(region_choices), "NW"))
   session$flushReact()
   lga_choices_no_nw <- call_log$last_choices[["f_lga"]]
@@ -554,7 +567,9 @@ testServer(app_env$server, {
   cat("LGA choices / target with NW re-added:", length(lga_choices_nw_restored), "/", comma(target_nw_restored), "\n")
   stopifnot(setequal(lga_choices_nw_restored, full_lga_choices))
   stopifnot(setequal(lga_selected_nw_restored, full_lga_choices))
-  stopifnot(target_nw_restored == TOTAL_PLANNED_INTERVIEWS)
+  # FIXED 2026-09-11: was == TOTAL_PLANNED_INTERVIEWS - see target_full's
+  # own note above for why that stopped being the right comparison.
+  stopifnot(target_nw_restored == target_full)
 
   # Regression test for the "constant resetting" bug (2026-08-15): a direct
   # user click on a filter whose own observer never reads its own input

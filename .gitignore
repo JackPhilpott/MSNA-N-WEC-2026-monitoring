@@ -14,16 +14,35 @@ renv/python/
 input_data/
 data/
 
-# This repo tracks the dashboard app only. cleaning/ (raw KoBo exports,
-# per-partner progress spreadsheets - real submission data) and
-# field_verify/ (inter-partner boundary-dispute correspondence) are kept
-# out of version control entirely - never pushed anywhere from here.
-cleaning/
+# cleaning/ and reports/ - real submission data, partner-submitted files,
+# and generated outputs are kept out of version control entirely (never
+# pushed anywhere from here). field_verify/ (inter-partner boundary-dispute
+# correspondence) likewise.
+#
+# FIX 2026-09-11: these two used to be blanket-ignored as whole directories.
+# That silently meant every hand-written pipeline SCRIPT living inside them
+# (issue_tracker.R, apply_review_decisions.R, prep_real_submissions.R,
+# independent_deletion_checks.R, the whole recovery-workbook build, etc.)
+# had zero git history and zero backup - found only after a full day
+# building/fixing that logic with nothing to show for it in git. Script code
+# (.R/.py/.md) is tracked from here on; real data, partner files, generated
+# outputs, and tracker/log snapshots stay excluded below by name/extension.
+# cleaning/MSNA_Data_Cleaning/ is a separate legacy pipeline (data officer's
+# own, read-only from here per CLAUDE.md) - left fully excluded for now,
+# not evaluated for the same fix yet.
 field_verify/
-
-# Generated hand-off reports (e.g. generate_fact_digest.R) - regenerated
-# on demand, sent directly to the recipient, not tracked in git
-reports/
+cleaning/MSNA_Data_Cleaning/
+cleaning/*.rds
+cleaning/real/*.csv
+cleaning/real/handoff_for_resampling/
+reports/partner_digests/
+reports/partner_data_recovery/inputs/
+reports/partner_data_recovery/outputs/
+reports/partner_data_recovery/_backup_before_imc_merge_2026-09-03/
+reports/partner_data_recovery/_backup_before_real_listing_fix_2026-09-03/
+reports/partner_data_recovery/scripts/_test_fixtures/
+reports/partner_data_recovery/scripts/_archive/2026-09-06_pre_tracker_migration_backups/
+reports/partner_data_recovery/scripts/*.csv
 
 # Shiny deployment metadata (machine/account-specific)
 dashboard_app/rsconnect/

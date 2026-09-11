@@ -26,11 +26,11 @@ mod_partner_report_ui <- function(id) {
         value_box(title = info_title("Original Target (their LGAs)", "The frozen design-time total across this partner's assigned LGAs, unchanged since fielding began."), value = textOutput(ns("kpi_target_original")), showcase = icon("bullseye"), theme = "secondary"),
         value_box(title = info_title("Revised Target (their LGAs)", "The live total across every currently-active cluster in this partner's assigned LGAs — grows automatically when resampling adds a replacement/supplementary cluster. Achieved/% achieved are computed against THIS figure."), value = textOutput(ns("kpi_target")), showcase = icon("bullseye"), theme = "primary"),
         value_box(
-          title = info_title("Achieved", "Completed, matched, non-duplicate interviews not currently flagged for deletion (duration floor, fcs_zero, duplicate point, consent, percentage missing, or a missing HH listing) — capped at each cluster's own target. PROVISIONAL — a flagged interview drops out immediately, before a partner responds; resampling uses a narrower, settled-only figure."),
+          title = info_title("Achieved", "Completed, matched interviews that are not a SETTLED (confirmed/contested) tracker deletion — capped at each cluster's own target. Policy changed 2026-09-11: a pending/unresolved flag no longer excludes an interview, only a confirmed deletion does — same figure resampling now uses too."),
           value = textOutput(ns("kpi_achieved")), showcase = icon("clipboard-check"), theme = "success"
         ),
         value_box(
-          title = info_title("Collected", "Every completed interview actually done, including oversampled surplus and duplicates — total field effort, not what counts toward target. A large gap vs. Achieved usually means oversampling of easy-to-reach clusters."),
+          title = info_title("Collected", "Every completed interview actually done, including oversampled surplus — total field effort, not what counts toward target. A large gap vs. Achieved usually means oversampling of easy-to-reach clusters."),
           value = textOutput(ns("kpi_collected")), showcase = icon("layer-group"), theme = "warning"
         ),
         value_box(
@@ -38,7 +38,7 @@ mod_partner_report_ui <- function(id) {
           value = textOutput(ns("kpi_confirmed_deletion")), showcase = icon("trash"), theme = "danger"
         ),
         value_box(
-          title = info_title("Pending Deletion", "Everything else in this partner's coverage not yet counted as Achieved — duplicates, unmatched submissions, a still-open tracker flag, and any oversampling surplus. Not confirmed gone, but not yet saved either."),
+          title = info_title("Pending Deletion", "Informational only (changed 2026-09-11) — how much of Achieved above still carries an unresolved tracker flag (duplicate, unmatched, a still-open recovery-workbook item) that could still become a confirmed deletion later. Included in Achieved for now, not subtracted."),
           value = textOutput(ns("kpi_pending_deletion")), showcase = icon("hourglass-half"), theme = "warning"
         ),
         value_box(
@@ -50,7 +50,7 @@ mod_partner_report_ui <- function(id) {
       layout_columns(
         col_widths = c(4),
         value_box(
-          title = info_title("Oversampled clusters", "Clusters in this partner's coverage where their own submissions have pushed the cluster's achieved count past its target_households. The surplus doesn't count toward Achieved above (folded into Pending Deletion instead), but is field effort spent past target — worth reviewing before deciding which submissions to keep. A cluster jointly worked with another partner counts for both."),
+          title = info_title("Oversampled clusters", "Clusters in this partner's coverage where their own submissions have pushed the cluster's achieved count past its target_households. The surplus doesn't count toward Achieved above (its own separate Oversampling Surplus figure instead — changed 2026-09-11, was folded into Pending Deletion before), but is real field effort spent past target — worth reviewing before deciding which submissions to keep. A cluster jointly worked with another partner counts for both."),
           value = textOutput(ns("kpi_oversampled")), showcase = icon("triangle-exclamation"), theme = "warning"
         )
       )
@@ -58,7 +58,7 @@ mod_partner_report_ui <- function(id) {
     card(
       card_header(
         "Progress by LGA (their assigned coverage area)",
-        info_icon("ACHIEVED: completed, matched, non-duplicate, not currently flagged for deletion (duration floor, fcs_zero, duplicate point, consent, percentage missing, or a missing HH listing), capped at each cluster's own target. PROVISIONAL — a flagged interview drops out immediately, before a partner responds; resampling uses a narrower, settled-only figure. COLLECTED: every completed interview, including oversampled surplus and duplicates."),
+        info_icon("ACHIEVED: completed, matched interviews that are not a SETTLED (confirmed/contested) tracker deletion, capped at each cluster's own target. Policy changed 2026-09-11: a pending/unresolved flag no longer excludes an interview, only a confirmed deletion does. COLLECTED: every completed interview, including oversampled surplus."),
         span(
           class = "text-muted", style = "font-size: 0.8em; font-weight: normal; margin-left: 8px;",
           "Some LGAs are jointly covered by more than one partner (see \"Shared with\") — Achieved there reflects everyone's combined submissions, not this partner's alone."
@@ -154,6 +154,7 @@ build_partner_excel <- function(org_id_val, file) {
   total_collected <- sum(lga_df$collected_n)
   total_confirmed_deletion <- sum(lga_df$confirmed_deletion_n)
   total_pending_deletion <- sum(lga_df$pending_deletion_n)
+  total_oversampling_surplus <- sum(lga_df$oversampling_surplus_n)
 
   wb <- createWorkbook()
   addWorksheet(wb, "Summary")
@@ -161,11 +162,11 @@ build_partner_excel <- function(org_id_val, file) {
     wb, "Summary",
     data.frame(
       Field = c("Partner", "Report generated", "Original Target interviews (their LGAs)", "Revised Target interviews (their LGAs)",
-                "Achieved interviews", "Collected interviews", "Confirmed Deleted", "Pending Deletion",
+                "Achieved interviews", "Collected interviews", "Confirmed Deleted", "Oversampling Surplus", "Pending Deletion (informational, included in Achieved)",
                 "% achieved", "Submissions logged", "Flagged for review", "Flag rate", "Consent refusals"),
       Value = c(
         label, format(Sys.time(), "%d %b %Y %H:%M"), comma(total_target), comma(total_target_current),
-        comma(total_achieved), comma(total_collected), comma(total_confirmed_deletion), comma(total_pending_deletion),
+        comma(total_achieved), comma(total_collected), comma(total_confirmed_deletion), comma(total_oversampling_surplus), comma(total_pending_deletion),
         fmt_pct(total_achieved / total_target_current), comma(qual$submissions), comma(qual$flagged),
         fmt_pct(qual$flag_rate), comma(qual$consent_refused)
       )
@@ -173,18 +174,18 @@ build_partner_excel <- function(org_id_val, file) {
     colNames = FALSE
   )
   setColWidths(wb, "Summary", cols = 1:2, widths = c(28, 40))
-  addStyle(wb, "Summary", createStyle(textDecoration = "bold"), rows = 1:13, cols = 1)
+  addStyle(wb, "Summary", createStyle(textDecoration = "bold"), rows = 1:14, cols = 1)
   writeData(
     wb, "Summary",
     paste(
-      "Achieved = completed, matched, non-duplicate, not currently flagged for deletion (duration floor, fcs_zero, duplicate point, consent, percentage missing, or a missing HH listing), capped at each cluster's own target (oversampling can't count toward or mask coverage elsewhere), measured against Revised Target. PROVISIONAL: a flagged interview drops out immediately, before a partner responds; resampling uses a narrower, settled-only figure.",
-      "Collected = every completed interview actually done, including oversampled surplus and duplicates.",
-      "Confirmed Deleted = a settled tracker deletion, genuinely gone. Pending Deletion = everything else not yet counted as Achieved (duplicates, unmatched, a still-open flag, oversampling surplus) - not confirmed gone, but not yet saved either. Collected always equals Achieved + Confirmed Deleted + Pending Deletion.",
+      "Achieved = completed, matched interviews that are not a SETTLED (confirmed/contested) tracker deletion, capped at each cluster's own target (oversampling can't count toward or mask coverage elsewhere), measured against Revised Target. Policy changed 2026-09-11: a pending/unresolved flag no longer excludes an interview - only a confirmed deletion does.",
+      "Collected = every completed interview actually done, including oversampled surplus.",
+      "Confirmed Deleted = a settled tracker deletion, genuinely gone. Pending Deletion (informational only, not part of the identity below) = how much of Achieved still carries an unresolved flag that could still become a confirmed deletion. Collected always equals Achieved + Confirmed Deleted + Oversampling Surplus (real completed interviews beyond a cluster's own target).",
       "Original Target = the frozen design-time total, unchanged since fielding began. Revised Target = the live total across the current cluster roster, grows automatically as resampling adds clusters."
     ),
-    startRow = 15
+    startRow = 16
   )
-  addStyle(wb, "Summary", createStyle(fontSize = 9, textDecoration = "italic", fontColour = "#666666", wrapText = TRUE), rows = 15, cols = 1)
+  addStyle(wb, "Summary", createStyle(fontSize = 9, textDecoration = "italic", fontColour = "#666666", wrapText = TRUE), rows = 16, cols = 1)
 
   sheet2 <- "Progress by LGA"
   addWorksheet(wb, sheet2)
@@ -220,15 +221,17 @@ build_partner_pdf <- function(org_id_val, file) {
   total_collected <- sum(lga_df$collected_n)
   total_confirmed_deletion <- sum(lga_df$confirmed_deletion_n)
   total_pending_deletion <- sum(lga_df$pending_deletion_n)
+  total_oversampling_surplus <- sum(lga_df$oversampling_surplus_n)
   pct <- if (total_target_current > 0) total_achieved / total_target_current else NA_real_
 
   header_text <- paste0(
     label, "\nMSNA N-WEC 2026 — Progress Report\nGenerated: ", format(Sys.time(), "%d %b %Y %H:%M"),
     "\n\nOriginal Target: ", comma(total_target), "     Revised Target: ", comma(total_target_current),
     "\nAchieved: ", comma(total_achieved), " (", fmt_pct(pct), ")", "     Collected: ", comma(total_collected),
-    "\nConfirmed Deleted: ", comma(total_confirmed_deletion), "     Pending Deletion: ", comma(total_pending_deletion),
+    "\nConfirmed Deleted: ", comma(total_confirmed_deletion), "     Oversampling Surplus: ", comma(total_oversampling_surplus),
+    "\nPending Deletion (informational, included in Achieved above): ", comma(total_pending_deletion),
     "\nSubmissions logged: ", comma(qual$submissions), "     Flagged for review: ", comma(qual$flagged), " (", fmt_pct(qual$flag_rate), ")",
-    "\nAchieved (provisional) = capped at each cluster's own target, measured against Revised Target, excludes interviews currently flagged for deletion. Collected = every completed interview, incl. oversampled surplus/duplicates. Pending Deletion = not yet counted as Achieved but not confirmed gone either."
+    "\nAchieved = capped at each cluster's own target, measured against Revised Target, excludes only SETTLED (confirmed) deletions - a pending flag no longer excludes (policy changed 2026-09-11). Collected = every completed interview, incl. oversampled surplus. Oversampling Surplus = real completed interviews beyond a cluster's own target, capped out of Achieved by design."
   )
   header_plot <- ggplot() + theme_void() + xlim(0, 1) + ylim(0, 1) +
     annotate("text", x = 0, y = 1, label = header_text, hjust = 0, vjust = 1, size = 4.2)
