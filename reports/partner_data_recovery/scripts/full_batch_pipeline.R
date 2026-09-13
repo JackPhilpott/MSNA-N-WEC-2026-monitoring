@@ -273,7 +273,7 @@ build_partner_package <- function(org) {
       left_join(cluster_geo_lookup, by = c("del_cluster_id" = "cluster_id")) %>%
       rename(cluster_id = del_cluster_id) %>%
       arrange(cluster_id)
-  } else tibble()
+  } else tibble(cluster_id = character(0))
 
   # ---- Missing HH Listings — cluster-level gap (added 2026-09-11) -----------
   # Tonight's redesign split listing_missing into two distinct things: the
@@ -309,10 +309,23 @@ build_partner_package <- function(org) {
         affected_interviews = coalesce(affected_interviews, 0L),
         interview_ids = "(cluster-wide gap - no listing submissions at all for this site, not tied to specific flagged interviews)"
       )
-  } else tibble()
+  } else tibble(cluster_id = character(0))
   # bind_rows() fills NA for columns only one side has (e.g. the per-
   # interview rows don't have target_households/iom_site_name) - harmless,
   # whatever writes this sheet reads by column name, not position.
+  #
+  # FIX 2026-09-13: both branches above used to fall back to a bare
+  # tibble() (zero rows, ZERO COLUMNS - not just zero rows of the right
+  # shape) when a partner had no rows for that category. A partner with
+  # BOTH categories empty at once (5 of 19 in tonight's real run - DRC,
+  # LHI, MDM, SI, ZOA) hit bind_rows() on two genuinely columnless
+  # tibbles, producing a result with no cluster_id column at all -
+  # arrange(cluster_id) then failed with "object 'cluster_id' not found",
+  # not a graceful empty sheet. Same bug shape already fixed once elsewhere
+  # in this project (merge_partner_resample_batch.R's empty-tibble
+  # cluster_id/survey_id case) - fixed the same way here: both empty
+  # branches now carry cluster_id = character(0) explicitly, so this
+  # arrange() always has a real (possibly zero-row) column to sort by.
   listing_sheet <- bind_rows(listing_sheet, missing_hh_sheet) %>% arrange(cluster_id)
 
   # ---- Other Issues — date_outlier / crs_unmatched (added 2026-09-11) -----

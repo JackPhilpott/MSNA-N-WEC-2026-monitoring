@@ -1,18 +1,26 @@
-# Reads the cleaning team's daily check-flag logs (one Excel file per date,
-# under cleaning/MSNA_Data_Cleaning/output/checking/<date>/all_orgs/) and
-# turns them into the enumerator/partner-level rollups the FACT digest needs
-# (see dashboard_app/R/reports_fact_digest.R for how these feed the
-# workbook, and generate_fact_digest.R at the project root for the actual
-# "run this daily" entry point). Read-only against cleaning/ — never writes
-# or modifies anything there.
+# Reads the cleaning team's check-flag logs and turns them into the
+# enumerator/partner-level rollups the FACT digest needs (see
+# dashboard_app/R/reports_fact_digest.R for how these feed the workbook, and
+# generate_fact_digest.R at the project root for the actual "run this daily"
+# entry point). Read-only against cleaning/ — never writes or modifies
+# anything there.
 #
-# ---- Why every date has to be read, not just the latest (2026-08-18) -------
-# Each day's cleaning_log_main.xlsx covers only that day's newly-checked
-# batch, not a cumulative reissue of everything still open — confirmed
-# empirically (zero uuid+check_id overlap between e.g. the 08-16 and 08-17
-# logs). So there's no "latest file wins" shortcut like
-# prep_real_submissions.R gets to use for the anonymised export: this has to
-# discover and combine every dated folder to see the full history.
+# ---- FORMAT CHANGE 2026-09-13: the DO now publishes ONE cumulative master
+# log instead of a dated per-day file ---------------------------------------
+# cleaning/MSNA_Data_Cleaning/output/checking/master_log/all_orgs/
+# master_log_main.xlsx replaces the old daily
+# checking/<date>/all_orgs/*_cleaning_log_main.xlsx files entirely -
+# checking/db/ (the pre-2026-09-13 dated-folder location) stopped receiving
+# new dates after 2026-09-09, confirmed directly (no 09-10 through 09-13
+# folders exist there). The new file carries its own per-row check_date
+# column (confirmed clean: character "YYYY-MM-DD", 0 NAs across 11,198 rows)
+# instead of one date per file, and IS the cumulative reissue the old format
+# explicitly wasn't - no combining across files needed any more. Old
+# per-date files, when they existed, each covered only that day's
+# newly-checked batch (confirmed empirically then: zero uuid+check_id
+# overlap between e.g. the 08-16 and 08-17 logs) - the discover-and-combine-
+# every-dated-folder logic below is kept ONLY as a fallback for reading that
+# historical layout if it's ever needed again, not for normal operation.
 #
 # ---- The "main" log is the only one with real content ----------------------
 # Each date also has roster/edu_ind/health_ind/nut_ind/prot_ind cleaning
@@ -132,22 +140,32 @@ TIER_LABEL <- c(
   C = "C - pattern only", D = "D - not an issue"
 )
 
-# 2026-08-30: the data officer moved the per-date all_orgs/ cleaning-log
-# folders one level deeper, under output/checking/db/ (alongside the
-# deletion/ folder, which already lived there) — output/checking/ itself
-# now only holds fill_logs/, recovery/, internal_audit/, other_responses/,
-# and db/. Broke this glob with a silent-looking "found nothing" until the
-# very next deploy, since the officer's restructure isn't something
-# 2_monitoring gets any advance notice of — see feedback_dont_touch_data_
-# officer_pipeline: their layout can change without warning, so this glob
-# has to be tolerant, not just corrected once.
-CLEANING_LOG_ROOT <- if (dir.exists("cleaning/MSNA_Data_Cleaning/output/checking/db")) {
-  "cleaning/MSNA_Data_Cleaning/output/checking/db" # called from the project root (generate_fact_digest.R)
+# The data officer's output layout has moved twice now (2026-08-30: per-date
+# folders to output/checking/db/; 2026-09-13: db/'s dated folders to one
+# cumulative output/checking/master_log/) with no advance notice either
+# time — see feedback_dont_touch_data_officer_pipeline: their layout can
+# change without warning, so this resolution has to be tolerant of all
+# three generations, not just corrected once again. CLEANING_LOG_LAYOUT
+# records which generation was actually found, since master_log's own
+# internal shape (one file, not a dated-folder glob) is genuinely different,
+# not just a different path to the same shape - summarise_cleaning_logs()
+# below branches on it.
+CLEANING_LOG_LAYOUT <- "master_log"
+CLEANING_LOG_ROOT <- if (dir.exists("cleaning/MSNA_Data_Cleaning/output/checking/master_log")) {
+  "cleaning/MSNA_Data_Cleaning/output/checking/master_log" # called from the project root (generate_fact_digest.R)
+} else if (dir.exists("../cleaning/MSNA_Data_Cleaning/output/checking/master_log")) {
+  "../cleaning/MSNA_Data_Cleaning/output/checking/master_log" # called from dashboard_app/ (tests/smoke_test.R)
+} else if (dir.exists("cleaning/MSNA_Data_Cleaning/output/checking/db")) {
+  CLEANING_LOG_LAYOUT <- "dated_db"
+  "cleaning/MSNA_Data_Cleaning/output/checking/db" # pre-2026-09-13 layout, in case master_log/ is ever renamed/removed
 } else if (dir.exists("../cleaning/MSNA_Data_Cleaning/output/checking/db")) {
-  "../cleaning/MSNA_Data_Cleaning/output/checking/db" # called from dashboard_app/ (tests/smoke_test.R)
+  CLEANING_LOG_LAYOUT <- "dated_db"
+  "../cleaning/MSNA_Data_Cleaning/output/checking/db"
 } else if (dir.exists("cleaning/MSNA_Data_Cleaning/output/checking")) {
+  CLEANING_LOG_LAYOUT <- "dated_flat"
   "cleaning/MSNA_Data_Cleaning/output/checking" # pre-2026-08-30 layout, in case a future restructure reverts it
 } else {
+  CLEANING_LOG_LAYOUT <- "dated_flat"
   "../cleaning/MSNA_Data_Cleaning/output/checking"
 }
 
@@ -168,7 +186,12 @@ read_one_cleaning_log <- function(f) {
   raw <- readxl::read_excel(f, sheet = "cleaning_log", guess_max = 3000)
   raw %>%
     transmute(
-      log_date = as.Date(stringr::str_extract(basename(f), "\\d{4}-\\d{2}-\\d{2}")),
+      # check_date (added to the sheet itself in the 2026-09-13 master_log
+      # format) is a real per-ROW date, more accurate than the old
+      # per-FILE filename date it replaces - use it when present. Falls
+      # back to the filename date for the legacy dated-folder layout,
+      # which never had a check_date column at all.
+      log_date = if ("check_date" %in% names(raw)) as.Date(check_date) else as.Date(stringr::str_extract(basename(f), "\\d{4}-\\d{2}-\\d{2}")),
       uuid, enum_id, org_id, admin1 = as.character(admin1), admin2 = as.character(admin2),
       # cluster_id only exists in the schema from 2026-08-17 onward (25 cols
       # vs 16 before, confirmed 2026-08-24) — NA for earlier dates rather
@@ -185,8 +208,15 @@ read_one_cleaning_log <- function(f) {
 # submissions_raw, is_achieved()) — called from generate_fact_digest.R after
 # that source() step, same convention as build_fact_quality_digest_excel().
 summarise_cleaning_logs <- function() {
-  files <- Sys.glob(file.path(CLEANING_LOG_ROOT, "*", "all_orgs", "*_cleaning_log_main.xlsx"))
-  stopifnot(length(files) > 0)
+  # master_log/ is one cumulative file, not a dated-folder glob - see
+  # CLEANING_LOG_LAYOUT above. Only fall back to the dated-folder glob (and
+  # its "combine every date" reasoning) for the legacy layout.
+  files <- if (CLEANING_LOG_LAYOUT == "master_log") {
+    file.path(CLEANING_LOG_ROOT, "all_orgs", "master_log_main.xlsx")
+  } else {
+    Sys.glob(file.path(CLEANING_LOG_ROOT, "*", "all_orgs", "*_cleaning_log_main.xlsx"))
+  }
+  stopifnot(all(file.exists(files)), length(files) > 0)
 
   # admin1/admin2 in the cleaning log are already STATE/LGA NAMES (e.g.
   # "Benue", "Agatu"), not pcodes — confirmed 2026-08-24 after Jack
