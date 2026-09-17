@@ -49,7 +49,17 @@ mod_representativeness_server <- function(id, filtered_subs, filtered_stratum) {
     # enumerator-reported value (see mod_progress.R's trend-chart fix), but
     # it can't be attributed to a specific stratum's design assumptions,
     # which is what every comparison in this tab is built on.
-    completed <- reactive(filtered_subs() %>% filter(is_achieved(.)))
+    #
+    # 2026-09-14 (Jack, explicit general rule): a Dropped stratum's real
+    # data must never enter a national/regional aggregate - this tab's
+    # region-level average-HH-size comparison is exactly that kind of
+    # aggregate, so a Dropped stratum's real interviews (e.g. Tsafe/
+    # idp_NG037013's 54) are excluded here too, not just from the
+    # progress/target views.
+    completed <- reactive({
+      dropped_strata <- unique(filtered_stratum()$strata_id[filtered_stratum()$status == "Dropped"])
+      filtered_subs() %>% filter(is_achieved(.), !matched_strata_id %in% dropped_strata)
+    })
 
     design_hh_scope <- reactive({
       strata_frame %>%

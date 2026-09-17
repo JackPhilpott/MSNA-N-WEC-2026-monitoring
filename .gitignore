@@ -39,6 +39,8 @@ cleaning/real/handoff_for_resampling/
 reports/partner_digests/
 reports/partner_data_recovery/inputs/
 reports/partner_data_recovery/outputs/
+reports/accessibility_review/
+reports/lga_prioritization/
 # FIX 2026-09-11 (later same night): the two backup dirs previously excluded
 # here by their old top-level names were archived into
 # reports/partner_data_recovery/_archive/<date>_<reason>/ as part of the
@@ -60,3 +62,6 @@ dashboard_app/rsconnect/
 # OS
 Thumbs.db
 Desktop.ini
+
+# Python
+__pycache__/

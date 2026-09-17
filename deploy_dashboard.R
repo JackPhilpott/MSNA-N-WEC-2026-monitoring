@@ -33,11 +33,82 @@
 
 library(rsconnect)
 
+# ---- sync 1_sampling's mirrors FIRST, before anything below reads them
+# (2026-09-14, reordered — audit finding, same incident class as
+# 2026-09-08 below but one level deeper). This block used to sit right
+# before bundle_dashboard_mirrors()/deployApp() at the END of this
+# sequence — which fixed the 2026-09-08 dropdown/target bug (see that
+# block's own comment, unchanged below) but left a subtler version of the
+# exact same bug: prep_real_submissions.R (next) matches submissions
+# against input_data/sampling_frame/, and generate_partner_digest.R
+# (further below) sources global.R, which reads the same mirrors — both
+# were still running against whatever mirror was left over from the
+# PREVIOUS deploy, with the fresh sync only landing afterward for the
+# deployed app's own dropdowns/targets. Live evidence this was actually
+# happening, not just theoretical: on 2026-09-14, submissions got matched
+# ~2 minutes before the accessibility mirror sync ran, within the same
+# run. Moved here so every read below this point sees the CURRENT
+# 1_sampling state, not last run's.
+#
+# 2026-09-08 (Jack): accessibility + sampling-frame mirrors were both found
+# stuck on stale versions (accessibility's own stamp file claimed 09-03 data
+# three days after a rebuild; input_data/sampling_frame/ was stuck on v5/v6
+# while 1_sampling had already moved to v7 — Dandume/Faskari were missing
+# from the LGA dropdown as a direct result). Root cause: propagating from
+# 1_sampling had always been a manual "someone copies the files" step with
+# nothing in code enforcing it — happened again despite a sync script
+# already existing (sync_accessibility_mirrors.R), because that script was
+# never actually wired into anything, contrary to its own header comment's
+# claim. Fixed generically here rather than patched again as a one-off:
+# both scripts live in 1_sampling (they read its output/ as source of
+# truth) and each setwd()s there as a side effect of being sourced, so
+# restore this script's own working directory immediately after each call —
+# everything below this block still expects cwd = 2_monitoring project root.
+.deploy_root_wd <- getwd()
+source("../1_sampling/resampling/scripts/sync_accessibility_mirrors.R")
+sync_accessibility_mirrors()
+setwd(.deploy_root_wd)
+source("../1_sampling/resampling/scripts/sync_sampling_frame_mirrors.R")
+sync_sampling_frame_mirrors()
+setwd(.deploy_root_wd)
+
+# 2026-09-14 (live gap caught by msna-n-wec-2026-f4 mid-deploy tonight, wired
+# in here per its own suggestion): cleaning/prep/prep_accessibility_layer.R —
+# which actually builds input_data/accessibility/accessibility_strata_level.csv
+# from 1_sampling's impact workbook, the file target_sample_representativity
+# reads from — was never called from anywhere automated, sync_accessibility_
+# mirrors() above covers a different, overlapping-but-not-identical set of
+# files (see that script's own header). A first deploy tonight went out still
+# serving a pre-drop accessibility workbook as a direct result; running this
+# script by hand and redeploying fixed it for tonight, this closes the gap
+# permanently. Doesn't setwd() itself (unlike the two sync_*_mirrors() calls
+# above), so no restore needed after.
+source("cleaning/prep/prep_accessibility_layer.R")
+
+# 2026-09-16 (live gap caught by msna-n-wec-2026-e6, 3rd recurring instance of
+# the same "fix exists, never automated" pattern as sync_accessibility_
+# mirrors.R/prep_accessibility_layer.R above): prep_psu_geometries.R builds
+# input_data/boundaries/psu/psu_hexagons_non_idp.gpkg + psu_sites_idp.gpkg -
+# the cluster hexagon/site geometry dashboard_app/global.R's cluster_targets
+# lookup and the map's own polygons both read directly - but was never called
+# from anywhere automated. Last manual run was 2026-09-14 23:42; any cluster
+# added to the frame since then (a new resampling batch, say) would render
+# with no hexagon/site geometry on the map, and cluster_targets would be
+# missing that cluster's target_households entirely (silently undercounting
+# achieved via compute_progress_by_stratum()'s per-cluster cap - the exact
+# failure mode this script's own 2026-09-02 header already documents from a
+# prior incident). Placed here, not later: generate_partner_digest.R below
+# sources global.R, which reads these two files directly, so this must run
+# before that, same reasoning as the accessibility layer above.
+source("cleaning/prep/prep_psu_geometries.R")
+
 # ---- refresh submissions from whatever's currently in cleaning/ (picks up
 # the latest anonymised export + all cleaning logs) — always the first
-# step, per Jack: "redeploy" means go back to source, not re-push
-# whatever data/real_submissions.csv already has sitting in it. Prints its
-# own sanity banner at both start and end.
+# DATA step (mirrors above are plumbing, not data), per Jack: "redeploy"
+# means go back to source, not re-push whatever data/real_submissions.csv
+# already has sitting in it. Prints its own sanity banner at both start
+# and end. Now correctly runs against the just-synced mirrors, not last
+# run's.
 source("cleaning/real/prep_real_submissions.R")
 
 # 2026-09-09 (Jack, via cross-session flag from msna-n-wec-2026-80): neither
@@ -85,28 +156,6 @@ print_sanity_banner_if_present() # most important checkpoint: right before this 
 
 # ---- report generation, before the deploy itself — same freshly-refreshed data, one run ----
 source("generate_partner_digest.R")
-
-# 2026-09-08 (Jack): accessibility + sampling-frame mirrors were both found
-# stuck on stale versions (accessibility's own stamp file claimed 09-03 data
-# three days after a rebuild; input_data/sampling_frame/ was stuck on v5/v6
-# while 1_sampling had already moved to v7 — Dandume/Faskari were missing
-# from the LGA dropdown as a direct result). Root cause: propagating from
-# 1_sampling had always been a manual "someone copies the files" step with
-# nothing in code enforcing it — happened again despite a sync script
-# already existing (sync_accessibility_mirrors.R), because that script was
-# never actually wired into anything, contrary to its own header comment's
-# claim. Fixed generically here rather than patched again as a one-off:
-# both scripts live in 1_sampling (they read its output/ as source of
-# truth) and each setwd()s there as a side effect of being sourced, so
-# restore this script's own working directory immediately after each call —
-# everything below this block still expects cwd = 2_monitoring project root.
-.deploy_root_wd <- getwd()
-source("../1_sampling/resampling/scripts/sync_accessibility_mirrors.R")
-sync_accessibility_mirrors()
-setwd(.deploy_root_wd)
-source("../1_sampling/resampling/scripts/sync_sampling_frame_mirrors.R")
-sync_sampling_frame_mirrors()
-setwd(.deploy_root_wd)
 
 # 2026-09-08: bundling step extracted to scripts/shared/bundle_dashboard_
 # mirrors.R so it can also run standalone (assert_fresh-triggered, between

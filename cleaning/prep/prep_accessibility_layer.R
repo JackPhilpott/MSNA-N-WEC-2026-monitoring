@@ -163,6 +163,27 @@ version_lines <- c(
 )
 writeLines(version_lines, file.path(DEST_DIR, "_accessibility_version.txt"))
 
+# 2026-09-14 (audit finding - a real, live stamp-file race): 1_sampling's
+# own sync_accessibility_mirrors.R (called every deploy, from
+# deploy_dashboard.R) ALSO writes to _accessibility_version.txt above -
+# but only the ward_csv_*/lga_csv_* fields, not workbook_mtime/strata_
+# level_rows/shp_md5, which only this script's fuller stamp carries. Since
+# that sync runs later in deploy_dashboard.R's own sequence, it clobbers
+# this fuller stamp with its partial one on every deploy - meaning check_
+# accessibility_freshness() (sanity_checks.R) permanently lost the ability
+# to compare workbook_mtime/shp_md5 at all (always reads NA -> always
+# reports STALE, a standing false alarm that also masks a genuine one).
+# Flagged as a known, undecided "which script should own this stamp"
+# question back on 2026-09-09 (see sanity_checks.R's own comment) - never
+# resolved. Fixed here, not by touching 1_sampling's script: this script's
+# FULL stamp (every field above) also goes to its own dedicated file that
+# only this script ever writes, so sync_accessibility_mirrors.R's later,
+# partial write to the shared file can't touch it. _accessibility_
+# version.txt itself is left untouched/still written above, in case
+# anything else ever comes to depend on its ward_csv_*/lga_csv_* fields -
+# just no longer what the freshness check itself relies on.
+writeLines(version_lines, file.path(DEST_DIR, "_accessibility_layer_full_version.txt"))
+
 cat("Copied accessibility layer:\n")
 cat(" -", basename(ward_csv_src), "(", n_ward_rows, "rows)\n")
 cat(" -", basename(lga_csv_src), "(", n_lga_rows, "rows)\n")

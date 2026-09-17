@@ -274,30 +274,32 @@ LIVE_ACCESSIBILITY_WARD_CSV <- "../1_sampling/resampling/output/master_accessibi
 LIVE_ACCESSIBILITY_LGA_CSV <- "../1_sampling/resampling/output/master_accessibility_status_lga_level.csv"
 LIVE_ACCESSIBILITY_WORKBOOK <- "../1_sampling/resampling/output/NGA_MSNA_2026_accessibility_impact_workbook.xlsx"
 LIVE_ACCESSIBILITY_SHP <- "../1_sampling/resampling/output/gis/accessible_area_lga_ward_portions.shp"
-LOCAL_ACCESSIBILITY_VERSION_FILE <- "input_data/accessibility/_accessibility_version.txt"
+# 2026-09-14 (audit finding, resolved): this used to read _accessibility_
+# version.txt - but 1_sampling's own sync_accessibility_mirrors.R (called
+# every deploy) ALSO writes to that exact file, with only ward_csv_*/
+# lga_csv_* fields, clobbering workbook_mtime/shp_md5 on every deploy and
+# permanently breaking this check (always NA -> always STALE, a standing
+# false alarm masking any real one). "Which script should own this stamp"
+# was flagged as undecided back on 2026-09-09, never resolved. Resolved
+# here without touching 1_sampling's script: prep_accessibility_layer.R
+# now ALSO writes its full stamp to this dedicated file that only it ever
+# touches, so the later partial write elsewhere can't clobber it.
+LOCAL_ACCESSIBILITY_VERSION_FILE <- "input_data/accessibility/_accessibility_layer_full_version.txt"
 
 check_accessibility_freshness <- function() {
   if (!file.exists(LIVE_ACCESSIBILITY_WARD_CSV)) return(character(0)) # sibling project not reachable - skip
   local <- read_frame_version(LOCAL_ACCESSIBILITY_VERSION_FILE)
   if (is.null(local)) {
     return(paste0(
-      "ACCESSIBILITY LAYER STALE: no local input_data/accessibility/_accessibility_version.txt found, but ",
+      "ACCESSIBILITY LAYER STALE: no local ", LOCAL_ACCESSIBILITY_VERSION_FILE, " found, but ",
       "1_sampling/resampling/output/ has accessibility data — run cleaning/prep/prep_accessibility_layer.R."
     ))
   }
   live_md5 <- function(path) if (file.exists(path)) unname(tools::md5sum(path)) else NA_character_
   live_mtime <- function(path) if (file.exists(path)) format(file.info(path)$mtime, "%Y-%m-%d %H:%M:%S") else NA_character_
-  # 2026-09-09: local is a plain named character vector from read_frame_
-  # version() - `[[` on that throws "subscript out of bounds" for a name
-  # that isn't present, rather than returning NA like a list would. Started
-  # happening once sync_accessibility_mirrors.R (1_sampling, wired into
-  # deploy_dashboard.R the same night) began writing this same stamp file
-  # too, with only ward_csv_*/lga_csv_* fields - no workbook_mtime/shp_md5,
-  # which only prep_accessibility_layer.R's fuller stamp includes. Safe
-  # lookup so a missing field reads as NA (→ correctly flags STALE below)
-  # instead of crashing every unattended run of this script, deploy_
-  # dashboard.R included. Which script should own this stamp is a separate,
-  # not-mechanical question - flagged to 2-monitoring-2d, not decided here.
+  # Safe lookup (missing field -> NA, correctly flags STALE rather than
+  # crashing) - kept even though this file is now single-writer, since a
+  # partially-written/older-shaped file should still fail safe, not error.
   vget <- function(v, k) if (k %in% names(v)) v[[k]] else NA_character_
   mismatched <- !identical(vget(local, "ward_csv_md5"), live_md5(LIVE_ACCESSIBILITY_WARD_CSV)) ||
     !identical(vget(local, "lga_csv_md5"), live_md5(LIVE_ACCESSIBILITY_LGA_CSV)) ||

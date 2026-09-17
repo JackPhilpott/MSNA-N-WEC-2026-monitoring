@@ -1,6 +1,10 @@
 # Full data refresh + dashboard deploy - the same sequence deploy_dashboard.R
-# always runs (refresh submissions -> sanity checks -> partner digest ->
-# bundle dashboard_app mirrors -> deploy live to shinyapps.io).
+# always runs (sync 1_sampling's frame/accessibility mirrors -> rebuild
+# accessibility_strata_level.csv via prep_accessibility_layer.R -> refresh
+# submissions -> sanity checks -> partner digest -> bundle dashboard_app
+# mirrors -> deploy live to shinyapps.io). Updated 2026-09-14 - this list had
+# drifted from deploy_dashboard.R's actual steps (missing the mirror syncs
+# and the accessibility-layer rebuild entirely).
 #
 # Run from a PowerShell prompt:
 #   .\redeploy.ps1

@@ -1,3 +1,12 @@
+# ARCHIVED 2026-09-14 (Jack approved): never actually called anywhere in
+# 2_monitoring since the 2026-09-08 rebuild - confirmed via grep, zero real
+# call sites, only mentions in CLAUDE.md notes. Every real freshness problem
+# that came up since (accessibility-layer stamp race, frame-drift detection)
+# got solved with its own specific, bespoke check instead of this shared
+# mechanism - the project settled on per-case checks over a generic
+# framework, and unused infrastructure was creating false confidence that
+# freshness was being enforced somewhere. Kept here, not deleted, in case a
+# genuinely generic freshness need comes up again later.
 # ==============================================================================
 # assert_fresh() - shared freshness-enforcement mechanism (2026-09-08 rebuild)
 #

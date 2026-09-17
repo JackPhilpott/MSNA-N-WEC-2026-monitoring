@@ -20,7 +20,7 @@ mod_table_ui <- function(id) {
         info_icon("ACHIEVED: completed, matched interviews that are not a SETTLED (confirmed/contested) tracker deletion, capped at each cluster's own target. Policy changed 2026-09-11: a pending/unresolved flag no longer excludes an interview, only a confirmed deletion does. COLLECTED: every completed interview, including oversampled surplus — total field effort, not what counts toward target. CONFIRMED DELETED: a settled tracker deletion (partner didn't contest, or a contest was reviewed and the deletion upheld) — genuinely gone, feeds resampling. OVERSAMPLING SURPLUS: real completed interviews beyond a cluster's own target, capped out of Achieved by design — likely needs reviewing so an over-collected cluster isn't asked for more. PENDING DELETION (informational only, already included in Achieved above): how much of Achieved still carries an unresolved flag (duplicate, unmatched, a still-open tracker item) that could still become a confirmed deletion — Collected always equals Achieved + Confirmed Deleted + Oversampling Surplus, exactly."),
         span(
           class = "text-muted", style = "font-size: 0.8em; font-weight: normal; margin-left: 8px;",
-          "Original Target = the design's fixed sample size for this stratum, unchanged since fielding began. Revised Target = the live total across whichever clusters currently make up this stratum's roster — grows automatically the moment a resampling batch adds a replacement or supplementary cluster, so it can differ from Original once resampling has touched a stratum. Status and % achieved are computed against the Revised figure."
+          "Original Target = the design's fixed sample size for this stratum, unchanged since fielding began. Revised Target = the live required minimum — 1_sampling's representativity calculation (10% MoE, ICC=0.06, +5% operational margin), recomputed fresh every refresh against the current accessible population; can rise OR fall (accessibility loss/a dropped LGA lowers the population base it's calculated against), not just grow as resampling adds clusters. Status and % achieved are computed against the ORIGINAL figure (corrected 2026-09-16, Decision A — was Revised, switched to match partner workbooks). Revised Target is still shown for reference. Δ vs Original (added 2026-09-16) flags a stratum where Revised has moved 25%+ away from Original in either direction — worth a second look at why."
         )
       ),
       if (!is.na(FRAME_AS_OF_LABEL)) {
@@ -43,6 +43,9 @@ mod_table_server <- function(id, filtered_stratum) {
           `Partner coverage` = vapply(adm2_pcode, partner_coverage_label, character(1)),
           `Original Target` = target_sample,
           `Revised Target` = target_sample_current,
+          # ADDED 2026-09-16 (Jack, visibility ask): shared helper (global.R)
+          # so this can't drift from the same calc used on the map/other tabs.
+          `Δ vs Original` = target_delta_pct(target_sample, target_sample_current),
           Collected = collected_n,
           `Confirmed Deleted` = confirmed_deletion_n,
           `Oversampling Surplus` = oversampling_surplus_n,
@@ -65,13 +68,35 @@ mod_table_server <- function(id, filtered_stratum) {
           pageLength = 20,
           # 0-based column indices: 0 Region, 1 State, 2 LGA, 3 Pop. group,
           # 4 Partner coverage, 5 Original Target, 6 Revised Target,
-          # 7 Collected, 8 Confirmed Deleted, 9 Pending Deletion,
-          # 10 Achieved, 11 % achieved, 12 % from reserve, 13 Status.
-          order = list(list(11, "asc")),
-          columnDefs = list(list(className = "dt-right", targets = 5:12))
+          # 7 Delta vs Original, 8 Collected, 9 Confirmed Deleted,
+          # 10 Oversampling Surplus, 11 Pending Deletion, 12 Achieved,
+          # 13 % achieved, 14 % from reserve, 15 Status.
+          order = list(list(13, "asc")),
+          columnDefs = list(list(className = "dt-right", targets = 5:14))
         )
       ) %>%
+        # 2026-09-14: same fix as mod_progress.R's partner table - Revised
+        # Target (target_sample_current) is now sourced straight from
+        # 1_sampling's representativity calc, genuinely fractional by
+        # construction. Display-only rounding.
+        formatRound(c("Original Target", "Revised Target"), 0) %>%
         formatPercentage(c("% achieved", "% from reserve"), 1) %>%
+        formatPercentage("Δ vs Original", 1) %>%
+        # ADDED 2026-09-16 (Jack): background highlight when a stratum's
+        # Revised has moved 25%+ from Original (either direction) - same
+        # TARGET_DIVERGENCE_THRESHOLD (global.R) the map popup and every
+        # other surface uses. A signed value's natural range doesn't fit
+        # styleColorBar's single-direction magnitude scale, so this uses
+        # formatStyle()+styleInterval() instead - same conditional-highlight
+        # spirit as Status's own background fill just below, not a new
+        # visual language.
+        formatStyle(
+          "Δ vs Original",
+          backgroundColor = styleInterval(
+            c(-TARGET_DIVERGENCE_THRESHOLD, TARGET_DIVERGENCE_THRESHOLD),
+            c("#FCE8CF", "#FFFFFF", "#FCE8CF")
+          )
+        ) %>%
         formatStyle(
           "Status",
           backgroundColor = styleEqual(names(STATUS_COLORS), unname(STATUS_COLORS)),

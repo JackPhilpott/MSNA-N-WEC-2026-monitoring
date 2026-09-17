@@ -130,7 +130,11 @@ confirmed_deletion_all <- tracker %>%
   filter(issue_type == "confirmed_deletion") %>%
   left_join(full_all %>% select(uuid, del_state = admin1, del_lga = admin2_submitted,
                                  del_ward = admin3_submitted, del_cluster_id = matched_cluster_id,
-                                 del_pop_type = pop_type, del_enum_id = enum_id),
+                                 del_pop_type = pop_type, del_enum_id = enum_id,
+                                 # ADDED 2026-09-14 (Jack's request): a date column on every
+                                 # survey-specific recovery sheet, and the raw claimed point
+                                 # ID for the new Non-IDP Duplicates sheet below.
+                                 del_submission_date = submission_date, del_non_idp_point_id = non_idp_point_id),
             by = "uuid")
 
 # Jack's refinement (2026-09-06): a submission already confirmed-deleted
@@ -162,7 +166,7 @@ build_partner_package <- function(org) {
   # register_deletion_log_issues.R) - shown as FYI only, no real appeal.
   # Everything else keeps the real Contest This? flow. See build_workbook_fn.R
   # for how this drives the sheet's presentation.
-  del_sheet <- del_all_org %>%
+  del_sheet_all <- del_all_org %>%
     filter(status %in% c(TERMINAL_STATUSES, "pending", "sent", "rejected")) %>%
     mutate(
       enum_id = del_enum_id, reason = deletion_reason,
@@ -176,11 +180,63 @@ build_partner_package <- function(org) {
     filter(is_appealable | resolution_date == as.character(Sys.Date())) %>%
     arrange(desc(is_appealable), uuid)
 
-  # excluded_uuids (2026-09-06, Jack's refinement): del_sheet$uuid alone
+  # excluded_uuids (2026-09-06, Jack's refinement): del_sheet_all$uuid alone
   # misses a no-appeal confirmation from a past batch (see note above
   # no_appeal_confirmed_uuids's definition) - union with the all-time,
   # global no-appeal set closes that gap for every sheet below.
-  excluded_uuids <- union(del_sheet$uuid, no_appeal_confirmed_uuids)
+  #
+  # Correctly used below for gps_o/idp_o candidate filtering (don't re-flag
+  # something already under review as a fresh recovery candidate - being
+  # conservative there is right, del_sheet_all's own "pending"/"sent"/
+  # "rejected" appealable rows staying visible/excluded is exactly the intent).
+  excluded_uuids <- union(del_sheet_all$uuid, no_appeal_confirmed_uuids)
+
+  # ---- Non-IDP Duplicates split-out (added 2026-09-14, Jack's request) ----
+  # duplicate_point rows used to just sit in del_sheet_all alongside every
+  # other Confirmed Deletion reason, shown with a flat one-line boilerplate
+  # text - no comparison detail like GPS Duplicates/IDP Listing Duplicates
+  # get. Split into their own sheet with real sibling-comparison enrichment
+  # instead. del_sheet_all (unsplit) stays the source for excluded_uuids
+  # above, so this split is presentation-only - it changes nothing about
+  # what counts as excluded from Achieved anywhere in this file.
+  del_sheet <- del_sheet_all %>% filter(reason != "duplicate_point")
+  nonidp_dup_raw <- del_sheet_all %>% filter(reason == "duplicate_point")
+  nonidp_dup_sheet <- if (nrow(nonidp_dup_raw) > 0) {
+    # Sibling comparison, same purpose as GPS Duplicates/IDP Listing
+    # Duplicates' own candidate columns - which OTHER real submission (any
+    # partner - a genuine cross-partner clash on the same point is worth
+    # surfacing, not hiding) currently claims the exact same point_id, so
+    # the partner has something concrete to compare against rather than a
+    # bare "this was a duplicate" statement.
+    siblings_all <- full_all %>%
+      filter(pop_type == "non_idp", !is.na(non_idp_point_id),
+             non_idp_point_id %in% nonidp_dup_raw$del_non_idp_point_id) %>%
+      select(uuid, enum_id, org_id, submission_date, non_idp_point_id)
+    other_claims <- map_chr(seq_len(nrow(nonidp_dup_raw)), function(i) {
+      pid <- nonidp_dup_raw$del_non_idp_point_id[i]; me <- nonidp_dup_raw$uuid[i]
+      others <- siblings_all %>% filter(non_idp_point_id == pid, uuid != me)
+      if (nrow(others) == 0) return("(no other current submission found claiming this point)")
+      paste(sprintf("%s (enum %s, %s, %s)", others$uuid, others$enum_id, others$org_id, as.character(others$submission_date)), collapse = "; ")
+    })
+    nonidp_dup_raw %>% mutate(other_claims = other_claims)
+  } else nonidp_dup_raw
+
+  # FIX 2026-09-14 (found tracing this further after the del_sheet$uuid/
+  # is_duplicate fix above still didn't match the dashboard's own achieved
+  # figure for a real partner - ZOA): excluded_uuids is the WRONG set for
+  # achieved specifically. It includes del_sheet's own "pending"/"sent"/
+  # "rejected" appealable rows - genuinely unresolved items that, per
+  # Jack's 2026-09-11 policy, must still count as achieved until actually
+  # SETTLED (confirmed/contested). Using excluded_uuids for achieved was
+  # silently reimposing the same pre-09-11 pessimistic-by-default policy
+  # this whole redesign was meant to close, just one layer more subtly
+  # than the is_duplicate bug. achieved_excluded_uuids below is the
+  # correct, narrower set - terminal status only, matching dashboard_app/
+  # global.R's is_confirmed_deletion() exactly (deletion_status %in%
+  # c("confirmed","contested")) - regardless of appealable/no-appeal split
+  # and regardless of date, since achieved must reflect the CURRENT
+  # settled truth, not a display-scoped subset of it.
+  achieved_excluded_uuids <- del_all_org %>% filter(status %in% TERMINAL_STATUSES) %>% pull(uuid)
 
   gps_o <- gps_all %>% filter(org_id == org, dist_to_claimed_device > 150, !uuid %in% excluded_uuids)
   if (nrow(gps_o) > 0) {
@@ -268,6 +324,10 @@ build_partner_package <- function(org) {
       summarise(
         state = first(del_state), lga = first(del_lga), ward = first(del_ward), pop_type = first(del_pop_type),
         affected_interviews = n(), interview_ids = paste(uuid, collapse = ", "),
+        # ADDED 2026-09-14 (Jack's request): a parallel, comma-joined date
+        # list matching interview_ids' order, so a field team doesn't have
+        # to cross-reference another sheet to find when these were collected.
+        interview_dates = paste(as.character(del_submission_date), collapse = ", "),
         .groups = "drop"
       ) %>%
       left_join(cluster_geo_lookup, by = c("del_cluster_id" = "cluster_id")) %>%
@@ -307,7 +367,8 @@ build_partner_package <- function(org) {
       left_join(n_completed_by_cluster, by = c("cluster_id" = "matched_cluster_id")) %>%
       mutate(
         affected_interviews = coalesce(affected_interviews, 0L),
-        interview_ids = "(cluster-wide gap - no listing submissions at all for this site, not tied to specific flagged interviews)"
+        interview_ids = "(cluster-wide gap - no listing submissions at all for this site, not tied to specific flagged interviews)",
+        interview_dates = NA_character_
       )
   } else tibble(cluster_id = character(0))
   # bind_rows() fills NA for columns only one side has (e.g. the per-
@@ -343,22 +404,56 @@ build_partner_package <- function(org) {
     transmute(
       uuid, enum_id = del_enum_id,
       state = del_state, lga = del_lga, ward = del_ward, cluster_id = del_cluster_id,
+      submission_date = del_submission_date, # ADDED 2026-09-14, Jack's request
       reason = deletion_reason
     ) %>%
     arrange(reason, uuid)
 
   # ---- target/achieved (for the email + workbook overview) ----
+  # FIX 2026-09-14 (audit finding, both real bugs, confirmed via the ZOA
+  # workbook not matching the dashboard's own achieved figure): this whole
+  # block used to diverge from the canonical is_achieved() definition
+  # (dashboard_app/global.R) in two ways.
+  #
+  # (1) n_achieved/oversampled_clusters filtered on del_sheet$uuid (the
+  # DATE-scoped display set for the workbook's own Confirmed Deletions
+  # sheet - see that block's own comment above, "only ones newly confirmed
+  # as of this batch") instead of excluded_uuids (the full, permanent,
+  # all-time exclusion set already computed above at line 183 for exactly
+  # this purpose). A no-appeal deletion confirmed on any PAST day kept
+  # counting as achieved here, forever.
+  #
+  # (2) n_achieved/oversampled_clusters ALSO independently excluded any
+  # is_duplicate-flagged row, regardless of tracker confirmation status -
+  # the same policy-violation shape as the 1,323-interview bug found and
+  # fixed in 1_sampling's 4 achieved-computing scripts the same night
+  # (is_duplicate is a raw/pending signal, not a confirmed-deletion
+  # decision - Jack's 2026-09-11 policy reversal was explicit that only a
+  # SETTLED tracker status excludes, nothing else). Removed; excluded_uuids
+  # (which only reflects real tracker-confirmed/contested rows) is now the
+  # only exclusion. Added an explicit interview_outcome=="completed" check
+  # too, matching is_achieved()'s own first condition exactly - full_all
+  # is raw real_submissions.csv, not pre-filtered to completed rows.
+  #
+  # (3) target_sample summed strata_frame$target_sample with no
+  # coverage_status filter - a stratum excluded (population-threshold or
+  # otherwise) still contributed its frozen original target here, unlike
+  # the dashboard's own per-partner rollups (fixed the same night, see
+  # dashboard_app/global.R's partner_progress_summary/partner_progress_
+  # by_lga) which correctly exclude Dropped strata from this kind of sum.
   my_adm2 <- partner_adm2[[org]]
   if (is.null(my_adm2)) my_adm2 <- character(0)
-  target_sample <- sum(strata_frame$target_sample[strata_frame$adm2_pcode %in% my_adm2], na.rm = TRUE)
+  target_sample <- sum(strata_frame$target_sample[
+    strata_frame$adm2_pcode %in% my_adm2 & strata_frame$coverage_status != "excluded"
+  ], na.rm = TRUE)
 
   full_o <- full_all %>% filter(org_id == org)
   gps_full_o <- gps_all %>% filter(org_id == org)
   idp_full_o <- t1_all %>% filter(org_id == org)
-  n_achieved <- sum(!full_o$is_duplicate & !is.na(full_o$matched_survey_id) & !(full_o$uuid %in% del_sheet$uuid))
+  n_achieved <- sum(full_o$interview_outcome == "completed" & !is.na(full_o$matched_survey_id) & !(full_o$uuid %in% achieved_excluded_uuids))
 
   oversampled_clusters <- full_o %>%
-    filter(!is_duplicate, !is.na(matched_survey_id), !(uuid %in% del_sheet$uuid)) %>%
+    filter(interview_outcome == "completed", !is.na(matched_survey_id), !(uuid %in% achieved_excluded_uuids)) %>%
     count(matched_cluster_id, name = "n_achieved_cluster") %>%
     left_join(cluster_geo_lookup, by = c("matched_cluster_id" = "cluster_id")) %>%
     filter(!is.na(target_households), n_achieved_cluster > target_households) %>%
@@ -382,10 +477,14 @@ build_partner_package <- function(org) {
   # approximation for tonight only, not the real integration.
   del_duration_ids <- del_sheet$uuid[del_sheet$reason == "duration_under_20"]
 
+  # n_achieved here matches the same fix and reasoning as the block above
+  # (interview_outcome=="completed" + excluded_uuids, not is_duplicate +
+  # del_sheet$uuid) - same canonical is_achieved() definition, per-
+  # enumerator instead of per-partner grain.
   scorecard <- full_o %>% group_by(enum_id) %>%
     summarise(
       n_collected = n(),
-      n_achieved = sum(!is_duplicate & !is.na(matched_survey_id) & !(uuid %in% del_sheet$uuid)),
+      n_achieved = sum(interview_outcome == "completed" & !is.na(matched_survey_id) & !(uuid %in% achieved_excluded_uuids)),
       n_duration_under_20 = sum(uuid %in% del_duration_ids),
       n_duration_20_30 = sum(!is.na(duration_min) & duration_min >= 20 & duration_min < 30),
       .groups = "drop"
@@ -501,7 +600,8 @@ build_partner_package <- function(org) {
   start_date <- suppressWarnings(min(full_o$submission_date[full_o$interview_outcome=="completed"], na.rm=TRUE))
 
   list(org = org, label = unname(ORG_LABELS[org]),
-       gps_sheet = gps_sheet, idp_sheet = idp_sheet, del_sheet = del_sheet, listing_sheet = listing_sheet,
+       gps_sheet = gps_sheet, idp_sheet = idp_sheet, del_sheet = del_sheet,
+       nonidp_dup_sheet = nonidp_dup_sheet, listing_sheet = listing_sheet,
        other_sheet = other_sheet,
        cluster_avail = cluster_avail, scorecard = scorecard, flag_categories = flag_categories,
        oversampled_clusters = oversampled_clusters,
@@ -525,6 +625,7 @@ if (sys.nframe() == 0) {
   test <- build_partner_package("mdm")
   cat("MDM: collected=", test$n_collected_total, " achieved=", test$n_achieved_total, " target=", test$target_sample,
       " gps=", nrow(test$gps_sheet), " idp=", nrow(test$idp_sheet), " listing_missing_rows=", nrow(test$listing_sheet),
-      " del=", nrow(test$del_sheet), " other=", nrow(test$other_sheet), " flagged_enums=", test$n_flagged_enums, "\n")
+      " del=", nrow(test$del_sheet), " nonidp_dup=", nrow(test$nonidp_dup_sheet), " other=", nrow(test$other_sheet),
+      " flagged_enums=", test$n_flagged_enums, "\n")
   cat("DONE\n")
 }

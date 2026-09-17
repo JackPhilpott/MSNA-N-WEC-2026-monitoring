@@ -219,6 +219,16 @@ cat("\n=== mod_home_server ===\n")
 testServer(mod_home_server, args = list(), {
   session$flushReact()
   cat("glance rendered ok:", !is.null(output$glance), "\n")
+  # 2026-09-17 (real bug, reported live): "Submissions that day"/"the day
+  # before" silently showed NA whenever a nulled-submission_date achieved
+  # row existed (NA & TRUE = NA, sum() without na.rm propagated it) -
+  # output$snapshot wasn't checked here at all before, which is exactly
+  # how this shipped unnoticed. Not a full div-count assertion (that'd
+  # break every time real data shifts) - just the one invariant that
+  # actually matters: no cell should ever render as literal "NA".
+  snapshot_html <- as.character(output$snapshot)
+  stopifnot(!grepl(">NA<", snapshot_html))
+  cat("snapshot rendered ok, no NA cells:", !is.null(output$snapshot), "\n")
 })
 
 cat("\n=== mod_partner_report_server ===\n")
@@ -226,8 +236,10 @@ testServer(mod_partner_report_server, args = list(selected_partners = reactive(N
   session$setInputs(report_partner = "fact")
   session$flushReact()
   cat("kpi_target:", output$kpi_target, "\n")
+  # kpi_pct was merged into kpi_achieved's own "X (Y%)" text 2026-09-14 (see
+  # mod_partner_report.R) - stale reference to a since-removed output fixed
+  # here 2026-09-16, caught by this test itself erroring on it.
   cat("kpi_achieved:", output$kpi_achieved, "\n")
-  cat("kpi_pct:", output$kpi_pct, "\n")
   cat("kpi_flagged:", output$kpi_flagged, "\n")
   cat("lga_table rendered ok:", !is.null(output$lga_table), "\n")
 

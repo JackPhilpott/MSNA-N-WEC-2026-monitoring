@@ -75,13 +75,10 @@ source("cleaning/real/sanity_checks.R")
 # Faskari, Matazu, Musawa, Sabuwa - real, currently-covered clusters that
 # were invisible to target_sample_current purely because this cache
 # predated their reinstatement into the frame).
-latest_frame_file <- function(prefix, suffix, dir = "input_data/sampling_frame") {
-  pat <- paste0("^", prefix, "_v([0-9]+)_", suffix, "\\.csv$")
-  candidates <- list.files(dir, pattern = pat)
-  if (length(candidates) == 0) stop(sprintf("latest_frame_file(): no file matching %s_v<N>_%s.csv found in %s", prefix, suffix, dir))
-  versions <- as.integer(sub(pat, "\\1", candidates))
-  file.path(dir, candidates[which.max(versions)])
-}
+# 2026-09-14: consolidated into scripts/shared/latest_frame_file.R (this
+# script's own copy was byte-identical) - one less place to miss next time
+# the frame version bumps.
+source("scripts/shared/latest_frame_file.R")
 
 # ---- ISSUE 1 & 3: FULL frame, filtered to the same "genuinely in scope"
 # definition (covered & not excluded), replaces WORKING as both the
@@ -205,12 +202,29 @@ cat(
 # all coexist across existing batches) — this only needs to durably
 # distinguish "an IDP draw's geometry" from "a Non-IDP draw's geometry",
 # not reproduce every naming variant exactly.
+# 2026-09-17: real false-positive found live (2 nights running) - a batch
+# script upstream routinely writes BOTH a Non-IDP and an "*_idp*.csv" file
+# per draw regardless of whether that pop_type was actually drawn, leaving
+# a header-only, 0-row placeholder for the one that wasn't (confirmed
+# directly: every one of 9 "(IDP)"-flagged batches that night - CARE/FACT/
+# FHI 360/IMC/Malteser/NRC/Solidarités's 2026-09-14_comprehensive plus
+# tonight's two _multi_partner_batches - had a 0-row new_clusters_idp_
+# sitelevel.csv sitting next to real Non-IDP rows that already had matching
+# geometry). Checking filename pattern alone treats that placeholder as "a
+# draw happened", so this warning would false-positive on the same
+# batches forever. csv_nonempty() gates on real data rows (cheap: reads at
+# most 2 lines, no full parse) before a CSV counts as evidence anything
+# needs geometry.
+csv_nonempty <- function(path) length(readLines(path, n = 2, warn = FALSE)) > 1
+
 BATCH_DIRS <- list.dirs("../1_sampling/resampling/output/resample_runs", recursive = FALSE) %>%
   lapply(function(d) list.dirs(d, recursive = FALSE)) %>%
   unlist()
 incomplete_batches <- character(0)
 for (d in BATCH_DIRS) {
-  csvs <- list.files(d, pattern = "^new_(clusters|households).*\\.csv$", ignore.case = TRUE, full.names = FALSE)
+  csvs_all <- list.files(d, pattern = "^new_(clusters|households).*\\.csv$", ignore.case = TRUE, full.names = FALSE)
+  if (length(csvs_all) == 0) next
+  csvs <- csvs_all[vapply(file.path(d, csvs_all), csv_nonempty, logical(1))]
   if (length(csvs) == 0) next
   gpkgs <- list.files(d, pattern = "^new_clusters.*\\.gpkg$", ignore.case = TRUE, full.names = FALSE)
   csv_has_idp <- any(grepl("idp", csvs, ignore.case = TRUE))

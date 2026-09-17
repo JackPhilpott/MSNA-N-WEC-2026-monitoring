@@ -114,7 +114,16 @@ mod_progress_ui <- function(id) {
         info_icon("Every assigned partner, regardless of your sidebar filters — this always shows the full national picture, same convention as the Home tab, since the point is comparing partners against each other. Target is every stratum in every LGA assigned to that partner (partner_lga_assignment), not just LGAs where they've already submitted. \"Current pace\" is a whole-period average since that partner's own first submission — not the global fielding start date, so a partner who started later isn't penalised for days before they were even in the field. Achieved/% achieved reflect the WHOLE LGA's progress, including any other partner assigned to the same LGA (see \"Shared with\") — so a partner can show a nonzero % and still be \"Not started\" themselves if a partner they share an LGA with has already submitted there."),
         span(class = "text-muted", style = "font-size: 0.8em; font-weight: normal; margin-left: 8px;", "Sorted by % of target achieved (lowest first)")
       ),
-      plotlyOutput(ns("partner_bar"), height = "480px"),
+      # REDESIGNED 2026-09-16 (Jack, first draft/proof-of-concept for the
+      # new tab specifically - not final, don't over-polish before he sees
+      # it). Two tabs in the same card, neither chart deleted: "By amount"
+      # (new, absolute-numbers, main/information-rich view) and "By %
+      # achieved" (the old chart, kept as the simplified secondary view -
+      # its own definition changed too, see that output's own comment).
+      navset_pill(
+        nav_panel("By amount", plotlyOutput(ns("partner_bar_abs"), height = "480px")),
+        nav_panel("By % achieved", plotlyOutput(ns("partner_bar_pct"), height = "480px"))
+      ),
       DTOutput(ns("partner_table"))
     )
   )
@@ -127,19 +136,25 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum) {
     })
 
     output$kpi_achieved <- renderText({
-      s <- filtered_stratum()
+      # 2026-09-14 (Jack, explicit general rule): a Dropped stratum's real
+      # data must never enter a national/regional sum, only shown at its
+      # own stratum/LGA row - filtered here, same as every other stratum-
+      # scoped aggregate on this page.
+      s <- filtered_stratum() %>% filter(status != "Dropped")
       # matched-only achieved (filtered_stratum()$achieved_n), same
       # definition "% of target" below uses — completed_subs() below
       # deliberately includes unmatched rows too (the trend chart needs
       # them, to show the "Unmatched" bar), so it must NOT be the source
       # for this tile, or the achieved count here would run ahead of what
       # the % implies whenever any submission fails to match.
-      paste0(comma(sum(s$achieved_n, na.rm = TRUE)), " / ", comma(sum(s$target_sample_current, na.rm = TRUE)))
+      # FIX 2026-09-16 (Decision A): target_sample (original), not
+      # target_sample_current - see global.R's compute_progress_by_stratum().
+      paste0(comma(sum(s$achieved_n, na.rm = TRUE)), " / ", comma(sum(s$target_sample, na.rm = TRUE)))
     })
 
     output$kpi_pct <- renderText({
-      s <- filtered_stratum()
-      tgt <- sum(s$target_sample_current, na.rm = TRUE)
+      s <- filtered_stratum() %>% filter(status != "Dropped")
+      tgt <- sum(s$target_sample, na.rm = TRUE)
       ach <- sum(s$achieved_n, na.rm = TRUE)
       fmt_pct(if (tgt > 0) ach / tgt else NA_real_)
     })
@@ -161,7 +176,7 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum) {
       # Achieved + this = Collected. Floored at 0 defensively; Achieved's
       # conditions are a strict subset of Collected's (plus cluster-capping,
       # which only ever removes further), so it should never go negative.
-      s <- filtered_stratum()
+      s <- filtered_stratum() %>% filter(status != "Dropped")
       ach <- sum(s$achieved_n, na.rm = TRUE)
       col <- sum(is_collected(filtered_subs()))
       comma(max(col - ach, 0))
@@ -181,9 +196,11 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum) {
       # of now" anchor global.R's partner pace table uses, not this filtered
       # set's own last submission - otherwise a filter with a recent lull
       # would look faster than it really is.
-      s <- filtered_stratum()
+      s <- filtered_stratum() %>% filter(status != "Dropped")
       subs <- filtered_subs()
-      target <- sum(s$target_sample_current, na.rm = TRUE)
+      # FIX 2026-09-16 (Decision A): target_sample (original) - "Still
+      # Needed" recomputes against this now, not target_sample_current.
+      target <- sum(s$target_sample, na.rm = TRUE)
       achieved <- sum(s$achieved_n, na.rm = TRUE)
       remaining <- max(target - achieved, 0)
       if (remaining <= 0) return("Target met")
@@ -288,7 +305,11 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum) {
       # extrapolate the green cumulative line and see whether it's on
       # track to cross the red line by 11 Sept — not just where it stands
       # today.
-      target_total <- sum(filtered_stratum()$target_sample_current, na.rm = TRUE)
+      # 2026-09-14: excludes Dropped strata, same rule as the KPI tiles above.
+      # FIX 2026-09-16 (Decision A): target_sample (original), not _current -
+      # "pace needed to finish on time" is a Still-Needed concept, same basis
+      # as the KPI tiles above now.
+      target_total <- sum(filtered_stratum() %>% filter(status != "Dropped") %>% pull(target_sample), na.rm = TRUE)
       pace_line <- tibble(
         submission_date = seq(FIELDING_START, FIELDING_PLANNED_END, by = "day")
       ) %>%
@@ -323,15 +344,21 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum) {
     })
 
     output$region_plot <- renderPlotly({
-      by_region_pop <- filtered_stratum() %>%
+      # 2026-09-14: excludes Dropped strata before the region-level rollup -
+      # same rule as everywhere else, matters here specifically since this
+      # collapses across pop_type/LGA, exactly where a Dropped stratum's
+      # achieved could otherwise blend into an active neighbour's total.
+      region_base <- filtered_stratum() %>% filter(status != "Dropped")
+      # FIX 2026-09-16 (Decision A): target_sample (original), not _current.
+      by_region_pop <- region_base %>%
         group_by(region, pop_type) %>%
-        summarise(target_sample_current = sum(target_sample_current, na.rm = TRUE), achieved_n = sum(achieved_n, na.rm = TRUE), .groups = "drop") %>%
-        mutate(pct = ifelse(target_sample_current > 0, achieved_n / target_sample_current, 0), series = unname(POP_TYPE_LABELS[pop_type]))
+        summarise(target_sample = sum(target_sample, na.rm = TRUE), achieved_n = sum(achieved_n, na.rm = TRUE), .groups = "drop") %>%
+        mutate(pct = ifelse(target_sample > 0, achieved_n / target_sample, 0), series = unname(POP_TYPE_LABELS[pop_type]))
 
-      combined <- filtered_stratum() %>%
+      combined <- region_base %>%
         group_by(region) %>%
-        summarise(target_sample_current = sum(target_sample_current, na.rm = TRUE), achieved_n = sum(achieved_n, na.rm = TRUE), .groups = "drop") %>%
-        mutate(pct = ifelse(target_sample_current > 0, achieved_n / target_sample_current, 0), series = "Combined")
+        summarise(target_sample = sum(target_sample, na.rm = TRUE), achieved_n = sum(achieved_n, na.rm = TRUE), .groups = "drop") %>%
+        mutate(pct = ifelse(target_sample > 0, achieved_n / target_sample, 0), series = "Combined")
 
       s <- bind_rows(
         by_region_pop %>% select(region, pct, series),
@@ -362,19 +389,171 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum) {
     # each other, which a single-partner filter would defeat.
     partner_pace_colors <- c("Behind pace" = "#C1443C", "On pace" = "#1E7B4D", "Complete" = "#1E7B4D", "Not started" = "#9AA3AF")
 
-    output$partner_bar <- renderPlotly({
+    # REVISED 2026-09-16b (Jack, real feedback round on the first draft) -
+    # "lowest achieved at top, highest at bottom", explicitly matching the
+    # OTHER tab. Both tabs now build their y-order from this SAME vector
+    # (not just the same construction repeated twice, which is what caused
+    # them to visually disagree in the first place - a multi-trace chart
+    # like "By amount" apparently doesn't reliably respect a bare factor's
+    # level order the way a single-trace bar does, so this is pinned
+    # explicitly via categoryorder/categoryarray below on both, not left
+    # implicit to a shared factor() call).
+    partner_order <- partner_progress_summary %>% arrange(pct_achieved) %>% pull(partner_label) %>% rev()
+
+    # Three-stage colour, shared by both the fill legend and the underlying
+    # classification - all three colours already canonical in this app
+    # (not new picks): red = STATUS_COLORS/partner_pace_colors' existing
+    # red, dark green = STATUS_COLORS' "Complete" green, light green =
+    # pct_color()'s own 75-100% shade (global.R) - chosen there for the
+    # exact same reason it's reused here: it's deliberately far enough from
+    # the dark green to stay visually distinct at a glance, not a similar
+    # shade that would wash together.
+    STAGE_COLORS <- c(
+      "Below Revised Target" = "#C1443C",
+      "At/above Revised, below Original" = "#8FC79A",
+      "At/above Original Target" = "#1E7B4D"
+    )
+
+    # ---- NEW 2026-09-16 (Jack, first draft/proof-of-concept, revised
+    # 2026-09-16b after his first look): absolute-numbers bullet-style
+    # chart, replacing % as the PRIMARY partner view. Each partner's bar is
+    # scaled to ITS OWN Original Target (fraction = achieved/target_sample,
+    # capped at 1) - deliberately NOT one shared absolute-unit axis (FACT's
+    # ~15,000 target would make ZOA's ~186 an invisible sliver) and NOT a
+    # log scale either (explicitly discussed with Jack and rejected - a log
+    # scale makes fill-position an unintuitive/dishonest read of real
+    # progress, defeating the point of switching away from %). Real
+    # absolute numbers come through via text/hover only, never via
+    # comparing raw bar lengths across partners.
+    output$partner_bar_abs <- renderPlotly({
       df <- partner_progress_summary %>%
-        mutate(partner_label = factor(partner_label, levels = rev(partner_label)))
+        mutate(
+          partner_label = factor(partner_label, levels = partner_order),
+          # fraction of THIS partner's own Original Target - the bar's own
+          # 0-1 scale, capped so an over-achieved partner's fill stops at
+          # the bar's own full width rather than extending past it.
+          fill_frac = ifelse(target_sample > 0, pmin(achieved_n / target_sample, 1), 0),
+          # ADDED 2026-09-16b: the visible remainder of the bar (Achieved to
+          # Original Target) - stacked on top of fill_frac so the FULL bar
+          # always reaches exactly 1.0 (= Original Target), making the full
+          # target length visible even where nothing's been achieved yet.
+          # Shrinks to 0 once a partner reaches/exceeds Original (fill_frac
+          # already capped at 1), which is exactly the desired behaviour.
+          remaining_frac = 1 - fill_frac,
+          # tick marker position: where Revised Target sits, expressed as a
+          # fraction of Original - same denominator as the bar itself, so
+          # the tick and the fill are directly comparable on one bar.
+          revised_frac = ifelse(target_sample > 0, target_sample_current / target_sample, NA_real_),
+          exceeded = !is.na(target_sample) & target_sample > 0 & achieved_n > target_sample,
+          overflow_frac = ifelse(exceeded, 1.08, NA_real_),
+          # REVISED 2026-09-16b: whole-fill-segment colour keyed off WHICH
+          # STAGE a partner is at, not their pace status - checked in this
+          # order deliberately (Original first) since meeting Original
+          # implies meeting Revised too, and case_when takes the first
+          # match.
+          stage = factor(case_when(
+            target_sample > 0 & achieved_n >= target_sample ~ "At/above Original Target",
+            target_sample_current > 0 & achieved_n >= target_sample_current ~ "At/above Revised, below Original",
+            TRUE ~ "Below Revised Target"
+          ), levels = names(STAGE_COLORS)),
+          hover_text = paste0(
+            "Achieved: ", comma(achieved_n), " / Original Target: ", comma(target_sample),
+            " (Revised Target: ", comma(round(target_sample_current)), ")",
+            ifelse(exceeded, paste0("\nExceeded Original by ", comma(achieved_n - target_sample)), "")
+          )
+        )
+
+      plot_ly(df) %>%
+        add_bars(
+          y = ~partner_label, x = ~fill_frac, color = ~stage, colors = STAGE_COLORS,
+          orientation = "h", text = ~hover_text, hoverinfo = "text",
+          textposition = "none", showlegend = TRUE
+        ) %>%
+        # REVISED 2026-09-16b: the visible "remaining to Original" segment -
+        # outline-only (transparent fill, grey border), not a coloured
+        # stage, so it reads as "not yet there" rather than a 4th status.
+        add_bars(
+          y = ~partner_label, x = ~remaining_frac, orientation = "h",
+          marker = list(color = "rgba(0,0,0,0)", line = list(color = "#9AA3AF", width = 1)),
+          hoverinfo = "skip", showlegend = FALSE, name = "Remaining to Original"
+        ) %>%
+        # Revised Target tick - a short vertical line marker on each bar.
+        # REVISED 2026-09-16b: was much thicker than the bar itself
+        # (size=26, width=3) causing heavy overlap - thinned down.
+        add_markers(
+          y = ~partner_label, x = ~revised_frac, hoverinfo = "text",
+          text = ~paste0("Revised Target: ", comma(round(target_sample_current))),
+          marker = list(symbol = "line-ns", size = 13, line = list(width = 2, color = "#1B2A4A")),
+          showlegend = FALSE, name = "Revised Target"
+        ) %>%
+        # overflow indicator for a partner past their Original Target - a
+        # capped bar (fill+remaining stop at 1) plus a small marker just
+        # beyond it, rather than letting the bar itself extend past 100%.
+        add_markers(
+          data = df %>% filter(exceeded), y = ~partner_label, x = ~overflow_frac, hoverinfo = "text",
+          text = ~hover_text, marker = list(symbol = "triangle-right", size = 12, color = "#D99A2B"),
+          showlegend = FALSE, name = "Exceeded Original"
+        ) %>%
+        layout(
+          barmode = "stack",
+          # No numeric tick labels - "100%" on this axis means a different
+          # absolute number on every row, so a shared percentage scale
+          # would misleadingly imply otherwise. Real numbers live in the
+          # hover text/bar labels instead.
+          xaxis = list(title = "Progress toward each partner's own Original Target", showticklabels = FALSE, range = c(0, 1.15), zeroline = FALSE),
+          # categoryorder/categoryarray pinned explicitly (2026-09-16b) -
+          # see partner_order's own comment above for why.
+          yaxis = list(title = "", categoryorder = "array", categoryarray = partner_order),
+          legend = list(orientation = "h", y = -0.08),
+          margin = list(l = 160, r = 20, t = 10, b = 40)
+        )
+    })
+
+    # ---- OLD chart, kept as the simplified secondary view (Jack: "a very
+    # clear vision on % achieved of our minimum") - REDEFINED 2026-09-16 to
+    # show % against Revised Target specifically, not Original as it did
+    # under Decision A - a deliberate, different question from the new
+    # chart/Priority/the rest of the dashboard, computed locally here only.
+    output$partner_bar_pct <- renderPlotly({
+      df <- partner_progress_summary %>%
+        mutate(
+          partner_label = factor(partner_label, levels = partner_order),
+          pct_achieved_revised = ifelse(target_sample_current > 0, achieved_n / target_sample_current, NA_real_),
+          # BUG FIX 2026-09-16b (Jack: MDM showed 103% but still red - the
+          # displayed % had already switched to Revised Target, but the
+          # fill colour was still keyed off partner_progress_summary's own
+          # `status`, which per Decision A is ORIGINAL-target-based. Full
+          # status recomputed here against Revised instead, mirroring
+          # partner_progress_summary's own formula (global.R) exactly, not
+          # just patching the Complete threshold in isolation - pace itself
+          # (current_daily_pace/start_date) doesn't depend on which target
+          # you're judging completion against, only remaining/projected
+          # finish do, so those two are the only pieces recomputed.
+          remaining_revised = pmax(target_sample_current - achieved_n, 0),
+          projected_finish_revised = if_else(
+            !is.na(current_daily_pace) & current_daily_pace > 0 & remaining_revised > 0,
+            today_for_pace + ceiling(remaining_revised / current_daily_pace),
+            as.Date(NA)
+          ),
+          status_revised = case_when(
+            target_sample_current <= 0 ~ "Complete",
+            achieved_n >= target_sample_current ~ "Complete",
+            is.na(start_date) ~ "Not started",
+            is.na(current_daily_pace) | current_daily_pace <= 0 ~ "Behind pace",
+            projected_finish_revised <= FIELDING_PLANNED_END ~ "On pace",
+            TRUE ~ "Behind pace"
+          )
+        )
 
       plot_ly(
-        df, y = ~partner_label, x = ~pct_achieved, color = ~status, colors = partner_pace_colors,
+        df, y = ~partner_label, x = ~pct_achieved_revised, color = ~status_revised, colors = partner_pace_colors,
         type = "bar", orientation = "h",
-        text = ~paste0(comma(achieved_n), " / ", comma(target_sample_current), " (", percent(pct_achieved, accuracy = 1), ")"),
+        text = ~paste0(comma(achieved_n), " / ", comma(round(target_sample_current)), " (", percent(pct_achieved_revised, accuracy = 1), " of Revised)"),
         textposition = "outside", hoverinfo = "text"
       ) %>%
         layout(
-          xaxis = list(title = "% of target achieved", tickformat = ".0%", range = c(0, 1.15)),
-          yaxis = list(title = ""),
+          xaxis = list(title = "% of Revised Target achieved", tickformat = ".0%", range = c(0, 1.15)),
+          yaxis = list(title = "", categoryorder = "array", categoryarray = partner_order),
           legend = list(orientation = "h", y = -0.08),
           margin = list(l = 160, r = 20, t = 10, b = 40)
         )
@@ -405,6 +584,18 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum) {
         df, rownames = FALSE, filter = "top",
         options = list(pageLength = 20, order = list(list(7, "asc")), columnDefs = list(list(className = "dt-right", targets = c(1:7, 10, 11))))
       ) %>%
+        # 2026-09-14 (Jack): Original/Revised Target were showing raw
+        # unrounded decimals here - target_sample_current (global.R) is now
+        # sourced straight from 1_sampling's representativity calc ("Target
+        # sample ... incl. 5% operational margin"), which is genuinely
+        # fractional by construction, never rounded upstream. The KPI cards
+        # elsewhere on this tab looked "clean" only because comma() defaults
+        # to whole-number rounding on a single summed value - this table was
+        # passing the raw column straight to DT with no such rounding, so
+        # the same underlying number displayed differently in two places on
+        # one page. Display-only rounding (sorting/filtering still use the
+        # exact value) - restores the match the cards already implied.
+        formatRound(c("Original Target", "Revised Target"), 0) %>%
         formatPercentage("% achieved", 1) %>%
         formatStyle(
           "Status",

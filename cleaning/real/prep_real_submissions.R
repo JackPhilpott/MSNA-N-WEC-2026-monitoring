@@ -159,16 +159,12 @@ roster <- read_excel_robust(latest_file, sheet = "roster", guess_max = 5000)
 # old v5 files out of input_data/sampling_frame/ once the frame reached v7,
 # and this script's hardcoded read broke deploy_dashboard.R's very first
 # step as a result - blocking every redeploy, not just serving stale data.
-# Not consolidated into a shared file with global.R's copy (this script runs
-# standalone, before dashboard_app/ is ever sourced) - keep both in sync by
-# hand if the matching logic ever changes.
-latest_frame_file <- function(prefix, suffix, dir = "input_data/sampling_frame") {
-  pat <- paste0("^", prefix, "_v([0-9]+)_", suffix, "\\.csv$")
-  candidates <- list.files(dir, pattern = pat)
-  if (length(candidates) == 0) stop(sprintf("latest_frame_file(): no file matching %s_v<N>_%s.csv found in %s", prefix, suffix, dir))
-  versions <- as.integer(sub(pat, "\\1", candidates))
-  file.path(dir, candidates[which.max(versions)])
-}
+# 2026-09-14: consolidated into scripts/shared/latest_frame_file.R (this
+# script's own copy was byte-identical) - the original "runs standalone,
+# before dashboard_app/ is ever sourced" reasoning for keeping a separate
+# copy no longer applies now that the shared version lives outside
+# dashboard_app/ specifically so standalone scripts can use it too.
+source("scripts/shared/latest_frame_file.R")
 
 # ---- 2. household-frame lookups (pcode -> name, idp_population_category) ---
 household_frame <- read_csv(

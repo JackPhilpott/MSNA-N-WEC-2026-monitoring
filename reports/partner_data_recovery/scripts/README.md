@@ -43,10 +43,19 @@ is recorded in the tracker.
 **Generation** (produces the workbooks that go into `../outputs/<Partner>/`):
 - `full_batch_pipeline.R` / `build_workbook_fn.R` / `build_email_fn.R` /
   `run_full_batch.R` — the logic that produced the original 2026-08-30
-  19-partner batch. **`full_batch_pipeline.R` is a frozen snapshot, not
-  currently runnable as-is** — see its own header: it depends on
-  scratchpad-only intermediate `.rds` files and the sampling frame's
-  superseded v2 paths. Kept as a reference/rebuild starting point.
+  19-partner batch. **No longer frozen as of 2026-09-14** — the "frozen
+  snapshot, not currently runnable" note below was stale; it's now the live,
+  regularly-rerun recovery-workbook refresh (most recently to pick up
+  tonight's achieved-definition/frame fixes, output in
+  `../outputs/_batch_review_summary_<date>.csv`). Also had its own real
+  achieved/target-computation bug fixed the same night (was using a
+  date-scoped exclusion set and an independent `is_duplicate` check instead
+  of the permanent, terminal-status-only exclusion the rest of the pipeline
+  uses) - see `project_zoa_bugs_and_critical_task_queue_2026-09-14.md` in
+  the Coordinator's memory for the full trace if this needs revisiting.
+  Stage 2 (`run_full_batch_emails.R`) still always requires Jack's explicit
+  review/go-ahead before sending - that part of the two-stage design is
+  unchanged.
 - `real_hh_listing.R` — real per-cluster IDP household-listing pool, from
   the actual HH Listing RandomSelect tool's export (Jack supplied
   `cleaning/MSNA_Data_Cleaning/Kobo Downloads/hh_listing_tool/

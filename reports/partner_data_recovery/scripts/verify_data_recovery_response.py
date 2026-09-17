@@ -100,25 +100,44 @@ EXPECTED_HEADERS = {
         "Listing Number Recorded", "Nearest Unclaimed Numbers", "Total Numbers Available in Cluster",
         "CONFIRMED Listing Number", "Notes / Explanation",
     ],
+    # UPDATED 2026-09-14 (Jack's request): added "Interview Dates Affected",
+    # parallel to "Interview IDs Affected" - must match build_workbook_fn.R's
+    # out4 transmute() column order EXACTLY (two languages, no shared source
+    # of truth for this list - a mismatch here fails silently as a header
+    # ERROR, not a crash).
     "Missing HH Listings": [
         "Cluster/Site ID", "IOM Site Name", "Population Type", "State", "LGA", "Ward",
         "Target Households (required sample)", "Households in Cluster (population estimate)",
-        "Affected Interviews", "Interview IDs Affected", "Household Listing Now Submitted? (Yes/No)",
-        "Date Submitted (if Yes)", "Notes / Explanation",
+        "Affected Interviews", "Interview IDs Affected", "Interview Dates Affected",
+        "Household Listing Now Submitted? (Yes/No)", "Date Submitted (if Yes)", "Notes / Explanation",
     ],
+    # UPDATED 2026-09-14: added "Date of Submission" (Jack's request - every
+    # survey-specific sheet should carry a date, same as GPS/IDP Duplicates).
     "Confirmed Deletions": [
-        "Interview ID", "Enumerator ID", "State", "LGA", "Ward", "Cluster ID", "Reason",
+        "Interview ID", "Enumerator ID", "State", "LGA", "Ward", "Date of Submission", "Cluster ID", "Reason",
         "Contest This? (Yes/No)", "If Yes, Explain",
     ],
-    # ADDED 2026-09-11 - must match build_workbook_fn.R's other_sheet
-    # transmute() column order EXACTLY (two languages, no shared source of
-    # truth for this list - a mismatch here fails silently as a header
-    # ERROR, not a crash).
+    # ADDED 2026-09-11, UPDATED 2026-09-14 (added "Date of Submission" and
+    # "Was This an IDP or Non-IDP Household?" - the latter specifically asks
+    # for the one piece of information a crs_unmatched row is missing that
+    # the old text never actually requested) - must match build_workbook_fn.R's
+    # other_sheet transmute() column order EXACTLY (two languages, no shared
+    # source of truth for this list - a mismatch here fails silently as a
+    # header ERROR, not a crash).
     "Other Issues": [
-        "Interview ID", "Enumerator ID", "State", "LGA", "Ward", "Cluster ID",
-        "Issue Type", "What We Found", "Corrected Interview Date (if known)",
+        "Interview ID", "Enumerator ID", "State", "LGA", "Ward", "Date of Submission", "Cluster ID",
+        "Issue Type", "What We Found", "Was This an IDP or Non-IDP Household? (IDP/Non-IDP/Unsure)",
+        "Corrected Interview Date (if known)",
         "Genuine Interview on That Date? (Yes/No/Unsure)", "Correct Cluster/Site ID (if known)",
         "Can Your Team Identify This Household? (Yes/No)", "Notes / Explanation",
+    ],
+    # ADDED 2026-09-14 (Jack's request): non-IDP point duplicates split out
+    # of Confirmed Deletions into their own sheet with real sibling-
+    # comparison detail - must match build_workbook_fn.R's out3b transmute()
+    # column order EXACTLY, same two-languages caveat as above.
+    "Non-IDP Duplicates": [
+        "Interview ID", "Enumerator ID", "State", "LGA", "Ward", "Date of Submission", "Point ID Claimed",
+        "Other Submission(s) Claiming Same Point", "CONFIRMED Genuine Interview ID", "Notes / Explanation",
     ],
 }
 
@@ -330,11 +349,18 @@ def verify_other_issues(ws, findings, today):
     is the claimed cluster right?), so this is deliberately findings-only,
     same as GPS/IDP/Missing-HH - no apply_writeback path. Each row is
     exactly one of two different problems (Issue Type column) with its own
-    disjoint response-column pair; the other pair should be blank."""
+    disjoint response-column pair; the other pair should be blank.
+
+    UPDATED 2026-09-14: added the "Was This an IDP or Non-IDP Household?"
+    column check, CRS-Unmatched-only same as Correct Cluster/Site ID and
+    Can Your Team Identify This Household - Date Outlier rows never need
+    this (they're already matched to a real point/pop_type, only the date
+    is wrong)."""
     sheet = "Other Issues"
     header = EXPECTED_HEADERS[sheet]
     for row_num, r in sheet_rows(ws, header):
         issue_type = (r["Issue Type"] or "").strip()
+        pop_type_ans = (r["Was This an IDP or Non-IDP Household? (IDP/Non-IDP/Unsure)"] or "").strip() if r["Was This an IDP or Non-IDP Household? (IDP/Non-IDP/Unsure)"] else ""
         corrected_date = r["Corrected Interview Date (if known)"]
         genuine = (r["Genuine Interview on That Date? (Yes/No/Unsure)"] or "").strip() if r["Genuine Interview on That Date? (Yes/No/Unsure)"] else ""
         correct_cluster = (r["Correct Cluster/Site ID (if known)"] or "").strip() if r["Correct Cluster/Site ID (if known)"] else ""
@@ -346,10 +372,10 @@ def verify_other_issues(ws, findings, today):
             continue
 
         if issue_type == "Date Outlier":
-            if correct_cluster or identify:
+            if correct_cluster or identify or pop_type_ans:
                 findings.add(sheet, row_num, "WARNING",
-                              "This is a Date Outlier row, but the CRS Unmatched columns (Correct Cluster/Site ID / Can Your Team Identify) were filled in instead of the Date Outlier ones",
-                              f"correct_cluster={correct_cluster!r} identify={identify!r}")
+                              "This is a Date Outlier row, but the CRS Unmatched columns (Was This an IDP or Non-IDP Household? / Correct Cluster/Site ID / Can Your Team Identify) were filled in instead of the Date Outlier ones",
+                              f"pop_type_ans={pop_type_ans!r} correct_cluster={correct_cluster!r} identify={identify!r}")
             if not corrected_date and not genuine and not notes:
                 findings.add(sheet, row_num, "INFO", "No response - stays pending/unresolved")
                 continue
@@ -367,13 +393,44 @@ def verify_other_issues(ws, findings, today):
                 findings.add(sheet, row_num, "WARNING",
                               "This is a CRS Unmatched row, but the Date Outlier columns (Corrected Interview Date / Genuine Interview) were filled in instead of the CRS Unmatched ones",
                               f"corrected_date={corrected_date!r} genuine={genuine!r}")
-            if not correct_cluster and not identify and not notes:
+            if not pop_type_ans and not correct_cluster and not identify and not notes:
                 findings.add(sheet, row_num, "INFO", "No response - stays pending/unresolved")
                 continue
+            if pop_type_ans and pop_type_ans.lower() not in ("idp", "non-idp", "unsure"):
+                findings.add(sheet, row_num, "WARNING", "Was This an IDP or Non-IDP Household answer is not IDP/Non-IDP/Unsure", f"got={pop_type_ans!r}")
             if identify and identify.lower() not in ("yes", "no"):
                 findings.add(sheet, row_num, "WARNING", "Can Your Team Identify This Household answer is not Yes/No", f"got={identify!r}")
             if identify.lower() == "yes" and not correct_cluster:
                 findings.add(sheet, row_num, "ERROR", "Marked as identifiable but no Correct Cluster/Site ID given")
+
+
+def verify_non_idp_duplicates(ws, findings):
+    """ADDED 2026-09-14. Modeled on verify_idp_listing_duplicates() above -
+    findings-only, no apply_writeback (same reasoning: resolving a
+    duplicate needs a real judgment call on which claim is genuine, not
+    something to auto-apply from a returned file alone)."""
+    sheet = "Non-IDP Duplicates"
+    header = EXPECTED_HEADERS[sheet]
+    for row_num, r in sheet_rows(ws, header):
+        confirmed = (r["CONFIRMED Genuine Interview ID"] or "").strip() if r["CONFIRMED Genuine Interview ID"] else ""
+        notes = (r["Notes / Explanation"] or "").strip() if r["Notes / Explanation"] else ""
+        other_claims = r["Other Submission(s) Claiming Same Point"] or ""
+
+        if not confirmed and not notes:
+            findings.add(sheet, row_num, "INFO", "No response - stays pending/unresolved")
+            continue
+
+        if confirmed:
+            # The confirmed ID should be either this row's own Interview ID,
+            # or one of the sibling UUIDs listed in "Other Submission(s)
+            # Claiming Same Point" - anything else is very likely a
+            # typo/paste error.
+            known_others = set(re.findall(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", other_claims))
+            plausible = {r["Interview ID"]} | known_others
+            if confirmed not in plausible and confirmed.lower() not in ("both", "all genuine", "both/all genuine"):
+                findings.add(sheet, row_num, "WARNING",
+                             "CONFIRMED Genuine Interview ID doesn't match this row's own Interview ID or any UUID listed in 'Other Submission(s) Claiming Same Point' - check for a typo",
+                             f"confirmed={confirmed!r}")
 
 
 def verify_confirmed_deletions(ws, findings, apply_writeback=True):
@@ -514,6 +571,8 @@ def main():
         verify_confirmed_deletions(wb_ret["Confirmed Deletions"], findings)
     if "Other Issues" not in broken_sheets and "Other Issues" in wb_ret.sheetnames:
         verify_other_issues(wb_ret["Other Issues"], findings, today)
+    if "Non-IDP Duplicates" not in broken_sheets and "Non-IDP Duplicates" in wb_ret.sheetnames:
+        verify_non_idp_duplicates(wb_ret["Non-IDP Duplicates"], findings)
 
     out_dir = os.path.dirname(os.path.abspath(returned_path))
     out_path = os.path.join(out_dir, f"{partner}_verification_findings_{today.isoformat()}.csv")

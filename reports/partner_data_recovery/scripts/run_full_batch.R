@@ -53,11 +53,13 @@ for (org in all_partners) {
     packages[[org]] <- pkg
     precautionary_flags[[org]] <- is_precautionary
     cat("  OK: collected=", pkg$n_collected_total, " achieved=", pkg$n_achieved_total, "/", pkg$target_sample,
-        " gps=", nrow(pkg$gps_sheet), " idp=", nrow(pkg$idp_sheet), " listing=", nrow(pkg$listing_sheet),
-        " del=", nrow(pkg$del_sheet), " flagged_enums=", pkg$n_flagged_enums, if(is_precautionary) " [PRECAUTIONARY]" else "", "\n")
+        " gps=", nrow(pkg$gps_sheet), " idp=", nrow(pkg$idp_sheet), " nonidp_dup=", nrow(pkg$nonidp_dup_sheet),
+        " listing=", nrow(pkg$listing_sheet), " del=", nrow(pkg$del_sheet), " other=", nrow(pkg$other_sheet),
+        " flagged_enums=", pkg$n_flagged_enums, if(is_precautionary) " [PRECAUTIONARY]" else "", "\n")
     summary_rows[[org]] <- data.frame(org=org, collected=pkg$n_collected_total, achieved=pkg$n_achieved_total,
                                        target=pkg$target_sample, gps=nrow(pkg$gps_sheet), idp=nrow(pkg$idp_sheet),
-                                       listing=nrow(pkg$listing_sheet), del=nrow(pkg$del_sheet),
+                                       nonidp_dup=nrow(pkg$nonidp_dup_sheet), listing=nrow(pkg$listing_sheet),
+                                       del=nrow(pkg$del_sheet), other=nrow(pkg$other_sheet),
                                        flagged_enums=pkg$n_flagged_enums, precautionary=is_precautionary)
   }, error = function(e) cat("  ERROR building outputs:", conditionMessage(e), "\n"))
 }

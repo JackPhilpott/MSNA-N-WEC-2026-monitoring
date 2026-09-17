@@ -278,6 +278,23 @@ partner_lga_assignment <- read_csv(
   show_col_types = FALSE
 )
 
+# 2026-09-16 (Jack): LGAs excluded from the design entirely (zero active
+# coverage) + who covered them historically, before exclusion — both from
+# cleaning/prep/prep_partner_lga_assignment.R's own FULL-frame derivation
+# (same file's header has the full reasoning). Consumed ONLY by
+# partner_coverage_label()'s fallback below — deliberately two small, cheap
+# reads kept separate from partner_lga_assignment above, which drives real
+# active-coverage/target logic dashboard-wide and must never see an
+# excluded LGA as actively covered.
+excluded_lgas <- read_csv(
+  file.path(INPUT_DIR, "partner_coverage/excluded_lgas.csv"),
+  show_col_types = FALSE
+)
+excluded_lga_prior_partners <- read_csv(
+  file.path(INPUT_DIR, "partner_coverage/excluded_lga_prior_partners.csv"),
+  show_col_types = FALSE
+)
+
 # ---- respondent privacy: fields never shown/exported at the individual-
 # submission level ------------------------------------------------------------
 # General rule (2026-08-16): nothing that could make a specific respondent
@@ -421,13 +438,33 @@ shared_coverage_adm2 <- partner_lga_assignment %>%
 # this LGA" from a given org's own report (excludes itself at the call site).
 coverage_orgs_by_adm2 <- split(partner_lga_assignment$org_id, partner_lga_assignment$adm2_pcode)
 
-# adm2_pcode -> "Partner A, Partner B" (or "Not partner-assigned") — used in
-# Coverage Map popups (LGA polygons, cluster points/hexagons) so a viewer
-# can see who's responsible without leaving the map. Vectorised (one call
-# per row via sapply at the call site), not a per-row loop.
+# adm2_pcode -> historical org_id(s), for LGAs with zero active coverage
+# today but a partner on record before exclusion — see excluded_lgas/
+# excluded_lga_prior_partners read above.
+excluded_adm2_pcodes <- excluded_lgas$adm2_pcode
+prior_orgs_by_adm2 <- split(excluded_lga_prior_partners$org_id, excluded_lga_prior_partners$adm2_pcode)
+
+# adm2_pcode -> "Partner A, Partner B" / "Excluded (was: Partner A)" /
+# "Excluded (no prior assignment on record)" / "Not partner-assigned" —
+# used in Coverage Map popups (LGA polygons, cluster points/hexagons) so a
+# viewer can see who's responsible without leaving the map. Vectorised (one
+# call per row via sapply at the call site), not a per-row loop. The
+# "Excluded" branches (2026-09-16, Jack) distinguish an LGA that WAS
+# assigned/targeted and got cut from the design from one that was simply
+# never in scope — bare "Not partner-assigned" reads as ambiguous for the
+# former (see excluded_lgas read above for why this can't just be folded
+# into coverage_orgs_by_adm2 itself).
 partner_coverage_label <- function(pc) {
   orgs <- coverage_orgs_by_adm2[[pc]]
-  if (is.null(orgs)) "Not partner-assigned" else paste(unname(ORG_LABELS[orgs]), collapse = ", ")
+  if (!is.null(orgs)) return(paste(unname(ORG_LABELS[orgs]), collapse = ", "))
+  if (pc %in% excluded_adm2_pcodes) {
+    prior <- prior_orgs_by_adm2[[pc]]
+    if (!is.null(prior)) {
+      return(paste0("Excluded (was: ", paste(unname(ORG_LABELS[prior]), collapse = ", "), ")"))
+    }
+    return("Excluded (no prior assignment on record)")
+  }
+  "Not partner-assigned"
 }
 
 # ---- accessibility layer (1_sampling/resampling/, copied in via cleaning/
@@ -843,23 +880,47 @@ cluster_targets <- bind_rows(
   distinct(cluster_id, .keep_all = TRUE) %>%
   mutate(target_households = as.numeric(target_households))
 
-# ---- current (live) stratum target, 2026-09-08 rebuild ---------------------
+# ---- current (live) stratum target, 2026-09-14 rebuild ---------------------
 # strata_frame$target_sample is the ORIGINAL design-time figure and is
 # deliberately never touched again (kept as a stable baseline for "Original
-# target" in the dashboard). It never grew when resampling added
-# supplementary/replacement clusters, which let a stratum read "Complete"
-# once a skewed subset of the REAL roster cleared the OLD, now-too-low bar,
-# while other real, currently-open clusters sat untouched (found 2026-09-07,
-# Augie/Kebbi: 5 real open clusters at zero achieved, LGA still read
-# Complete). target_sample_current is the live figure - sum of
-# target_households across the CURRENT cluster roster per stratum, from the
-# same cluster_targets source the achieved-capping above already uses, so
-# both numbers are always computed from the one live roster, never two
-# separately-drifting sources. This is what "Complete" is now tied to;
-# target_sample stays purely for the "Original target" display column.
-strata_target_current <- cluster_targets %>%
-  group_by(strata_id) %>%
-  summarise(target_sample_current = sum(target_households, na.rm = TRUE), .groups = "drop")
+# target" in the dashboard).
+#
+# target_sample_current used to be sum(target_households) across the current
+# cluster ROSTER (every cluster still in psu_hexagons_sf/psu_sites_sf,
+# themselves sourced from FULL - i.e. every cluster ever drawn). That fixed
+# the 2026-09-07 Augie/Kebbi bug (a frozen target let a stratum read
+# "Complete" while real open clusters sat untouched) but introduced a
+# different one: it's a CAPACITY figure (how many household slots exist in
+# currently-assigned clusters), not a REQUIREMENT figure, and it only ever
+# grows - a cluster that goes inaccessible never gets subtracted before a
+# supplementary cluster's target gets added on top. Confirmed 2026-09-13/14
+# (see 1_sampling's project_resampling_target_inflation_fix memory): this
+# is the actual mechanism behind LGA sample targets inflating well past what
+# representativity ever required.
+#
+# Replaced with target_sample_representativity - 1_sampling's own
+# sample_needed_for_moe()-based TRUE minimum (10% MoE, assumed ICC=0.06,
+# +5% flat operational margin), computed fresh every resampling run against
+# the CURRENT accessible population and retroactively correct for every
+# already-resampled stratum, not just prospective. Sourced from
+# input_data/accessibility/accessibility_strata_level.csv (refreshed by
+# prep_accessibility_layer.R from the impact workbook's own "Strata Level"
+# sheet - same file accessibility_pop_remaining_label above already reads,
+# just a different column pulled out of it). The variable/column name
+# target_sample_current is kept AS-IS everywhere downstream (mod_home.R,
+# mod_map.R, mod_progress.R, mod_partner_report.R, mod_table.R all key
+# Complete/pct_achieved/remaining/pace off it) - only what feeds it changed,
+# since every one of those consumers already wants exactly this: "the live
+# figure a stratum should be judged complete against," which is now
+# correctly a requirement, not a capacity ceiling.
+strata_target_current <- read_csv(
+  file.path(INPUT_DIR, "accessibility/accessibility_strata_level.csv"),
+  show_col_types = FALSE
+) %>%
+  transmute(
+    strata_id = `Strata ID`,
+    target_sample_current = as.numeric(`Target sample (representativity, incl. 5% operational margin)`)
+  )
 
 # TOTAL_PLANNED_INTERVIEWS_CURRENT - the live-roster counterpart to
 # TOTAL_PLANNED_INTERVIEWS (2026-09-09). Defined here, not alongside
@@ -892,10 +953,41 @@ compute_progress_by_stratum <- function(subs) {
     count(matched_cluster_id, matched_strata_id, name = "cluster_achieved_n") %>%
     left_join(cluster_targets, by = c("matched_cluster_id" = "cluster_id")) %>%
     mutate(
+      # 2026-09-14 (stranded-achieved credit, ported from 1_sampling's
+      # frame_status.R::compute_strata_achieved() - same policy in force
+      # there since 2026-09-13: a completed interview is permanent, never
+      # retroactively excluded by a LATER change, including its own
+      # cluster being retired). Every resampling redraw mints a fresh
+      # <strata>_suppN cluster_id for the replacement points and drops the
+      # old cluster_id from cluster_targets entirely, with no crosswalk
+      # recorded anywhere (confirmed deliberate in draw_supplementary_
+      # clusters_batch.R/merge_partner_resample_batch.R - cluster_ids are
+      # derived labels, not permanent keys). 1_sampling's own target math
+      # already re-credits a retired cluster's real achieved households to
+      # its still-live stratum; this dashboard never got the equivalent
+      # fix, so those households were silently zeroed by the pmin() below
+      # instead - verified against live data 2026-09-14: 1,875 of 18,896
+      # nationally Achieved households (9.9%) were invisible in every
+      # stratum/LGA progress figure in this file as a direct, quantified
+      # result (heaviest in Augie, Musawa, Arewa-Dandi, Dutsin-Ma, Silame,
+      # Bagudo, Konduga, Funtua - the LGAs with the most redraw rounds).
+      # A cluster missing from cluster_targets (target_households NA
+      # before the coalesce below) is RETIRED, not oversampled - it has no
+      # current per-cluster target to be capped against, so its achieved
+      # count passes through UNCAPPED (stranded = TRUE) rather than being
+      # pmin()'d to 0. This mirrors frame_status.R's own stranded_non_idp,
+      # likewise added to its stratum's achieved_sample with no per-
+      # cluster cap: the cap's whole purpose (stop one oversampled
+      # CURRENT cluster from masking an undersampled one nearby) doesn't
+      # apply to a cluster that no longer exists to be "oversampled" in.
+      # Scope note: this only rescues rows whose matched_strata_id is
+      # still live (present in strata_frame below) - a handful of rows
+      # (~110, 4 wholly-retired strata) and a separate ~27-row pop_type-NA
+      # matching bug (Bassa) are NOT fixed by this and remain flagged to
+      # Jack separately, not silently folded in here.
+      stranded = is.na(target_households),
       target_households = coalesce(target_households, 0),
-      # a cluster with no real target (missing/0) contributes nothing
-      # counted — never lets an unrecognised cluster inflate achieved
-      capped_achieved_n = pmin(cluster_achieved_n, target_households)
+      capped_achieved_n = if_else(stranded, cluster_achieved_n, pmin(cluster_achieved_n, target_households))
     )
   achieved <- achieved_by_cluster %>%
     group_by(matched_strata_id) %>%
@@ -968,25 +1060,56 @@ compute_progress_by_stratum <- function(subs) {
       pending_deletion_n = coalesce(pending_deletion_n, 0L),
       achieved_reserve_n = coalesce(achieved_reserve_n, 0L),
       pct_reserve_used = ifelse(achieved_n > 0, achieved_reserve_n / achieved_n, NA_real_),
+      # 2026-09-14: target_sample_representativity (1_sampling's own
+      # sample_needed_for_moe()-based true requirement) can come back NA for
+      # a stratum whose accessible population has fallen to genuinely ~0% -
+      # the workbook's own "Not computable (accessible population too
+      # small)" Feasibility category. Captured BEFORE the coalesce below
+      # overwrites it, same reasoning as the existing DROPPED case just
+      # beneath this: an unguarded 0/NA target reads as "Complete", which
+      # is exactly backwards for a stratum that can't be assessed, not one
+      # that succeeded. Confirmed 2026-09-14 these strata are NOT currently
+      # caught by coverage_status=="excluded" (checked directly against the
+      # live frame - still "covered"/"none") - flagged to 1_sampling as a
+      # likely separate gap (the population-threshold-exclusion recheck not
+      # yet rerun against tonight's accessibility drop), not assumed away
+      # here regardless of whether/when that gets reconciled on their side.
+      target_not_computable = is.na(target_sample_current),
       # 2026-09-08: target_sample kept, unrenamed, as "Original target" - the
       # untouched design-time figure (naming convention used consistently
       # across this file - never let it mean something else elsewhere).
-      # target_sample_current (just joined) is the live roster total;
-      # Complete/coloring/pct_achieved now key off THAT, not the frozen
-      # original - see strata_target_current's own note above for why.
       # coalesce guards a stratum with no live cluster in cluster_targets at
       # all (shouldn't happen, but 0 is the safe fallback, same convention
       # as achieved_n/collected_n above).
       target_sample_current = coalesce(target_sample_current, 0),
-      pct_achieved = ifelse(target_sample_current > 0, achieved_n / target_sample_current, NA_real_),
+      # FIX 2026-09-16 (Jack's direct decision, "Decision A" - the ZOA
+      # 184/165/186 thread + FACT's dashboard-vs-workbook mismatch,
+      # 9,778 vs 9,433): Complete/coloring/pct_achieved/Still-Needed now key
+      # off target_sample (the frozen ORIGINAL) again, not target_sample_
+      # current (representativity) - reverses the 2026-09-14 switch
+      # documented in strata_target_current's own comment above. Reasoning:
+      # partner workbooks (1_sampling side) headline against the original
+      # design target, and Jack wants the dashboard and workbooks to always
+      # agree on the headline figure, not just both be individually
+      # defensible. target_sample_current is NOT dropped - still computed
+      # and shown everywhere as the supplementary/reference "Revised
+      # Target" column - just no longer what Status/%/Still-Needed are
+      # judged against.
+      pct_achieved = ifelse(target_sample > 0, achieved_n / target_sample, NA_real_),
       # DROPPED status (2026-09-11): a stratum currently excluded for
       # accessibility_loss_below_population_threshold - see strata_frame's
       # own header above. Checked FIRST: such a stratum's target_sample_
       # current can legitimately read 0 (nothing currently accessible),
-      # which would otherwise misleadingly read "Complete".
+      # which would otherwise misleadingly read "Complete". Extended
+      # 2026-09-14 to also catch target_not_computable (see above) - same
+      # failure mode, different trigger. Deliberately still keyed off
+      # target_sample_current/target_not_computable, not target_sample
+      # (2026-09-16): "Dropped" reflects real-world CURRENT accessibility,
+      # which only the live representativity figure knows about - the frozen
+      # original has no way to express "this stratum is currently excluded."
       status = case_when(
-        coverage_status == "excluded" ~ "Dropped",
-        target_sample_current <= 0 | achieved_n >= target_sample_current ~ "Complete",
+        coverage_status == "excluded" | target_not_computable ~ "Dropped",
+        target_sample <= 0 | achieved_n >= target_sample ~ "Complete",
         achieved_n > 0 ~ "In progress",
         TRUE ~ "Not started"
       )
@@ -1113,12 +1236,35 @@ partner_progress_summary <- lapply(PARTNERS_ASSIGNED, function(org) {
   my_adm2 <- partner_adm2[[org]]
   if (is.null(my_adm2)) my_adm2 <- character(0)
   # 2026-09-08: now sums both target_sample (original) and
-  # target_sample_current (live) from progress_by_stratum - remaining/
-  # pace/status below key off _current, same reasoning as compute_progress_
-  # by_stratum()'s own switch above. target_sample (original) carried
-  # through to the output tibble for display only.
+  # target_sample_current (live) from progress_by_stratum. FIX 2026-09-16
+  # (Decision A, see compute_progress_by_stratum()'s own comment above):
+  # remaining/pace/status below now key off target_sample (original), not
+  # _current - target_sample_current is still summed and carried through to
+  # the output tibble, just as the supplementary "Revised Target" figure,
+  # no longer what Complete/Still-Needed are judged against.
+  # 2026-09-14 (Jack, explicit general rule): a Dropped stratum's real data
+  # must never enter a national/regional sum, only shown at its own
+  # stratum/LGA row - this per-partner rollup is exactly that kind of sum
+  # (collapses every stratum in the partner's assigned LGAs into one row).
+  # FIX 2026-09-14b (Jack, caught via the Partner Report tab showing a
+  # different "Original Target" than this table for the same partner):
+  # filter(status != "Dropped") BEFORE summing, as this used to do, also
+  # stripped a Dropped stratum's ORIGINAL target_sample out of the total -
+  # not just its live/achieved figures. target_sample is supposed to be the
+  # frozen design-time baseline regardless of what's since been dropped (see
+  # its own "ORIGINAL (frozen)" comment below, and partner_progress_by_lga()
+  # just below, which already got this right: it deliberately leaves
+  # target_sample untouched for Dropped rows while zeroing every live/
+  # progress column). Same fix applied here: zero the live columns for
+  # Dropped rows instead of filtering the rows out entirely, so target_sample
+  # still sums every assigned stratum, Dropped or not.
   totals <- progress_by_stratum %>%
     filter(adm2_pcode %in% my_adm2) %>%
+    mutate(across(
+      c(target_sample_current, achieved_n, collected_n, confirmed_deletion_n,
+        pending_deletion_n, oversampling_surplus_n),
+      ~ ifelse(status == "Dropped", 0, .)
+    )) %>%
     summarise(target_sample = sum(target_sample, na.rm = TRUE),
               target_sample_current = sum(target_sample_current, na.rm = TRUE),
               achieved_n = sum(achieved_n, na.rm = TRUE),
@@ -1131,7 +1277,7 @@ partner_progress_summary <- lapply(PARTNERS_ASSIGNED, function(org) {
   has_started <- is.finite(start_date)
   days_active <- if (has_started) as.numeric(today_for_pace - start_date) + 1 else NA_real_
   current_pace <- if (has_started && days_active > 0) totals$achieved_n / days_active else NA_real_
-  remaining <- max(totals$target_sample_current - totals$achieved_n, 0)
+  remaining <- max(totals$target_sample - totals$achieved_n, 0)
   days_left_to_deadline <- as.numeric(FIELDING_PLANNED_END - today_for_pace) + 1
   required_pace <- if (days_left_to_deadline > 0) remaining / days_left_to_deadline else NA_real_
   projected_finish <- if (!is.na(current_pace) && current_pace > 0 && remaining > 0) {
@@ -1143,8 +1289,8 @@ partner_progress_summary <- lapply(PARTNERS_ASSIGNED, function(org) {
   }
 
   status <- case_when(
-    totals$target_sample_current <= 0 ~ "Complete",
-    totals$achieved_n >= totals$target_sample_current ~ "Complete",
+    totals$target_sample <= 0 ~ "Complete",
+    totals$achieved_n >= totals$target_sample ~ "Complete",
     !has_started ~ "Not started",
     is.na(current_pace) || current_pace <= 0 ~ "Behind pace",
     projected_finish <= FIELDING_PLANNED_END ~ "On pace",
@@ -1175,7 +1321,7 @@ partner_progress_summary <- lapply(PARTNERS_ASSIGNED, function(org) {
     achieved_n = totals$achieved_n, collected_n = totals$collected_n,
     confirmed_deletion_n = totals$confirmed_deletion_n, pending_deletion_n = totals$pending_deletion_n,
     oversampling_surplus_n = totals$oversampling_surplus_n,
-    pct_achieved = ifelse(totals$target_sample_current > 0, totals$achieved_n / totals$target_sample_current, NA_real_),
+    pct_achieved = ifelse(totals$target_sample > 0, totals$achieved_n / totals$target_sample, NA_real_),
     shared_with = shared_with,
     start_date = if (has_started) start_date else as.Date(NA),
     days_active = days_active, current_daily_pace = current_pace, required_daily_pace = required_pace,
@@ -1240,14 +1386,31 @@ partner_progress_by_lga <- function(org_id_val) {
   my_adm2 <- partner_adm2[[org_id_val]]
   if (is.null(my_adm2)) my_adm2 <- character(0)
 
+  # 2026-09-14 (Jack, explicit general rule): a Dropped stratum's real data
+  # must never enter a national/regional sum, only shown at its own
+  # stratum/LGA row - this collapses pop_type per LGA (an LGA can have one
+  # Dropped pop-type stratum and one still-active one). Zeroed, not
+  # filter()ed out, so an LGA assigned to this partner where EVERY stratum
+  # is Dropped still shows up in their report (as all-zero/"Complete"),
+  # rather than silently disappearing from their own coverage list - a
+  # partner losing visibility into "this LGA I was assigned is now
+  # excluded" would be a worse outcome than the blending problem this is
+  # meant to fix. target_sample (original) deliberately left untouched -
+  # frozen historical figure, not what this rule is about.
   progress_by_stratum %>%
     filter(adm2_pcode %in% my_adm2) %>%
+    mutate(across(
+      c(target_sample_current, achieved_n, collected_n, confirmed_deletion_n,
+        pending_deletion_n, oversampling_surplus_n),
+      ~ ifelse(status == "Dropped", 0, .)
+    )) %>%
     group_by(region, adm1_name, adm2_pcode, adm2_name) %>%
     summarise(
       # 2026-09-08: target_sample = original (unchanged convention),
-      # target_sample_current = live - Complete/pct_achieved below now key
-      # off the live figure, same as compute_progress_by_stratum() and
-      # partner_progress_summary above.
+      # target_sample_current = live. FIX 2026-09-16 (Decision A): Complete/
+      # pct_achieved below now key off target_sample (original) again, same
+      # as compute_progress_by_stratum() and partner_progress_summary above
+      # - target_sample_current still summed/shown, just no longer the basis.
       target_sample = sum(target_sample, na.rm = TRUE),
       target_sample_current = sum(target_sample_current, na.rm = TRUE),
       achieved_n = sum(achieved_n, na.rm = TRUE),
@@ -1257,9 +1420,9 @@ partner_progress_by_lga <- function(org_id_val) {
       oversampling_surplus_n = sum(oversampling_surplus_n, na.rm = TRUE), .groups = "drop"
     ) %>%
     mutate(
-      pct_achieved = ifelse(target_sample_current > 0, achieved_n / target_sample_current, NA_real_),
+      pct_achieved = ifelse(target_sample > 0, achieved_n / target_sample, NA_real_),
       status = case_when(
-        target_sample_current <= 0 | achieved_n >= target_sample_current ~ "Complete",
+        target_sample <= 0 | achieved_n >= target_sample ~ "Complete",
         achieved_n > 0 ~ "In progress",
         TRUE ~ "Not started"
       ),
@@ -1385,13 +1548,48 @@ pct_color <- function(pct) {
   case_when(
     is.na(pct) ~ "#9AA3AF",
     pct >= 1 ~ "#1E7B4D",
-    pct >= 0.75 ~ "#4C9A6A",
+    # 2026-09-14 (Jack: "almost impossible to tell the difference" between
+    # 75-100% and 100%+ on the LGA progress map): this bin used to share
+    # #4C9A6A with several unrelated charts' generic "positive/green" accent
+    # (mod_integrity.R, mod_enumerator.R, mod_map.R's accessibility layer) -
+    # too close in hue/lightness to #1E7B4D "Complete" once rendered at the
+    # map's fillOpacity=0.75 on small LGA polygons. Given its own distinct,
+    # deliberately lighter shade instead of reusing that shared accent, so
+    # the two adjacent bins read as clearly different lightness steps, not
+    # just a subtle hue shift. Keep this in sync with mod_map.R's addLegend
+    # swatch colors for the "LGA progress" view (same 4 bins, manually
+    # duplicated there since a Leaflet legend can't call this function).
+    pct >= 0.75 ~ "#8FC79A",
     pct >= 0.35 ~ "#D99A2B",
     TRUE ~ "#C1443C"
   )
 }
 
 fmt_pct <- function(x) ifelse(is.na(x), "-", percent(x, accuracy = 1))
+
+# ---- Original vs Revised Target delta (2026-09-16, Jack's visibility ask) --
+# Every place Original/Revised Target appear side by side used to show two
+# independent absolute numbers with no computed gap between them anywhere -
+# a reader always had to subtract manually. One shared helper here, reused
+# by mod_home.R/mod_map.R/mod_table.R/mod_partner_report.R/mod_progress.R,
+# instead of six separate ad-hoc calculations that could drift apart from
+# each other (same failure class as the digest's stranded-credit gap
+# earlier tonight).
+TARGET_DIVERGENCE_THRESHOLD <- 0.25 # Jack's number, not mine - flag when
+# |Revised - Original| / Original >= this. Applies wherever the pair is shown.
+target_delta_pct <- function(original, revised) {
+  ifelse(is.na(original) | is.na(revised) | original <= 0, NA_real_, (revised - original) / original)
+}
+is_significant_target_divergence <- function(original, revised) {
+  d <- target_delta_pct(original, revised)
+  !is.na(d) & abs(d) >= TARGET_DIVERGENCE_THRESHOLD
+}
+# "-11% vs Original" / "+8% vs Original" - vectorised (works on a single
+# value or a whole DataTable column alike).
+target_delta_label <- function(original, revised) {
+  d <- target_delta_pct(original, revised)
+  ifelse(is.na(d), "", paste0(ifelse(d >= 0, "+", ""), percent(d, accuracy = 1), " vs Original"))
+}
 # NA-safe numeric rounding for KPI tiles — added 2026-08-25 after finding
 # several KPIs (mod_representativeness.R's household-size boxes,
 # mod_enumerator.R's avg-submissions box) rendered the literal string

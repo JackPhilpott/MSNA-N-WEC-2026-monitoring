@@ -16,7 +16,7 @@ mod_map_ui <- function(id) {
           style = "display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;",
           span(
             "Coverage map",
-            info_icon("Fill colour and \"% of target\" reflect ACHIEVED — completed, matched interviews that are not a SETTLED (confirmed/contested) tracker deletion, capped at each cluster's own target, measured against the REVISED (live, resampling-aware) target — see the Original Target figure in each popup for the unchanged design baseline. Policy changed 2026-09-11: a pending/unresolved flag no longer excludes an interview, only a confirmed deletion does. Hover a cluster/LGA for its COLLECTED, CONFIRMED DELETED (settled, genuinely gone) and OVERSAMPLING SURPLUS (real completed interviews beyond target, capped out of Achieved) figures too — Collected always equals Achieved + Confirmed Deleted + Oversampling Surplus. PENDING DELETION is shown separately, informationally — how much of Achieved still carries an unresolved flag."),
+            info_icon("Fill colour and \"% of target\" reflect ACHIEVED — completed, matched interviews that are not a SETTLED (confirmed/contested) tracker deletion, capped at each cluster's own target, measured against the ORIGINAL (frozen design-time) target — corrected 2026-09-16 (Decision A, matches partner workbooks; was measured against the live Revised target before) — see the Revised Target figure in each popup for the live representativity-based requirement. Policy changed 2026-09-11: a pending/unresolved flag no longer excludes an interview, only a confirmed deletion does. Hover a cluster/LGA for its COLLECTED, CONFIRMED DELETED (settled, genuinely gone) and OVERSAMPLING SURPLUS (real completed interviews beyond target, capped out of Achieved) figures too — Collected always equals Achieved + Confirmed Deleted + Oversampling Surplus. PENDING DELETION is shown separately, informationally — how much of Achieved still carries an unresolved flag."),
             if (!is.na(FRAME_AS_OF_LABEL)) {
               span(class = "text-muted", style = "font-size: 0.75em; font-weight: normal; margin-left: 10px;", FRAME_AS_OF_LABEL)
             }
@@ -55,17 +55,38 @@ mod_map_ui <- function(id) {
 
 mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active = reactive(TRUE)) {
   moduleServer(id, function(input, output, session) {
-    # BUG FIX 2026-09-09: pct_achieved/status here (and lga_map_data()'s own
-    # status below) used to key off target_sample (original, frozen) while
-    # compute_progress_by_stratum() itself already switched to
-    # target_sample_current (live) on 2026-09-08 - meaning the Coverage
-    # Map's own LGA "Complete" status/colour could disagree with the
-    # Progress by LGA table's status for the exact same LGA. target_sample
-    # (original) still summed and carried through for display alongside the
-    # live figure, same convention as everywhere else this split now
-    # appears - never silently dropped, just no longer what drives status.
+    # BUG FIX 2026-09-09, REVERSED 2026-09-16 (Decision A): this used to key
+    # pct_achieved/status off target_sample (original) while compute_
+    # progress_by_stratum() had switched to target_sample_current (live),
+    # causing a Coverage-Map-vs-Progress-by-LGA-table disagreement - fixed
+    # then by switching this file to match. Decision A now switches BOTH
+    # back to target_sample (original) together, for the same reason in
+    # reverse (partner workbooks headline against the original design
+    # target, and dashboard/workbook must agree) - so this file and
+    # compute_progress_by_stratum() stay in lockstep either way. target_
+    # sample_current still summed and carried through for display alongside
+    # the headline figure - never dropped, just no longer what drives status.
     filtered_lga <- reactive({
       filtered_stratum() %>%
+        # 2026-09-14 (Jack, explicit general rule): a Dropped stratum's real
+        # achieved data must never enter a national/regional/LGA sum, only
+        # ever shown at its own stratum row. This DOES matter here even
+        # though it's grouped by LGA, not stratum - an LGA with one Dropped
+        # pop-type stratum (e.g. Isa IDP) and one still-active pop-type
+        # stratum (Isa Non-IDP) would otherwise blend the dropped one's
+        # achieved into the LGA-level fill colour/status/% achieved.
+        #
+        # Zeroed, not filter()ed out - an LGA where EVERY stratum is Dropped
+        # (both pop types) must still appear on the map, just as all-zero/
+        # "Complete" (nothing left to do), not vanish from the choropleth
+        # entirely. Original target_sample deliberately left untouched -
+        # that's a frozen historical figure, not a "current" one this rule
+        # is about.
+        mutate(across(
+          c(target_sample_current, achieved_n, collected_n, confirmed_deletion_n,
+            pending_deletion_n, oversampling_surplus_n),
+          ~ ifelse(status == "Dropped", 0, .)
+        )) %>%
         group_by(region, adm1_pcode, adm1_name, adm2_pcode, adm2_name) %>%
         summarise(
           target_sample = sum(target_sample, na.rm = TRUE),
@@ -77,7 +98,7 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
           oversampling_surplus_n = sum(oversampling_surplus_n, na.rm = TRUE),
           .groups = "drop"
         ) %>%
-        mutate(pct_achieved = ifelse(target_sample_current > 0, achieved_n / target_sample_current, NA_real_))
+        mutate(pct_achieved = ifelse(target_sample > 0, achieved_n / target_sample, NA_real_))
     })
 
     # in-scope admin2 polygons — used for the LGA fill, the zoom-to-extent,
@@ -102,14 +123,17 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
     # number, via pmax()). Kept separate from filtered_lga() above (which
     # deliberately collapses pop_type when summing target/achieved for the
     # fill colour and overall % achieved) since this needs the split kept.
-    # BUG FIX 2026-09-09: was target_sample (original) - "remaining" could
-    # read 0 for a pop type whose LGA/stratum isn't actually Complete per
-    # the revised-target-based status elsewhere, a direct contradiction.
+    # BUG FIX 2026-09-09, REVERSED 2026-09-16 (Decision A): was target_sample
+    # (original), switched to target_sample_current so "remaining" couldn't
+    # read 0 for a pop type the revised-target-based status elsewhere didn't
+    # yet consider Complete. Decision A switches status back to target_sample
+    # (original) everywhere (see filtered_lga()/lga_map_data() above/below),
+    # so this switches back in lockstep for the same no-contradiction reason.
     remaining_by_pop_type <- reactive({
       filtered_stratum() %>%
         group_by(adm2_pcode, pop_type) %>%
-        summarise(target_sample_current = sum(target_sample_current, na.rm = TRUE), achieved_n = sum(achieved_n, na.rm = TRUE), .groups = "drop") %>%
-        mutate(remaining = pmax(target_sample_current - achieved_n, 0)) %>%
+        summarise(target_sample = sum(target_sample, na.rm = TRUE), achieved_n = sum(achieved_n, na.rm = TRUE), .groups = "drop") %>%
+        mutate(remaining = pmax(target_sample - achieved_n, 0)) %>%
         select(adm2_pcode, pop_type, remaining) %>%
         pivot_wider(names_from = pop_type, values_from = remaining, names_prefix = "remaining_", values_fill = 0) %>%
         # a filtered-down view could in principle contain only one pop
@@ -139,12 +163,18 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
           pct_achieved = coalesce(pct_achieved, 0),
           fill_color = pct_color(pct_achieved),
           label_pct = fmt_pct(pct_achieved),
+          # FIX 2026-09-16 (Decision A): target_sample (original) - see the
+          # header comment on filtered_lga() above.
           status = case_when(
-            target_sample_current <= 0 | achieved_n >= target_sample_current ~ "Complete",
+            target_sample <= 0 | achieved_n >= target_sample ~ "Complete",
             achieved_n > 0 ~ "In progress",
             TRUE ~ "Not started"
           ),
-          partner_coverage = vapply(adm2_pcode, partner_coverage_label, character(1))
+          partner_coverage = vapply(adm2_pcode, partner_coverage_label, character(1)),
+          # ADDED 2026-09-16 (Jack, visibility ask): shared helper (global.R),
+          # reused identically in the popup label below.
+          target_delta = target_delta_label(target_sample, target_sample_current),
+          target_diverges = is_significant_target_divergence(target_sample, target_sample_current)
         ) %>%
         left_join(accessibility_lga_summary, by = "adm2_pcode") %>%
         left_join(remaining_by_pop_type(), by = "adm2_pcode") %>%
@@ -416,8 +446,22 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
             paste0(
               "<b>", adm2_name, "</b>, ", adm1_name, "<br>",
               "Partner(s): ", partner_coverage, "<br>",
-              "Achieved: ", coalesce(achieved_n, 0), " / ", coalesce(target_sample_current, 0),
-              " (", label_pct, ") <span style='color:#8894A6;'>(original target: ", coalesce(target_sample, 0), ")</span><br>",
+              # FIX 2026-09-16 (Decision A): headline fraction is now vs.
+              # target_sample (original), with target_sample_current
+              # (representativity) shown as the supplementary figure - was
+              # the other way round.
+              # FIX 2026-09-16 (Jack, visibility ask): Revised Target used to
+              # be a small muted-gray parenthetical, easy to miss on a
+              # hover-only popup - now its own explicitly-labelled line,
+              # same weight/colour as Original, plus the shared delta label.
+              # Divergence >=25% (global.R's TARGET_DIVERGENCE_THRESHOLD)
+              # gets a red bold treatment so a meaningfully-shifted LGA
+              # stands out without needing to read the number closely.
+              "Achieved: ", coalesce(achieved_n, 0), " (", label_pct, " of Original)<br>",
+              "Original Target: ", coalesce(target_sample, 0), "<br>",
+              ifelse(target_diverges, "<b style='color:#C1443C;'>", ""),
+              "Revised Target: ", coalesce(target_sample_current, 0), " (", target_delta, ")",
+              ifelse(target_diverges, "</b>", ""), "<br>",
               "Collected: ", coalesce(collected_n, 0), "<br>",
               "Confirmed Deleted: ", coalesce(confirmed_deletion_n, 0),
               " | Oversampling Surplus: ", coalesce(oversampling_surplus_n, 0), "<br>",
@@ -653,7 +697,10 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
           showGroup("LGA progress") %>%
           addLegend(
             layerId = "map_legend", position = "bottomright",
-            colors = c("#C1443C", "#D99A2B", "#4C9A6A", "#1E7B4D", "#9AA3AF"),
+            # 2026-09-14: kept in sync with global.R's pct_color() (the
+            # actual per-polygon fill logic) - see that function's own
+            # comment for why 75-100% moved off the shared #4C9A6A accent.
+            colors = c("#C1443C", "#D99A2B", "#8FC79A", "#1E7B4D", "#9AA3AF"),
             labels = c("<35%", "35-75%", "75-100%", "100%+", "No data"),
             title = "% of target achieved (LGA)", opacity = 0.9
           )

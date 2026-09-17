@@ -151,10 +151,22 @@ build_partner_quality_digest_excel <- function(file, cleaning_log) {
   # have individual targets to cap against, and that sheet's job is
   # quality-rate patterns, not coverage tracking.
   achieved_rows <- submissions_raw[achieved_flag & !is.na(submissions_raw$matched_cluster_id), ]
+  # FIX 2026-09-16 (Jack, via cross-session flag - the 94-interview national
+  # undercount smoke_test.R's sum(partners$Achieved) >= sum(progress_by_
+  # stratum$achieved_n) assertion caught): this cluster-level cap never
+  # picked up the 2026-09-14 stranded-achieved-credit policy compute_
+  # progress_by_stratum() already applies (global.R) - a cluster retired
+  # from cluster_targets (target_households NA, coalesced to 0 below) was
+  # still being pmin()'d to 0 here instead of passed through uncapped. Same
+  # stranded branch, ported verbatim from global.R's achieved_by_cluster.
   cluster_capped <- achieved_rows %>%
     count(matched_cluster_id, name = "cluster_achieved_n") %>%
     left_join(cluster_targets, by = c("matched_cluster_id" = "cluster_id")) %>%
-    mutate(target_households = coalesce(target_households, 0), capped_achieved_n = pmin(cluster_achieved_n, target_households))
+    mutate(
+      stranded = is.na(target_households),
+      target_households = coalesce(target_households, 0),
+      capped_achieved_n = if_else(stranded, cluster_achieved_n, pmin(cluster_achieved_n, target_households))
+    )
   achieved_capped_by_org <- achieved_rows %>%
     distinct(matched_cluster_id, org_id) %>%
     left_join(cluster_capped %>% select(matched_cluster_id, capped_achieved_n), by = "matched_cluster_id") %>%
