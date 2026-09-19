@@ -58,6 +58,33 @@ picker_opts <- function(...) pickerOptions(
 filter_sidebar <- sidebar(
   title = "Filters",
   width = 300,
+  # 2026-09-19 (Jack-approved build, relayed via the Coordinator): a global
+  # computation-basis switch, not a scope filter like everything below it
+  # (it doesn't narrow which rows are in view — it changes what "target"
+  # MEANS for every target-dependent figure dashboard-wide: status/
+  # "Complete", pct_achieved, map colouring, Still-Needed, KPI %s). Given
+  # its own visually separated block + a stronger label for that reason,
+  # rather than sitting inline with Region/State/etc. as just another
+  # pickerInput. Default "original" matches Decision A (2026-09-16) exactly
+  # — nothing on the dashboard changes until a user actively toggles this.
+  # See global.R's target_basis_label()/active_planned_interviews() and
+  # compute_progress_by_stratum()'s target_active for the mechanism.
+  div(
+    style = "background: rgba(255,255,255,0.08); border-radius: 6px; padding: 8px 10px; margin-bottom: 10px;",
+    div(
+      style = "display: flex; align-items: center; gap: 6px;",
+      strong("Target basis"),
+      info_icon(
+        "Switches what every target-dependent figure on the dashboard is judged against. Original Target = the frozen design-time sample size, unchanged since fielding began. Revised Target = the live required minimum (1_sampling's representativity calculation), recomputed fresh every refresh against the current accessible population. Affects status/\"Complete\" classification, % achieved, Coverage Map colouring (LGA view only — the per-cluster view always uses each cluster's own fixed target_households, unaffected by this toggle), Still-Needed, and every KPI headline %. Original/Revised reference columns and popup lines elsewhere keep showing BOTH numbers regardless of this switch — only which one DRIVES the calculation changes.",
+        color = THEME_SIDEBAR_FG
+      )
+    ),
+    radioButtons(
+      "target_basis", NULL,
+      choices = c("Original Target" = "original", "Revised Target" = "revised"),
+      selected = "original", inline = TRUE
+    )
+  ),
   actionButton("reset_filters", "Reset all filters", icon = icon("rotate-left"), class = "btn-secondary btn-sm w-100 mb-2"),
   pickerInput(
     "f_region", "Region",
@@ -462,14 +489,25 @@ server <- function(input, output, session) {
       )
   })
 
+  # 2026-09-19 (global target-basis toggle, Jack-approved build): every
+  # target-dependent figure dashboard-wide reads this one reactive rather
+  # than each module re-reading input$target_basis directly, so there's a
+  # single point of truth for "which basis is active right now" - matches
+  # the existing pattern for map_tab_active()/effective_lgas() etc. above.
+  target_basis <- reactive(input$target_basis)
+
   # Computed from filtered_subs() (not the static progress_by_stratum), so
   # every LGA-level view — Coverage Map's LGA choropleth, Progress by LGA
   # table, Progress Overview's region chart — respects the date-range
-  # filter too, same as the Coverage by cluster view already did.
+  # filter too, same as the Coverage by cluster view already did. Now also
+  # basis-aware (target_basis()) — this is the ONE place filtered_stratum's
+  # own consumers (mod_map/mod_table/mod_export/mod_representativeness) need
+  # the toggle threaded through, since they only ever read filtered_stratum()
+  # itself, already basis-aware once it's threaded here.
   filtered_stratum <- reactive({
     poptype_sel <- filter_ui_state$poptype$selected
     req(poptype_sel)
-    compute_progress_by_stratum(filtered_subs()) %>%
+    compute_progress_by_stratum(filtered_subs(), target_basis()) %>%
       filter(
         adm1_name %in% filter_ui_state$state$selected,
         adm2_name %in% effective_lgas(),
@@ -487,12 +525,12 @@ server <- function(input, output, session) {
   # observers can gate on it (see that file for the req()-based mechanism).
   map_tab_active <- reactive(identical(input$main_nav, "Coverage Map"))
 
-  mod_home_server("home")
-  mod_progress_server("progress", filtered_subs, filtered_stratum)
-  mod_map_server("map", filtered_stratum, filtered_subs, map_tab_active)
+  mod_home_server("home", target_basis)
+  mod_progress_server("progress", filtered_subs, filtered_stratum, target_basis)
+  mod_map_server("map", filtered_stratum, filtered_subs, map_tab_active, target_basis)
   mod_table_server("table", filtered_stratum)
   mod_quality_server("quality", filtered_subs)
-  mod_partner_report_server("partner_report", reactive(filter_ui_state$partner$selected))
+  mod_partner_report_server("partner_report", reactive(filter_ui_state$partner$selected), target_basis)
   mod_export_server("export", filtered_subs, filtered_stratum)
   mod_enumerator_server("enumerator", filtered_subs)
   mod_integrity_server("integrity", filtered_subs)

@@ -16,7 +16,7 @@ mod_map_ui <- function(id) {
           style = "display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;",
           span(
             "Coverage map",
-            info_icon("Fill colour and \"% of target\" reflect ACHIEVED — completed, matched interviews that are not a SETTLED (confirmed/contested) tracker deletion, capped at each cluster's own target, measured against the ORIGINAL (frozen design-time) target — corrected 2026-09-16 (Decision A, matches partner workbooks; was measured against the live Revised target before) — see the Revised Target figure in each popup for the live representativity-based requirement. Policy changed 2026-09-11: a pending/unresolved flag no longer excludes an interview, only a confirmed deletion does. Hover a cluster/LGA for its COLLECTED, CONFIRMED DELETED (settled, genuinely gone) and OVERSAMPLING SURPLUS (real completed interviews beyond target, capped out of Achieved) figures too — Collected always equals Achieved + Confirmed Deleted + Oversampling Surplus. PENDING DELETION is shown separately, informationally — how much of Achieved still carries an unresolved flag."),
+            info_icon("Fill colour and \"% of target\" (LGA view only) reflect ACHIEVED — completed, matched interviews that are not a SETTLED (confirmed/contested) tracker deletion, capped at each cluster's own target — measured against whichever Target basis is selected in the sidebar (Original or Revised, default Original — 2026-09-19, replacing Decision A's permanently-Original choice). Both the Original and Revised figures are always shown in each popup regardless of the toggle. The per-cluster view always uses each cluster's own fixed target_households, unaffected by this toggle. Policy changed 2026-09-11: a pending/unresolved flag no longer excludes an interview, only a confirmed deletion does. Hover a cluster/LGA for its COLLECTED, CONFIRMED DELETED (settled, genuinely gone) and OVERSAMPLING SURPLUS (real completed interviews beyond target, capped out of Achieved) figures too — Collected always equals Achieved + Confirmed Deleted + Oversampling Surplus. PENDING DELETION is shown separately, informationally — how much of Achieved still carries an unresolved flag."),
             if (!is.na(FRAME_AS_OF_LABEL)) {
               span(class = "text-muted", style = "font-size: 0.75em; font-weight: normal; margin-left: 10px;", FRAME_AS_OF_LABEL)
             }
@@ -30,7 +30,13 @@ mod_map_ui <- function(id) {
             ),
             checkboxGroupInput(
               ns("status_filter"), NULL,
-              choices = names(STATUS_COLORS), selected = names(STATUS_COLORS), inline = TRUE
+              # CLUSTER_STATUS_COLORS (global.R), not STATUS_COLORS - adds
+              # "Inaccessible" (2026-09-17), a cluster-grain-only 4th
+              # category. Shared with the LGA choropleth below (lga_map_
+              # data()'s own status is still only Complete/In progress/Not
+              # started - "Inaccessible" unchecking this box has no effect
+              # there, same as any status value a given grain never uses).
+              choices = names(CLUSTER_STATUS_COLORS), selected = names(CLUSTER_STATUS_COLORS), inline = TRUE
             )
           )
         ),
@@ -53,19 +59,21 @@ mod_map_ui <- function(id) {
   )
 }
 
-mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active = reactive(TRUE)) {
+mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active = reactive(TRUE), target_basis = reactive("original")) {
   moduleServer(id, function(input, output, session) {
-    # BUG FIX 2026-09-09, REVERSED 2026-09-16 (Decision A): this used to key
-    # pct_achieved/status off target_sample (original) while compute_
-    # progress_by_stratum() had switched to target_sample_current (live),
-    # causing a Coverage-Map-vs-Progress-by-LGA-table disagreement - fixed
-    # then by switching this file to match. Decision A now switches BOTH
-    # back to target_sample (original) together, for the same reason in
-    # reverse (partner workbooks headline against the original design
-    # target, and dashboard/workbook must agree) - so this file and
-    # compute_progress_by_stratum() stay in lockstep either way. target_
-    # sample_current still summed and carried through for display alongside
-    # the headline figure - never dropped, just no longer what drives status.
+    # BUG FIX 2026-09-09, REVERSED 2026-09-16 (Decision A), extended 2026-
+    # 09-19 (global target-basis toggle): this used to key pct_achieved/
+    # status off target_sample (original) while compute_progress_by_
+    # stratum() had switched to target_sample_current (live), causing a
+    # Coverage-Map-vs-Progress-by-LGA-table disagreement - fixed then by
+    # switching this file to match. Decision A then switched BOTH back to
+    # target_sample (original) together, for the same reason in reverse.
+    # Now both key off target_active (filtered_stratum()'s own per-row
+    # column, driven by the sidebar's target_basis toggle) - this file and
+    # compute_progress_by_stratum() stay in lockstep regardless of which
+    # basis is selected. target_sample/target_sample_current are both still
+    # summed and carried through for the popup's reference display -
+    # unaffected by the toggle, never dropped.
     filtered_lga <- reactive({
       filtered_stratum() %>%
         # 2026-09-14 (Jack, explicit general rule): a Dropped stratum's real
@@ -81,16 +89,28 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
         # "Complete" (nothing left to do), not vanish from the choropleth
         # entirely. Original target_sample deliberately left untouched -
         # that's a frozen historical figure, not a "current" one this rule
-        # is about.
+        # is about. target_active is recomputed AFTER this zeroing (not
+        # zeroed directly) so it inherits the correct zero-or-not treatment
+        # from whichever of target_sample/target_sample_current it
+        # currently stands for - same pattern as global.R's
+        # build_partner_progress_summary()/partner_progress_by_lga().
         mutate(across(
           c(target_sample_current, achieved_n, collected_n, confirmed_deletion_n,
             pending_deletion_n, oversampling_surplus_n),
           ~ ifelse(status == "Dropped", 0, .)
         )) %>%
+        # identical(), not == : target_basis() can be NULL very briefly
+        # before the client's initial input handshake lands (e.g. under
+        # testServer, which never renders the sidebar's radioButtons default)
+        # - == on a NULL operand throws "argument is of length zero" inside
+        # an unguarded reactive/mutate, whereas identical() safely returns
+        # FALSE (falling back to Original) instead of crashing the map.
+        mutate(target_active = if (identical(target_basis(), "revised")) target_sample_current else target_sample) %>%
         group_by(region, adm1_pcode, adm1_name, adm2_pcode, adm2_name) %>%
         summarise(
           target_sample = sum(target_sample, na.rm = TRUE),
           target_sample_current = sum(target_sample_current, na.rm = TRUE),
+          target_active = sum(target_active, na.rm = TRUE),
           achieved_n = sum(achieved_n, na.rm = TRUE),
           collected_n = sum(collected_n, na.rm = TRUE),
           confirmed_deletion_n = sum(confirmed_deletion_n, na.rm = TRUE),
@@ -98,7 +118,7 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
           oversampling_surplus_n = sum(oversampling_surplus_n, na.rm = TRUE),
           .groups = "drop"
         ) %>%
-        mutate(pct_achieved = ifelse(target_sample > 0, achieved_n / target_sample, NA_real_))
+        mutate(pct_achieved = ifelse(target_active > 0, achieved_n / target_active, NA_real_))
     })
 
     # in-scope admin2 polygons — used for the LGA fill, the zoom-to-extent,
@@ -109,7 +129,7 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
     # suffixed .x/.y columns instead.
     scope_admin2_sf <- reactive({
       lga <- filtered_lga() %>%
-        select(adm2_pcode, target_sample, target_sample_current, achieved_n, collected_n,
+        select(adm2_pcode, target_sample, target_sample_current, target_active, achieved_n, collected_n,
                confirmed_deletion_n, pending_deletion_n, oversampling_surplus_n, pct_achieved)
       admin2_sf %>% inner_join(lga, by = "adm2_pcode")
     })
@@ -123,17 +143,18 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
     # number, via pmax()). Kept separate from filtered_lga() above (which
     # deliberately collapses pop_type when summing target/achieved for the
     # fill colour and overall % achieved) since this needs the split kept.
-    # BUG FIX 2026-09-09, REVERSED 2026-09-16 (Decision A): was target_sample
-    # (original), switched to target_sample_current so "remaining" couldn't
-    # read 0 for a pop type the revised-target-based status elsewhere didn't
-    # yet consider Complete. Decision A switches status back to target_sample
-    # (original) everywhere (see filtered_lga()/lga_map_data() above/below),
-    # so this switches back in lockstep for the same no-contradiction reason.
+    # BUG FIX 2026-09-09, REVERSED 2026-09-16 (Decision A), extended 2026-
+    # 09-19 (global toggle): was target_sample (original), switched to
+    # target_sample_current so "remaining" couldn't read 0 for a pop type
+    # the revised-target-based status elsewhere didn't yet consider
+    # Complete. Now keyed off target_active (filtered_stratum()'s own
+    # per-row column) so this stays in lockstep with filtered_lga()/
+    # lga_map_data() regardless of which basis the sidebar toggle selects.
     remaining_by_pop_type <- reactive({
       filtered_stratum() %>%
         group_by(adm2_pcode, pop_type) %>%
-        summarise(target_sample = sum(target_sample, na.rm = TRUE), achieved_n = sum(achieved_n, na.rm = TRUE), .groups = "drop") %>%
-        mutate(remaining = pmax(target_sample - achieved_n, 0)) %>%
+        summarise(target_active = sum(target_active, na.rm = TRUE), achieved_n = sum(achieved_n, na.rm = TRUE), .groups = "drop") %>%
+        mutate(remaining = pmax(target_active - achieved_n, 0)) %>%
         select(adm2_pcode, pop_type, remaining) %>%
         pivot_wider(names_from = pop_type, values_from = remaining, names_prefix = "remaining_", values_fill = 0) %>%
         # a filtered-down view could in principle contain only one pop
@@ -163,10 +184,11 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
           pct_achieved = coalesce(pct_achieved, 0),
           fill_color = pct_color(pct_achieved),
           label_pct = fmt_pct(pct_achieved),
-          # FIX 2026-09-16 (Decision A): target_sample (original) - see the
-          # header comment on filtered_lga() above.
+          # FIX 2026-09-16 (Decision A), extended 2026-09-19 (global
+          # toggle): target_active - see the header comment on
+          # filtered_lga() above.
           status = case_when(
-            target_sample <= 0 | achieved_n >= target_sample ~ "Complete",
+            target_active <= 0 | achieved_n >= target_active ~ "Complete",
             achieved_n > 0 ~ "In progress",
             TRUE ~ "Not started"
           ),
@@ -254,12 +276,30 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
           confirmed_deletion_n = coalesce(confirmed_deletion_n, 0L),
           pending_deletion_n = coalesce(pending_deletion_n, 0L),
           target_households = as.numeric(target_households),
+          # 2026-09-17 (Jack's decision, Option 3/hybrid — real bug: this
+          # status used to be computed with zero accessibility awareness,
+          # so a zero-achieved cluster in a currently-Inaccessible ward
+          # rendered identically to a genuine collectible gap). accessible_
+          # status comes precomputed onto psu_sf itself (global.R, joined
+          # once at load against accessibility_sf) — NA here means "no
+          # accessibility match at all" (13 clusters nationally, a
+          # malformed-geometry edge case, not a real Inaccessible/Accessible
+          # signal), deliberately treated as "not Inaccessible" below rather
+          # than defaulted the other way: this is a display decision, not
+          # the resampling/draw safety-critical context where 1_sampling's
+          # own default-direction bug (unmatched → default to Excluded) came
+          # from — here there's no positive evidence to grey it out on.
+          # A cluster with real achieved data NEVER gets reclassified as
+          # "Inaccessible" (checked first, same as before) - only a zero-
+          # achieved one does, per spec.
+          is_inaccessible = !is.na(accessible_status) & accessible_status == "Inaccessible",
           status = case_when(
             achieved_n >= target_households ~ "Complete",
             achieved_n > 0 ~ "In progress",
+            is_inaccessible ~ "Inaccessible",
             TRUE ~ "Not started"
           ),
-          fill_color = unname(STATUS_COLORS[status]),
+          fill_color = unname(CLUSTER_STATUS_COLORS[status]),
           # Same definition as reports_partner_digest.R's compute_oversampled_
           # clusters() (target_households > 0 & achieved_n > target) — always
           # a subset of "Complete", never a sibling status, so it's drawn as a
@@ -269,6 +309,15 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
           # make an issue we want caught passively into one you have to
           # remember to go looking for).
           oversampled = target_households > 0 & achieved_n > target_households,
+          # "Stranded achieved, now also inaccessible" — real achieved data
+          # (so status stays Complete/In progress, fill unchanged) but sits
+          # in a ward now reported Inaccessible. Invisible before this fix
+          # even though already correctly counted; drawn as a border, same
+          # mechanism/reasoning as `oversampled` just above, not a status of
+          # its own (would never coexist with the achieved>0 status it
+          # requires, but making it a full status would collide with the
+          # zero-achieved "Inaccessible" category above for no reason).
+          stranded_inaccessible = achieved_n > 0 & is_inaccessible,
           label_pct = fmt_pct(ifelse(target_households > 0, achieved_n / target_households, NA_real_)),
           partner_coverage = vapply(adm2_pcode, partner_coverage_label, character(1))
         ) %>%
@@ -449,7 +498,11 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
               # FIX 2026-09-16 (Decision A): headline fraction is now vs.
               # target_sample (original), with target_sample_current
               # (representativity) shown as the supplementary figure - was
-              # the other way round.
+              # the other way round. Extended 2026-09-19 (global toggle):
+              # "of Original"/"of Revised" now follows the sidebar's Target
+              # basis switch instead of being hardcoded to Original - the
+              # two reference lines just below always show BOTH numbers
+              # regardless, unaffected by the toggle.
               # FIX 2026-09-16 (Jack, visibility ask): Revised Target used to
               # be a small muted-gray parenthetical, easy to miss on a
               # hover-only popup - now its own explicitly-labelled line,
@@ -457,7 +510,7 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
               # Divergence >=25% (global.R's TARGET_DIVERGENCE_THRESHOLD)
               # gets a red bold treatment so a meaningfully-shifted LGA
               # stands out without needing to read the number closely.
-              "Achieved: ", coalesce(achieved_n, 0), " (", label_pct, " of Original)<br>",
+              "Achieved: ", coalesce(achieved_n, 0), " (", label_pct, " of ", target_basis_label(target_basis()), ")<br>",
               "Original Target: ", coalesce(target_sample, 0), "<br>",
               ifelse(target_diverges, "<b style='color:#C1443C;'>", ""),
               "Revised Target: ", coalesce(target_sample_current, 0), " (", target_delta, ")",
@@ -496,8 +549,14 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
           # that. OVERSAMPLED_BORDER (global.R) is purple: unmistakable
           # against the green "Complete" fill it always sits on, and against
           # every other colour already in play on this map.
-          color = ~ifelse(oversampled, OVERSAMPLED_BORDER, "#FFFFFF"),
-          weight = ~ifelse(oversampled, 4, 0.5), # bumped from 3 (2026-08-24, per Jack — wasn't clear enough)
+          # 2026-09-17: added INACCESSIBLE_BORDER (grey, same colour as
+          # CLUSTER_STATUS_COLORS["Inaccessible"]'s fill) for the stranded-
+          # achieved-in-a-now-inaccessible-ward case - oversampled checked
+          # FIRST and wins if a cluster is somehow both (rarer, and the more
+          # operationally urgent signal - see global.R's INACCESSIBLE_BORDER
+          # comment).
+          color = ~ifelse(oversampled, OVERSAMPLED_BORDER, ifelse(stranded_inaccessible, INACCESSIBLE_BORDER, "#FFFFFF")),
+          weight = ~ifelse(oversampled | stranded_inaccessible, 4, 0.5), # bumped from 3 (2026-08-24, per Jack — wasn't clear enough)
           group = "Cluster status",
           options = pathOptions(pane = "clusterStatusPane"),
           label = ~lapply(
@@ -508,6 +567,7 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
               "Confirmed Deleted: ", confirmed_deletion_n, " | Pending Deletion: ", pending_deletion_n, "<br>",
               "Status: ", status, "<br>",
               ifelse(oversampled, paste0("<b style='color:", OVERSAMPLED_BORDER, ";'>&#9888; Oversampled by ", achieved_n - target_households, "</b><br>"), ""),
+              ifelse(stranded_inaccessible, paste0("<b style='color:", INACCESSIBLE_BORDER, ";'>&#9888; Achieved, but ward now reported Inaccessible</b><br>"), ""),
               "Partner(s): ", partner_coverage
             ),
             htmltools::HTML
@@ -526,8 +586,8 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
           radius = 6,
           fillColor = ~fill_color,
           fillOpacity = 0.9,
-          color = ~ifelse(oversampled, OVERSAMPLED_BORDER, "#333333"),
-          weight = ~ifelse(oversampled, 4, 1), # bumped from 3 (2026-08-24, per Jack — wasn't clear enough)
+          color = ~ifelse(oversampled, OVERSAMPLED_BORDER, ifelse(stranded_inaccessible, INACCESSIBLE_BORDER, "#333333")),
+          weight = ~ifelse(oversampled | stranded_inaccessible, 4, 1), # bumped from 3 (2026-08-24, per Jack — wasn't clear enough)
           stroke = TRUE,
           group = "Cluster status sites",
           # Own pane, above the default overlayPane hexagons/polygons share —
@@ -544,6 +604,7 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
               "Confirmed Deleted: ", confirmed_deletion_n, " | Pending Deletion: ", pending_deletion_n, "<br>",
               "Status: ", status, "<br>",
               ifelse(oversampled, paste0("<b style='color:", OVERSAMPLED_BORDER, ";'>&#9888; Oversampled by ", achieved_n - target_households, "</b><br>"), ""),
+              ifelse(stranded_inaccessible, paste0("<b style='color:", INACCESSIBLE_BORDER, ";'>&#9888; Achieved, but ward now reported Inaccessible</b><br>"), ""),
               "Partner(s): ", partner_coverage
             ),
             htmltools::HTML
@@ -689,7 +750,13 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
     })
 
     # ---- view toggle: swap which fill layer + legend is visible -----------
-    observeEvent(input$map_view, {
+    # Was observeEvent(input$map_view, ...) - switched to observe() 2026-09-19
+    # so the LGA legend's title (now embedding target_basis_label()) also
+    # redraws when the sidebar's Target basis toggle changes, not just when
+    # map_view itself changes - observe() picks up every reactive read in its
+    # body (input$map_view AND target_basis()) as a dependency automatically.
+    observe({
+      req(input$map_view)
       proxy <- leafletProxy("map") %>% removeControl("map_legend")
       if (input$map_view == "lga") {
         proxy %>%
@@ -702,7 +769,7 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
             # comment for why 75-100% moved off the shared #4C9A6A accent.
             colors = c("#C1443C", "#D99A2B", "#8FC79A", "#1E7B4D", "#9AA3AF"),
             labels = c("<35%", "35-75%", "75-100%", "100%+", "No data"),
-            title = "% of target achieved (LGA)", opacity = 0.9
+            title = paste0("% of ", target_basis_label(target_basis()), " achieved (LGA)"), opacity = 0.9
           )
       } else {
         proxy %>%
@@ -710,12 +777,12 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
           showGroup(c("Cluster status", "Cluster status sites")) %>%
           addLegend(
             layerId = "map_legend", position = "bottomright",
-            colors = c(unname(STATUS_COLORS), OVERSAMPLED_BORDER),
-            # The 4th entry's swatch renders as a filled square like the
-            # other three, not an actual outline — addLegend() can't render
-            # a border-only swatch — hence spelling out "outline" in the
-            # label itself so it isn't read as a 4th fill status.
-            labels = c(names(STATUS_COLORS), "Oversampled (purple outline)"),
+            colors = c(unname(CLUSTER_STATUS_COLORS), OVERSAMPLED_BORDER, INACCESSIBLE_BORDER),
+            # The outline entries' swatches render as filled squares like
+            # the fill statuses, not actual outlines — addLegend() can't
+            # render a border-only swatch — hence spelling out "outline" in
+            # the label itself so neither is read as its own fill status.
+            labels = c(names(CLUSTER_STATUS_COLORS), "Oversampled (purple outline)", "Achieved, now inaccessible (grey outline)"),
             title = "Cluster status", opacity = 0.9
           )
       }

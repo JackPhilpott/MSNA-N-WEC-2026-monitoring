@@ -117,8 +117,18 @@ mod_home_ui <- function(id) {
   )
 }
 
-mod_home_server <- function(id) {
+mod_home_server <- function(id, target_basis) {
   moduleServer(id, function(input, output, session) {
+    # 2026-09-19 (global target-basis toggle, Jack-approved build): Home's
+    # national KPIs used to read the static progress_by_stratum global
+    # (global.R, permanently basis="original") directly — that would
+    # silently ignore the sidebar toggle, since this module has no other
+    # reactive input. Recomputed here instead, same pattern as
+    # build_partner_progress_summary()/partner_progress_by_lga() in
+    # global.R. Cheap enough to recompute on a toggle flip (infrequent,
+    # deliberate) — not cached beyond the reactive's own memoisation.
+    progress_active <- reactive(compute_progress_by_stratum(submissions_raw, target_basis()))
+
     output$glance <- renderUI({
       # progress_by_stratum$achieved_n, not sum(is_achieved(submissions_raw))
       # directly (2026-08-25 fix) — the latter is uncapped and has the same
@@ -135,7 +145,7 @@ mod_home_server <- function(id) {
       # Achieved + Confirmed Deletion + Oversampling Surplus must still hold
       # exactly - excluding Dropped from only one of the four would break
       # that identity, not just under-report it).
-      national_agg <- progress_by_stratum %>% filter(status != "Dropped")
+      national_agg <- progress_active() %>% filter(status != "Dropped")
       total_achieved <- sum(national_agg$achieved_n)
       # FIXED 2026-09-11: was sum(is_collected(submissions_raw)) - a raw,
       # unscoped sum over every submission, computed independently from the
@@ -150,11 +160,12 @@ mod_home_server <- function(id) {
       total_confirmed_deletion <- sum(national_agg$confirmed_deletion_n)
       total_pending_deletion <- sum(national_agg$pending_deletion_n)
       total_oversampling_surplus <- sum(national_agg$oversampling_surplus_n)
-      # FIX 2026-09-16 (Decision A): target_sample (original), not
-      # target_sample_current - matches every other headline "target" figure
-      # on this page now; the Original vs. Revised national totals get their
-      # own row below instead of forking this by-pop-type breakdown into two.
-      target_by_pop <- national_agg %>% group_by(pop_type) %>% summarise(target = sum(target_sample, na.rm = TRUE), .groups = "drop")
+      # FIX 2026-09-16 (Decision A), extended 2026-09-19 (global toggle):
+      # target_active (the toggle's current basis, "original" by default) -
+      # matches every other headline "target" figure on this page now; the
+      # Original vs. Revised national totals get their own row below
+      # instead of forking this by-pop-type breakdown into two.
+      target_by_pop <- national_agg %>% group_by(pop_type) %>% summarise(target = sum(target_active, na.rm = TRUE), .groups = "drop")
       target_non_idp <- target_by_pop$target[target_by_pop$pop_type == "non_idp"]
       target_idp <- target_by_pop$target[target_by_pop$pop_type == "idp"]
       n_states <- length(unique(strata_frame$adm1_name))
@@ -198,8 +209,8 @@ mod_home_server <- function(id) {
           )
         },
         tags$tr(
-          tags$td("Achieved so far", info_icon("Completed, matched interviews that are not a SETTLED (confirmed/contested) tracker deletion, capped at each cluster's own target. Policy changed 2026-09-11: a pending/unresolved flag (duplicate, unmatched, still-open tracker item) no longer excludes an interview from Achieved - only an actually-confirmed deletion does. See 'Pending Deletion' below for how much of this is still at risk of moving. Oversampled surplus never counts here. National total, not affected by the sidebar filters. Corrected 2026-09-16 (Decision A): the % here is of Original Target, not Revised - matches partner workbooks.")),
-          tags$td(strong(comma(total_achieved), " (", fmt_pct(total_achieved / TOTAL_PLANNED_INTERVIEWS), " of Original Target)"))
+          tags$td("Achieved so far", info_icon(paste0("Completed, matched interviews that are not a SETTLED (confirmed/contested) tracker deletion, capped at each cluster's own target. Policy changed 2026-09-11: a pending/unresolved flag (duplicate, unmatched, still-open tracker item) no longer excludes an interview from Achieved - only an actually-confirmed deletion does. See 'Pending Deletion' below for how much of this is still at risk of moving. Oversampled surplus never counts here. National total, not affected by the sidebar filters. The % here follows the sidebar's Target basis toggle (currently ", target_basis_label(target_basis()), ") - was hardcoded to Original under Decision A, now switchable."))),
+          tags$td(strong(comma(total_achieved), " (", fmt_pct(total_achieved / active_planned_interviews(target_basis())), " of ", target_basis_label(target_basis()), ")"))
         ),
         tags$tr(
           tags$td("Collected so far", info_icon("Every completed interview actually done — includes oversampled surplus and any interview since removed by a confirmed deletion. Total field effort, not what counts toward target.")),
@@ -250,11 +261,12 @@ mod_home_server <- function(id) {
       # strata (2026-09-14, same rule as output$glance) so this stays
       # exactly "same figure as Achieved so far above", as the info_icon
       # below claims.
-      total_achieved <- sum(progress_by_stratum$achieved_n[progress_by_stratum$status != "Dropped"])
+      total_achieved <- sum(progress_active()$achieved_n[progress_active()$status != "Dropped"])
       total_collected <- sum(is_collected(submissions_raw))
-      # FIX 2026-09-16 (Decision A): Original Target, matching output$glance
+      # FIX 2026-09-16 (Decision A), extended 2026-09-19 (global toggle):
+      # follows the sidebar's Target basis toggle, matching output$glance
       # above and every other headline % on the dashboard now.
-      total_target <- TOTAL_PLANNED_INTERVIEWS
+      total_target <- active_planned_interviews(target_basis())
       last_upload <- max(submissions_raw$uploaded_at, na.rm = TRUE)
 
       tags$table(
@@ -263,7 +275,7 @@ mod_home_server <- function(id) {
         tags$tr(tags$td("Submissions that day"), tags$td(strong(comma(today_count)))),
         tags$tr(tags$td("Submissions the day before"), tags$td(strong(comma(yesterday_n)))),
         tags$tr(
-          tags$td("Total achieved to date", info_icon("Completed, matched interviews that are not a SETTLED (confirmed/contested) tracker deletion, capped at each cluster's own target. Policy changed 2026-09-11: a pending/unresolved flag no longer excludes an interview here, only a confirmed deletion does — same figure resampling now uses too. Oversampled surplus never counts here. National total, not affected by the sidebar filters — same figure as \"Achieved so far\" above, shown again here alongside today's daily activity for context.")),
+          tags$td("Total achieved to date", info_icon(paste0("Completed, matched interviews that are not a SETTLED (confirmed/contested) tracker deletion, capped at each cluster's own target. Policy changed 2026-09-11: a pending/unresolved flag no longer excludes an interview here, only a confirmed deletion does — same figure resampling now uses too. Oversampled surplus never counts here. National total, not affected by the sidebar filters — same figure as \"Achieved so far\" above, shown again here alongside today's daily activity for context. Denominator follows the sidebar's Target basis toggle (currently ", target_basis_label(target_basis()), ")."))),
           tags$td(strong(comma(total_achieved), " / ", comma(total_target), " (", fmt_pct(total_achieved / total_target), ")"))
         ),
         tags$tr(
@@ -275,8 +287,8 @@ mod_home_server <- function(id) {
     })
 
     output$priorities <- renderUI({
-      worst_lgas <- progress_by_stratum %>%
-        filter(status != "Complete", target_sample > 0) %>%
+      worst_lgas <- progress_active() %>%
+        filter(status != "Complete", target_active > 0) %>%
         arrange(pct_achieved) %>%
         head(5)
 
@@ -289,7 +301,7 @@ mod_home_server <- function(id) {
           if (nrow(worst_lgas) == 0) tags$li("None currently far behind.") else
             lapply(seq_len(nrow(worst_lgas)), function(i) {
               r <- worst_lgas[i, ]
-              tags$li(paste0(r$adm2_name, ", ", r$adm1_name, " (", unname(POP_TYPE_LABELS[r$pop_type]), ") — ", fmt_pct(r$pct_achieved), " (", r$achieved_n, "/", r$target_sample, ")"))
+              tags$li(paste0(r$adm2_name, ", ", r$adm1_name, " (", unname(POP_TYPE_LABELS[r$pop_type]), ") — ", fmt_pct(r$pct_achieved), " (", r$achieved_n, "/", r$target_active, ")"))
             })
         ),
         p(strong("Enumerators with the highest flag rates (10+ submissions):")),

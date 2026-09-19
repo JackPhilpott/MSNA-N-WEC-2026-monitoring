@@ -357,6 +357,33 @@ STATUS_COLORS <- c("Complete" = "#1E7B4D", "In progress" = "#D99A2B", "Not start
 # colourblindness (see POP_TYPE_COLORS above for the same concern).
 OVERSAMPLED_BORDER <- "#6C3483" # darkened 2026-08-24 (was #8E44AD) — Jack: outline wasn't clear enough
 
+# 2026-09-17 (Jack's decision, "Option 3"/hybrid, after a real bug found:
+# psu_hexagons_sf/psu_sites_sf had zero accessibility awareness — 1,232
+# zero-achieved clusters in a currently-Inaccessible ward were rendering as
+# plain red "Not started", indistinguishable from a genuine collectible
+# gap). CLUSTER_STATUS_COLORS extends the shared STATUS_COLORS with a 4th,
+# cluster-grain-only category — deliberately a SEPARATE constant, not added
+# to STATUS_COLORS itself, since that constant is also used at STRATUM
+# grain (Progress by LGA table, Partner Report, Home) where "Inaccessible"
+# is not a real status value (that grain's own "Dropped" already covers
+# the equivalent concept there) — extending STATUS_COLORS directly would
+# leak an unused, confusing option into those other tables' own status
+# columns/filters. Only mod_map.R's cluster-level view uses this.
+CLUSTER_STATUS_COLORS <- c(STATUS_COLORS, "Inaccessible" = "#7D8791")
+# Border for a cluster that DOES have real achieved data (so keeps its
+# normal green/amber fill, per Jack's spec) but sits in a currently-
+# Inaccessible ward — the "stranded achieved, now also inaccessible" case,
+# invisible today even though it's already correctly counted. Same
+# mechanism as OVERSAMPLED_BORDER just above (a colour+weight bump on the
+# marker's own border, not a new fill) — deliberately grey, matching
+# CLUSTER_STATUS_COLORS["Inaccessible"]'s fill, so the two "accessibility"
+# signals (fill and border) read as the same visual language. Priority
+# rule where a cluster is both oversampled AND stranded-in-an-inaccessible-
+# ward (both exist as real, independent booleans): oversampled wins the
+# border, since it's the more operationally urgent of the two (needs
+# review/possible deletion) — see mod_map.R's cluster_status().
+INACCESSIBLE_BORDER <- "#7D8791"
+
 # Overall app "chrome" theme — first pass, expected to be revised. Navbar
 # and sidebar (filter panel) get the dark blue/grey; the main body stays
 # the Bootstrap default white/black (not overridden here) so cards, tables
@@ -546,6 +573,73 @@ accessibility_sf <- st_read(file.path(INPUT_DIR, "accessibility/accessible_area_
     reporting_partner_label = accessibility_partner_label(reporting_partners),
     covering_partner_label = accessibility_partner_label(covering_partners)
   )
+
+# 2026-09-17 (Jack's decision, Coverage Map cluster-status fix): join each
+# cluster's CURRENT ward accessibility status directly onto psu_hexagons_sf/
+# psu_sites_sf, once here, rather than inside mod_map.R's reactive
+# cluster_status() — same "precompute once at load, don't recompute per
+# render" discipline as every other startup-time join in this file. Key is
+# (adm2_pcode, ward name, pop_type) — psu_hexagons_sf/psu_sites_sf have no
+# ward pcode of their own to join on (checked directly), only adm3_name
+# (GRID3-sourced, same convention as accessibility_sf's own wardname —
+# both ultimately trace to the same 1_sampling pipeline). Verified before
+# building this: 4,456 of 4,469 clusters (99.7%) match; the 13 unmatched
+# are a single malformed-geometry row ("Mairari", NA state/LGA), NOT the
+# GRID3-vs-OCHA ward-naming fragility this workspace has hit elsewhere
+# (Borno/Adamawa/Yobe) — checked that specific hypothesis directly and
+# ruled it out.
+#
+# A same-night follow-up investigated replacing this with a geometry-based
+# spatial join instead of name matching (triggered by a live Jack report
+# that one cluster, non_idp_NG008019_supp15, visually appeared to sit on an
+# Inaccessible ward on the rendered map) — reverted, not built: Resampling
+# independently verified against the canonical GRID3 shapefile and real
+# household points that this cluster (and every other spot-checked one) is
+# genuinely, correctly attributed — the frame's own adm3_name IS an
+# accurate, spatially-derived attribute (confirmed by reading
+# finalize_households() directly on the 1_sampling side), so a name-based
+# join against it is valid. The apparent mismatch traced to testing the
+# wrong two things against each other: psu_hexagons_sf's DISPLAY shape
+# (deliberately larger than any real household footprint, to hit a target
+# household count) against accessibility_sf's ward-PORTION layer (a
+# separately-derived, precision-reduced shapefile with its own documented
+# invalid-geometry issues — prep_accessibility_layer.R's own header: 23% of
+# rows came out invalid after precision-reduction) — a different, lossier
+# boundary than the canonical GRID3 file adm3_name is actually built from.
+# What Jack saw on the map is believed (not yet independently confirmed) to
+# be a real but purely VISUAL proximity effect — the hexagon's display
+# shape extending near/across the true ward boundary even though every
+# real household inside it sits on the correctly-attributed side — not a
+# data or join bug. Left as a possible follow-up, not urgent, not blocking
+# this deploy.
+#
+# Deliberately sourced from accessibility_sf (refreshed from 1_sampling's
+# live accessibility workbook on every prep_accessibility_layer.R run, i.e.
+# every deploy) rather than the sampling frame's own baked-in
+# ward_accessible_status column (cluster_id-keyed, no name-matching risk,
+# but confirmed via direct row-by-row diff to disagree with accessibility_sf
+# for 309 clusters — every disagreement in the same direction, frame says
+# Inaccessible where accessibility_sf says Accessible with status_source
+# "confirmed_by_partner_report", i.e. a partner actively confirmed access
+# since whenever the frame's column was last computed). Jack's explicit
+# call: build against accessibility_sf as the one that's actually current.
+# pop_type string formats differ between the two sources (psu_*_sf: "non_
+# idp"/"idp"; accessibility_sf: "Non-IDP"/"IDP") - normalized here, same
+# mapping mod_map.R's accessibility_map_data() already uses.
+psu_hexagons_sf <- psu_hexagons_sf %>%
+  mutate(pop_type_norm = case_when(pop_type == "non_idp" ~ "Non-IDP", pop_type == "idp" ~ "IDP", TRUE ~ NA_character_)) %>%
+  left_join(
+    accessibility_sf %>% st_drop_geometry() %>% distinct(adm2_pcode, wardname, pop_type, accessible_status),
+    by = c("adm2_pcode", "adm3_name" = "wardname", "pop_type_norm" = "pop_type")
+  ) %>%
+  select(-pop_type_norm)
+psu_sites_sf <- psu_sites_sf %>%
+  mutate(pop_type_norm = case_when(pop_type == "non_idp" ~ "Non-IDP", pop_type == "idp" ~ "IDP", TRUE ~ NA_character_)) %>%
+  left_join(
+    accessibility_sf %>% st_drop_geometry() %>% distinct(adm2_pcode, wardname, pop_type, accessible_status),
+    by = c("adm2_pcode", "adm3_name" = "wardname", "pop_type_norm" = "pop_type")
+  ) %>%
+  select(-pop_type_norm)
 
 # Ward-level table (not the shapefile) is the source for the completeness
 # indicator below — one row per partner's own LGA-ward portion, the actual
@@ -944,7 +1038,8 @@ TOTAL_PLANNED_INTERVIEWS_CURRENT <- strata_frame %>%
   pull(target_sample_current) %>%
   sum(na.rm = TRUE)
 
-compute_progress_by_stratum <- function(subs) {
+compute_progress_by_stratum <- function(subs, target_basis = c("original", "revised")) {
+  target_basis <- match.arg(target_basis)
   completed_matched <- subs %>% filter(is_achieved(.))
 
   # ---- ACHIEVED: cap at cluster level FIRST, then sum to stratum ----------
@@ -1095,7 +1190,26 @@ compute_progress_by_stratum <- function(subs) {
       # and shown everywhere as the supplementary/reference "Revised
       # Target" column - just no longer what Status/%/Still-Needed are
       # judged against.
-      pct_achieved = ifelse(target_sample > 0, achieved_n / target_sample, NA_real_),
+      #
+      # 2026-09-19 (global Original/Revised target-basis toggle, Jack-
+      # approved build): Decision A's hardcoded choice above is now a
+      # per-session CHOICE instead of a permanent one - target_active is
+      # target_sample or target_sample_current depending on the sidebar
+      # toggle (target_basis arg, threaded in from app.R's filtered_stratum
+      # reactive). Default arg value "original" preserves Decision A's
+      # behaviour exactly when nothing has changed the toggle (e.g. every
+      # static/unfiltered call site - progress_by_stratum below,
+      # partner_progress_summary/partner_progress_by_lga - that hasn't been
+      # made toggle-aware yet). target_sample/target_sample_current
+      # themselves are UNTOUCHED by this - every place already showing them
+      # side-by-side as a reference pair (mod_table.R's two Target columns,
+      # the map popup, Home's "At a glance", Partner Report's two KPI
+      # cards) keeps showing both regardless of the toggle; only the
+      # DRIVING computation (pct_achieved/status below, and everything
+      # downstream that reads them) switches.
+      target_active = if (target_basis == "revised") target_sample_current else target_sample,
+      target_active_label = if (target_basis == "revised") "Revised Target" else "Original Target",
+      pct_achieved = ifelse(target_active > 0, achieved_n / target_active, NA_real_),
       # DROPPED status (2026-09-11): a stratum currently excluded for
       # accessibility_loss_below_population_threshold - see strata_frame's
       # own header above. Checked FIRST: such a stratum's target_sample_
@@ -1103,13 +1217,16 @@ compute_progress_by_stratum <- function(subs) {
       # which would otherwise misleadingly read "Complete". Extended
       # 2026-09-14 to also catch target_not_computable (see above) - same
       # failure mode, different trigger. Deliberately still keyed off
-      # target_sample_current/target_not_computable, not target_sample
-      # (2026-09-16): "Dropped" reflects real-world CURRENT accessibility,
-      # which only the live representativity figure knows about - the frozen
-      # original has no way to express "this stratum is currently excluded."
+      # target_sample_current/target_not_computable, not target_active
+      # (2026-09-19, was target_sample pre-toggle): "Dropped" reflects
+      # real-world CURRENT accessibility, which only the live
+      # representativity figure knows about, regardless of which basis is
+      # currently driving Status/%/Still-Needed elsewhere - a stratum
+      # doesn't stop being genuinely Dropped just because the toggle is set
+      # to Original.
       status = case_when(
         coverage_status == "excluded" | target_not_computable ~ "Dropped",
-        target_sample <= 0 | achieved_n >= target_sample ~ "Complete",
+        target_active <= 0 | achieved_n >= target_active ~ "Complete",
         achieved_n > 0 ~ "In progress",
         TRUE ~ "Not started"
       )
@@ -1232,109 +1349,138 @@ PARTNERS_NOT_STARTED <- setdiff(PARTNERS_ASSIGNED, submissions_raw$org_id)
 # consistent with how the rest of the dashboard scopes a partner's target.
 today_for_pace <- max(submissions_raw$submission_date, na.rm = TRUE)
 
-partner_progress_summary <- lapply(PARTNERS_ASSIGNED, function(org) {
-  my_adm2 <- partner_adm2[[org]]
-  if (is.null(my_adm2)) my_adm2 <- character(0)
-  # 2026-09-08: now sums both target_sample (original) and
-  # target_sample_current (live) from progress_by_stratum. FIX 2026-09-16
-  # (Decision A, see compute_progress_by_stratum()'s own comment above):
-  # remaining/pace/status below now key off target_sample (original), not
-  # _current - target_sample_current is still summed and carried through to
-  # the output tibble, just as the supplementary "Revised Target" figure,
-  # no longer what Complete/Still-Needed are judged against.
-  # 2026-09-14 (Jack, explicit general rule): a Dropped stratum's real data
-  # must never enter a national/regional sum, only shown at its own
-  # stratum/LGA row - this per-partner rollup is exactly that kind of sum
-  # (collapses every stratum in the partner's assigned LGAs into one row).
-  # FIX 2026-09-14b (Jack, caught via the Partner Report tab showing a
-  # different "Original Target" than this table for the same partner):
-  # filter(status != "Dropped") BEFORE summing, as this used to do, also
-  # stripped a Dropped stratum's ORIGINAL target_sample out of the total -
-  # not just its live/achieved figures. target_sample is supposed to be the
-  # frozen design-time baseline regardless of what's since been dropped (see
-  # its own "ORIGINAL (frozen)" comment below, and partner_progress_by_lga()
-  # just below, which already got this right: it deliberately leaves
-  # target_sample untouched for Dropped rows while zeroing every live/
-  # progress column). Same fix applied here: zero the live columns for
-  # Dropped rows instead of filtering the rows out entirely, so target_sample
-  # still sums every assigned stratum, Dropped or not.
-  totals <- progress_by_stratum %>%
-    filter(adm2_pcode %in% my_adm2) %>%
-    mutate(across(
-      c(target_sample_current, achieved_n, collected_n, confirmed_deletion_n,
-        pending_deletion_n, oversampling_surplus_n),
-      ~ ifelse(status == "Dropped", 0, .)
-    )) %>%
-    summarise(target_sample = sum(target_sample, na.rm = TRUE),
-              target_sample_current = sum(target_sample_current, na.rm = TRUE),
-              achieved_n = sum(achieved_n, na.rm = TRUE),
-              collected_n = sum(collected_n, na.rm = TRUE),
-              confirmed_deletion_n = sum(confirmed_deletion_n, na.rm = TRUE),
-              pending_deletion_n = sum(pending_deletion_n, na.rm = TRUE),
-              oversampling_surplus_n = sum(oversampling_surplus_n, na.rm = TRUE))
+# 2026-09-19 (global target-basis toggle): was a static list-comprehension
+# run once at global.R load (`partner_progress_summary <- lapply(...)`).
+# Turned into a function of target_basis so mod_progress.R's "Progress by
+# partner" section can recompute it reactively as the sidebar toggle
+# changes — recomputes compute_progress_by_stratum(submissions_raw, ...)
+# fresh per call rather than filtering the static progress_by_stratum
+# global (below), since progress_by_stratum is permanently basis="original"
+# and reading it here would silently ignore the toggle. Cheap enough to
+# recompute on a toggle flip (an infrequent, deliberate user action, unlike
+# a per-render reactive) — not worth caching separately from the toggle
+# input itself.
+build_partner_progress_summary <- function(target_basis = c("original", "revised")) {
+  target_basis <- match.arg(target_basis)
+  progress <- compute_progress_by_stratum(submissions_raw, target_basis)
 
-  start_date <- suppressWarnings(min(submissions_raw$submission_date[submissions_raw$org_id == org], na.rm = TRUE))
-  has_started <- is.finite(start_date)
-  days_active <- if (has_started) as.numeric(today_for_pace - start_date) + 1 else NA_real_
-  current_pace <- if (has_started && days_active > 0) totals$achieved_n / days_active else NA_real_
-  remaining <- max(totals$target_sample - totals$achieved_n, 0)
-  days_left_to_deadline <- as.numeric(FIELDING_PLANNED_END - today_for_pace) + 1
-  required_pace <- if (days_left_to_deadline > 0) remaining / days_left_to_deadline else NA_real_
-  projected_finish <- if (!is.na(current_pace) && current_pace > 0 && remaining > 0) {
-    today_for_pace + ceiling(remaining / current_pace)
-  } else if (remaining <= 0) {
-    as.Date(NA)
-  } else {
-    as.Date(NA)
-  }
+  lapply(PARTNERS_ASSIGNED, function(org) {
+    my_adm2 <- partner_adm2[[org]]
+    if (is.null(my_adm2)) my_adm2 <- character(0)
+    # 2026-09-08: now sums both target_sample (original) and
+    # target_sample_current (live) from progress. FIX 2026-09-16 (Decision
+    # A, see compute_progress_by_stratum()'s own comment above): remaining/
+    # pace/status below key off target_active (the toggle's current
+    # basis, "original" by default matching Decision A) - target_sample/
+    # target_sample_current are BOTH still summed and carried through to
+    # the output tibble regardless, as the reference "Original"/"Revised
+    # Target" pair, no longer what Complete/Still-Needed are judged against.
+    # 2026-09-14 (Jack, explicit general rule): a Dropped stratum's real data
+    # must never enter a national/regional sum, only shown at its own
+    # stratum/LGA row - this per-partner rollup is exactly that kind of sum
+    # (collapses every stratum in the partner's assigned LGAs into one row).
+    # FIX 2026-09-14b (Jack, caught via the Partner Report tab showing a
+    # different "Original Target" than this table for the same partner):
+    # filter(status != "Dropped") BEFORE summing, as this used to do, also
+    # stripped a Dropped stratum's ORIGINAL target_sample out of the total -
+    # not just its live/achieved figures. target_sample is supposed to be the
+    # frozen design-time baseline regardless of what's since been dropped (see
+    # its own "ORIGINAL (frozen)" comment below, and partner_progress_by_lga()
+    # just below, which already got this right: it deliberately leaves
+    # target_sample untouched for Dropped rows while zeroing every live/
+    # progress column). Same fix applied here: zero the live columns for
+    # Dropped rows instead of filtering the rows out entirely, so target_sample
+    # still sums every assigned stratum, Dropped or not. target_active is
+    # deliberately recomputed AFTER that zeroing (not zeroed directly itself)
+    # so it inherits the correct zero-or-not treatment from whichever of
+    # target_sample/target_sample_current it currently stands for.
+    totals <- progress %>%
+      filter(adm2_pcode %in% my_adm2) %>%
+      mutate(across(
+        c(target_sample_current, achieved_n, collected_n, confirmed_deletion_n,
+          pending_deletion_n, oversampling_surplus_n),
+        ~ ifelse(status == "Dropped", 0, .)
+      )) %>%
+      mutate(target_active = if (target_basis == "revised") target_sample_current else target_sample) %>%
+      summarise(target_sample = sum(target_sample, na.rm = TRUE),
+                target_sample_current = sum(target_sample_current, na.rm = TRUE),
+                target_active = sum(target_active, na.rm = TRUE),
+                achieved_n = sum(achieved_n, na.rm = TRUE),
+                collected_n = sum(collected_n, na.rm = TRUE),
+                confirmed_deletion_n = sum(confirmed_deletion_n, na.rm = TRUE),
+                pending_deletion_n = sum(pending_deletion_n, na.rm = TRUE),
+                oversampling_surplus_n = sum(oversampling_surplus_n, na.rm = TRUE))
 
-  status <- case_when(
-    totals$target_sample <= 0 ~ "Complete",
-    totals$achieved_n >= totals$target_sample ~ "Complete",
-    !has_started ~ "Not started",
-    is.na(current_pace) || current_pace <= 0 ~ "Behind pace",
-    projected_finish <= FIELDING_PLANNED_END ~ "On pace",
-    TRUE ~ "Behind pace"
-  )
+    start_date <- suppressWarnings(min(submissions_raw$submission_date[submissions_raw$org_id == org], na.rm = TRUE))
+    has_started <- is.finite(start_date)
+    days_active <- if (has_started) as.numeric(today_for_pace - start_date) + 1 else NA_real_
+    current_pace <- if (has_started && days_active > 0) totals$achieved_n / days_active else NA_real_
+    remaining <- max(totals$target_active - totals$achieved_n, 0)
+    days_left_to_deadline <- as.numeric(FIELDING_PLANNED_END - today_for_pace) + 1
+    required_pace <- if (days_left_to_deadline > 0) remaining / days_left_to_deadline else NA_real_
+    projected_finish <- if (!is.na(current_pace) && current_pace > 0 && remaining > 0) {
+      today_for_pace + ceiling(remaining / current_pace)
+    } else if (remaining <= 0) {
+      as.Date(NA)
+    } else {
+      as.Date(NA)
+    }
 
-  # Who else is assigned any of this partner's LGAs, if anyone (same
-  # coverage_orgs_by_adm2 lookup partner_progress_by_lga's own shared_with
-  # uses below) — surfaced because achieved_n/pct_achieved above is the
-  # WHOLE LGA's progress, not this partner's own submissions alone. Without
-  # this, a partner who hasn't submitted anything yet but shares an LGA
-  # with an active partner shows a confusing "Not started" + nonzero %
-  # combination with no visible explanation (caught by Jack 2026-08-30:
-  # LHI showing ~5% while also "Not started").
-  shared_with <- {
-    others <- setdiff(unique(unlist(coverage_orgs_by_adm2[my_adm2])), org)
-    if (length(others) == 0) "" else paste(unname(ORG_LABELS[others]), collapse = ", ")
-  }
+    status <- case_when(
+      totals$target_active <= 0 ~ "Complete",
+      totals$achieved_n >= totals$target_active ~ "Complete",
+      !has_started ~ "Not started",
+      is.na(current_pace) || current_pace <= 0 ~ "Behind pace",
+      projected_finish <= FIELDING_PLANNED_END ~ "On pace",
+      TRUE ~ "Behind pace"
+    )
 
-  tibble(
-    org_id = org, partner_label = unname(ORG_LABELS[org]),
-    # Naming convention, consistent with compute_progress_by_stratum() above
-    # and partner_progress_by_lga() below: target_sample = ORIGINAL (frozen),
-    # target_sample_current = live. Don't let "target_sample" silently mean
-    # different things in different functions - that ambiguity is exactly
-    # the kind of thing this rebuild exists to close.
-    target_sample = totals$target_sample, target_sample_current = totals$target_sample_current,
-    achieved_n = totals$achieved_n, collected_n = totals$collected_n,
-    confirmed_deletion_n = totals$confirmed_deletion_n, pending_deletion_n = totals$pending_deletion_n,
-    oversampling_surplus_n = totals$oversampling_surplus_n,
-    pct_achieved = ifelse(totals$target_sample > 0, totals$achieved_n / totals$target_sample, NA_real_),
-    shared_with = shared_with,
-    start_date = if (has_started) start_date else as.Date(NA),
-    days_active = days_active, current_daily_pace = current_pace, required_daily_pace = required_pace,
-    projected_finish_date = projected_finish, status = status
-  )
-}) %>%
-  dplyr::bind_rows() %>%
-  # sorted by % of target achieved, lowest first (2026-08-30, per Jack — not
-  # by pace: besides being a second, redundant sort key once this one's in
-  # place, pace naturally reads as a partner ranking ("worst pace") in a way
-  # that could land badly, whereas sorting on the plain % figure doesn't
-  # editorialise beyond the number itself).
-  arrange(pct_achieved)
+    # Who else is assigned any of this partner's LGAs, if anyone (same
+    # coverage_orgs_by_adm2 lookup partner_progress_by_lga's own shared_with
+    # uses below) — surfaced because achieved_n/pct_achieved above is the
+    # WHOLE LGA's progress, not this partner's own submissions alone. Without
+    # this, a partner who hasn't submitted anything yet but shares an LGA
+    # with an active partner shows a confusing "Not started" + nonzero %
+    # combination with no visible explanation (caught by Jack 2026-08-30:
+    # LHI showing ~5% while also "Not started").
+    shared_with <- {
+      others <- setdiff(unique(unlist(coverage_orgs_by_adm2[my_adm2])), org)
+      if (length(others) == 0) "" else paste(unname(ORG_LABELS[others]), collapse = ", ")
+    }
+
+    tibble(
+      org_id = org, partner_label = unname(ORG_LABELS[org]),
+      # Naming convention, consistent with compute_progress_by_stratum() above
+      # and partner_progress_by_lga() below: target_sample = ORIGINAL (frozen),
+      # target_sample_current = live, target_active = whichever the toggle
+      # currently selects. Don't let "target_sample" silently mean different
+      # things in different functions - that ambiguity is exactly the kind
+      # of thing this rebuild exists to close.
+      target_sample = totals$target_sample, target_sample_current = totals$target_sample_current,
+      target_active = totals$target_active,
+      achieved_n = totals$achieved_n, collected_n = totals$collected_n,
+      confirmed_deletion_n = totals$confirmed_deletion_n, pending_deletion_n = totals$pending_deletion_n,
+      oversampling_surplus_n = totals$oversampling_surplus_n,
+      pct_achieved = ifelse(totals$target_active > 0, totals$achieved_n / totals$target_active, NA_real_),
+      shared_with = shared_with,
+      start_date = if (has_started) start_date else as.Date(NA),
+      days_active = days_active, current_daily_pace = current_pace, required_daily_pace = required_pace,
+      projected_finish_date = projected_finish, status = status
+    )
+  }) %>%
+    dplyr::bind_rows() %>%
+    # sorted by % of target achieved, lowest first (2026-08-30, per Jack — not
+    # by pace: besides being a second, redundant sort key once this one's in
+    # place, pace naturally reads as a partner ranking ("worst pace") in a way
+    # that could land badly, whereas sorting on the plain % figure doesn't
+    # editorialise beyond the number itself).
+    arrange(pct_achieved)
+}
+# Static, "original"-basis default — kept for any call site not yet made
+# reactive to the toggle (e.g. a future script run outside a Shiny session).
+# The live Progress Overview tab calls build_partner_progress_summary()
+# directly with the reactive toggle value instead of reading this.
+partner_progress_summary <- build_partner_progress_summary("original")
 
 # ---- baseline sampling target + revision history (added 2026-08-30, ahead
 # of the resampling/exclusion-area changes about to start) — see
@@ -1382,9 +1528,17 @@ FRAME_AS_OF_LABEL <- if (!is.na(FRAME_AS_OF_DATE)) {
 # LGAs assigned to them in partner_lga_assignment — not just LGAs where a
 # submission with their org_id has shown up so far, so a partner with zero
 # progress in an assigned LGA still sees it listed as a focus area.
-partner_progress_by_lga <- function(org_id_val) {
+partner_progress_by_lga <- function(org_id_val, target_basis = c("original", "revised")) {
+  target_basis <- match.arg(target_basis)
   my_adm2 <- partner_adm2[[org_id_val]]
   if (is.null(my_adm2)) my_adm2 <- character(0)
+
+  # 2026-09-19 (global target-basis toggle): recomputes compute_progress_
+  # by_stratum(submissions_raw, target_basis) fresh, same reasoning as
+  # build_partner_progress_summary() above — the static progress_by_stratum
+  # global is permanently basis="original", so reading it here would
+  # silently ignore the toggle.
+  progress <- compute_progress_by_stratum(submissions_raw, target_basis)
 
   # 2026-09-14 (Jack, explicit general rule): a Dropped stratum's real data
   # must never enter a national/regional sum, only shown at its own
@@ -1396,23 +1550,30 @@ partner_progress_by_lga <- function(org_id_val) {
   # partner losing visibility into "this LGA I was assigned is now
   # excluded" would be a worse outcome than the blending problem this is
   # meant to fix. target_sample (original) deliberately left untouched -
-  # frozen historical figure, not what this rule is about.
-  progress_by_stratum %>%
+  # frozen historical figure, not what this rule is about. target_active is
+  # recomputed AFTER this zeroing (not zeroed directly) so it inherits the
+  # correct treatment from whichever of target_sample/target_sample_current
+  # it currently stands for — same pattern as build_partner_progress_
+  # summary() above.
+  progress %>%
     filter(adm2_pcode %in% my_adm2) %>%
     mutate(across(
       c(target_sample_current, achieved_n, collected_n, confirmed_deletion_n,
         pending_deletion_n, oversampling_surplus_n),
       ~ ifelse(status == "Dropped", 0, .)
     )) %>%
+    mutate(target_active = if (target_basis == "revised") target_sample_current else target_sample) %>%
     group_by(region, adm1_name, adm2_pcode, adm2_name) %>%
     summarise(
       # 2026-09-08: target_sample = original (unchanged convention),
-      # target_sample_current = live. FIX 2026-09-16 (Decision A): Complete/
-      # pct_achieved below now key off target_sample (original) again, same
-      # as compute_progress_by_stratum() and partner_progress_summary above
-      # - target_sample_current still summed/shown, just no longer the basis.
+      # target_sample_current = live. FIX 2026-09-16 (Decision A), extended
+      # 2026-09-19 (toggle): Complete/pct_achieved below now key off
+      # target_active (the toggle's current basis, "original" by default) -
+      # target_sample/target_sample_current still both summed/shown as the
+      # reference pair, no longer what drives Status/%.
       target_sample = sum(target_sample, na.rm = TRUE),
       target_sample_current = sum(target_sample_current, na.rm = TRUE),
+      target_active = sum(target_active, na.rm = TRUE),
       achieved_n = sum(achieved_n, na.rm = TRUE),
       collected_n = sum(collected_n, na.rm = TRUE),
       confirmed_deletion_n = sum(confirmed_deletion_n, na.rm = TRUE),
@@ -1420,9 +1581,9 @@ partner_progress_by_lga <- function(org_id_val) {
       oversampling_surplus_n = sum(oversampling_surplus_n, na.rm = TRUE), .groups = "drop"
     ) %>%
     mutate(
-      pct_achieved = ifelse(target_sample > 0, achieved_n / target_sample, NA_real_),
+      pct_achieved = ifelse(target_active > 0, achieved_n / target_active, NA_real_),
       status = case_when(
-        target_sample <= 0 | achieved_n >= target_sample ~ "Complete",
+        target_active <= 0 | achieved_n >= target_active ~ "Complete",
         achieved_n > 0 ~ "In progress",
         TRUE ~ "Not started"
       ),
@@ -1589,6 +1750,34 @@ is_significant_target_divergence <- function(original, revised) {
 target_delta_label <- function(original, revised) {
   d <- target_delta_pct(original, revised)
   ifelse(is.na(d), "", paste0(ifelse(d >= 0, "+", ""), percent(d, accuracy = 1), " vs Original"))
+}
+
+# ---- global Original/Revised target-basis toggle (2026-09-19, Jack-
+# approved build, relayed via the Coordinator) — a single sidebar switch
+# (app.R's input$target_basis) now decides which of target_sample
+# (Original, frozen) / target_sample_current (Revised, live) DRIVES every
+# target-dependent computation dashboard-wide: status/"Complete"
+# classification, pct_achieved, map fill colour, Still-Needed, KPI
+# headline %s. This replaces Decision A's hardcoded "always Original"
+# choice with a live one, default "Original" so nothing changes until a
+# user actively toggles. Does NOT apply at cluster grain (Coverage Map's
+# per-cluster view keeps using target_households regardless — there is no
+# established "revised" figure at that grain) and does NOT replace any
+# existing Original-vs-Revised REFERENCE display (mod_table.R's two Target
+# columns, the map popup's two Target lines, Home's "At a glance", Partner
+# Report's two KPI cards) — those keep showing both numbers unconditionally,
+# only the driving computation switches. Two small shared helpers here,
+# mirroring target_delta_label()'s role just above, so every module reads
+# the toggle's effect the same way rather than re-deriving it locally.
+target_basis_label <- function(target_basis) {
+  if (identical(target_basis, "revised")) "Revised Target" else "Original Target"
+}
+# TOTAL_PLANNED_INTERVIEWS/_CURRENT counterpart to target_active in
+# compute_progress_by_stratum() — used by mod_home.R's national KPIs, which
+# read these two file-level constants directly rather than a per-stratum
+# column.
+active_planned_interviews <- function(target_basis) {
+  if (identical(target_basis, "revised")) TOTAL_PLANNED_INTERVIEWS_CURRENT else TOTAL_PLANNED_INTERVIEWS
 }
 # NA-safe numeric rounding for KPI tiles — added 2026-08-25 after finding
 # several KPIs (mod_representativeness.R's household-size boxes,

@@ -8,7 +8,8 @@ source("global.R")
 cat("=== mod_progress_server ===\n")
 testServer(mod_progress_server, args = list(
   filtered_subs = reactive(submissions_raw),
-  filtered_stratum = reactive(progress_by_stratum)
+  filtered_stratum = reactive(progress_by_stratum),
+  target_basis = reactive("original")
 ), {
   session$flushReact()
   cat("kpi_achieved:", output$kpi_achieved, "\n")
@@ -24,7 +25,8 @@ testServer(mod_progress_server, args = list(
 cat("\n=== mod_map_server ===\n")
 testServer(mod_map_server, args = list(
   filtered_stratum = reactive(progress_by_stratum),
-  filtered_subs = reactive(submissions_raw)
+  filtered_subs = reactive(submissions_raw),
+  target_basis = reactive("original")
 ), {
   session$flushReact()
   cat("map rendered ok:", !is.null(output$map), "\n")
@@ -216,7 +218,7 @@ stopifnot(n_over_readme == nrow(oversampled), n_surplus_readme == sum(oversample
 cat("Partner data quality digest regression test passed.\n")
 
 cat("\n=== mod_home_server ===\n")
-testServer(mod_home_server, args = list(), {
+testServer(mod_home_server, args = list(target_basis = reactive("original")), {
   session$flushReact()
   cat("glance rendered ok:", !is.null(output$glance), "\n")
   # 2026-09-17 (real bug, reported live): "Submissions that day"/"the day
@@ -232,7 +234,7 @@ testServer(mod_home_server, args = list(), {
 })
 
 cat("\n=== mod_partner_report_server ===\n")
-testServer(mod_partner_report_server, args = list(selected_partners = reactive(NULL)), {
+testServer(mod_partner_report_server, args = list(selected_partners = reactive(NULL), target_basis = reactive("original")), {
   session$setInputs(report_partner = "fact")
   session$flushReact()
   cat("kpi_target:", output$kpi_target, "\n")
@@ -440,6 +442,49 @@ cat("First-half-period total achieved:", sum(early_progress$achieved_n), "\n")
 stopifnot(sum(early_progress$achieved_n) < sum(full_progress$achieved_n))
 stopifnot(sum(early_progress$achieved_n) > 0)
 cat("Date-range awareness test passed.\n")
+
+cat("\n=== Global target-basis toggle (2026-09-19) flips target_active/pct_achieved/status ===\n")
+# Regression test for the Jack-approved build (relayed via the Coordinator):
+# a single sidebar switch now decides whether target_active is target_sample
+# (Original, frozen) or target_sample_current (Revised, live) - this asserts
+# the switch actually has an effect end to end, not just that both arguments
+# are accepted without erroring.
+progress_orig <- compute_progress_by_stratum(submissions_raw, "original")
+progress_revised <- compute_progress_by_stratum(submissions_raw, "revised")
+stopifnot(identical(progress_orig$target_active, progress_orig$target_sample))
+stopifnot(identical(progress_revised$target_active, progress_revised$target_sample_current))
+stopifnot(all(progress_orig$target_active_label == "Original Target"))
+stopifnot(all(progress_revised$target_active_label == "Revised Target"))
+# target_sample/target_sample_current themselves must be IDENTICAL regardless
+# of the toggle - only which one drives target_active/pct_achieved/status
+# changes, never the two reference columns themselves.
+stopifnot(identical(progress_orig$target_sample, progress_revised$target_sample))
+stopifnot(identical(progress_orig$target_sample_current, progress_revised$target_sample_current))
+# At least one real stratum must actually see a different pct_achieved/status
+# under the two bases (if this ever failed it'd mean target_sample and
+# target_sample_current had silently become identical everywhere, not that
+# the toggle mechanism itself is broken - worth knowing either way).
+basis_makes_a_difference <- any(progress_orig$pct_achieved != progress_revised$pct_achieved, na.rm = TRUE) ||
+  any(progress_orig$status != progress_revised$status)
+stopifnot(basis_makes_a_difference)
+cat("target_active tracks the basis argument; target_sample/target_sample_current stay unaffected; at least one stratum's pct_achieved/status genuinely differs between bases.\n")
+# compute_progress_by_stratum(subs) with NO basis argument must keep
+# defaulting to "original" - existing call sites (progress_by_stratum,
+# smoke_test.R's own full_progress/early_progress above, etc.) all rely on
+# this NOT silently changing behaviour now that a second argument exists.
+stopifnot(identical(compute_progress_by_stratum(submissions_raw), progress_orig))
+# match.arg()'s NULL-handling (returns the first choice) is what keeps every
+# reactive call site NULL-safe before a session's first input handshake
+# lands (e.g. under testServer, which never renders the sidebar's
+# radioButtons default) - asserted directly here rather than trusting it
+# implicitly, since a future refactor swapping match.arg() for a plain
+# switch()/if() would silently reintroduce that crash.
+stopifnot(identical(compute_progress_by_stratum(submissions_raw, NULL), progress_orig))
+cat("NULL target_basis (pre-input-handshake state) safely defaults to Original, matching every other reactive's fallback.\n")
+invisible(build_partner_progress_summary("revised")) # must not error
+invisible(partner_progress_by_lga("fact", "revised")) # must not error
+cat("build_partner_progress_summary()/partner_progress_by_lga() accept target_basis=\"revised\" without error.\n")
+cat("Global target-basis toggle regression test passed.\n")
 
 cat("\n=== Collected = Achieved + Confirmed Deletion + Oversampling Surplus identity ===\n")
 # Regression test for the one real test-coverage gap flagged in both the

@@ -129,7 +129,7 @@ mod_progress_ui <- function(id) {
   )
 }
 
-mod_progress_server <- function(id, filtered_subs, filtered_stratum) {
+mod_progress_server <- function(id, filtered_subs, filtered_stratum, target_basis) {
   moduleServer(id, function(input, output, session) {
     completed_subs <- reactive({
       filtered_subs() %>% filter(interview_outcome == "completed", !is_duplicate)
@@ -147,14 +147,14 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum) {
       # them, to show the "Unmatched" bar), so it must NOT be the source
       # for this tile, or the achieved count here would run ahead of what
       # the % implies whenever any submission fails to match.
-      # FIX 2026-09-16 (Decision A): target_sample (original), not
-      # target_sample_current - see global.R's compute_progress_by_stratum().
-      paste0(comma(sum(s$achieved_n, na.rm = TRUE)), " / ", comma(sum(s$target_sample, na.rm = TRUE)))
+      # FIX 2026-09-16 (Decision A), extended 2026-09-19 (global toggle):
+      # target_active - see global.R's compute_progress_by_stratum().
+      paste0(comma(sum(s$achieved_n, na.rm = TRUE)), " / ", comma(sum(s$target_active, na.rm = TRUE)))
     })
 
     output$kpi_pct <- renderText({
       s <- filtered_stratum() %>% filter(status != "Dropped")
-      tgt <- sum(s$target_sample, na.rm = TRUE)
+      tgt <- sum(s$target_active, na.rm = TRUE)
       ach <- sum(s$achieved_n, na.rm = TRUE)
       fmt_pct(if (tgt > 0) ach / tgt else NA_real_)
     })
@@ -198,9 +198,9 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum) {
       # would look faster than it really is.
       s <- filtered_stratum() %>% filter(status != "Dropped")
       subs <- filtered_subs()
-      # FIX 2026-09-16 (Decision A): target_sample (original) - "Still
-      # Needed" recomputes against this now, not target_sample_current.
-      target <- sum(s$target_sample, na.rm = TRUE)
+      # FIX 2026-09-16 (Decision A), extended 2026-09-19 (global toggle):
+      # target_active - "Still Needed" follows the sidebar toggle now.
+      target <- sum(s$target_active, na.rm = TRUE)
       achieved <- sum(s$achieved_n, na.rm = TRUE)
       remaining <- max(target - achieved, 0)
       if (remaining <= 0) return("Target met")
@@ -306,10 +306,10 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum) {
       # track to cross the red line by 11 Sept — not just where it stands
       # today.
       # 2026-09-14: excludes Dropped strata, same rule as the KPI tiles above.
-      # FIX 2026-09-16 (Decision A): target_sample (original), not _current -
-      # "pace needed to finish on time" is a Still-Needed concept, same basis
-      # as the KPI tiles above now.
-      target_total <- sum(filtered_stratum() %>% filter(status != "Dropped") %>% pull(target_sample), na.rm = TRUE)
+      # FIX 2026-09-16 (Decision A), extended 2026-09-19 (global toggle):
+      # target_active - "pace needed to finish on time" is a Still-Needed
+      # concept, same basis as the KPI tiles above now.
+      target_total <- sum(filtered_stratum() %>% filter(status != "Dropped") %>% pull(target_active), na.rm = TRUE)
       pace_line <- tibble(
         submission_date = seq(FIELDING_START, FIELDING_PLANNED_END, by = "day")
       ) %>%
@@ -349,16 +349,17 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum) {
       # collapses across pop_type/LGA, exactly where a Dropped stratum's
       # achieved could otherwise blend into an active neighbour's total.
       region_base <- filtered_stratum() %>% filter(status != "Dropped")
-      # FIX 2026-09-16 (Decision A): target_sample (original), not _current.
+      # FIX 2026-09-16 (Decision A), extended 2026-09-19 (global toggle):
+      # target_active - follows the sidebar's Target basis toggle now.
       by_region_pop <- region_base %>%
         group_by(region, pop_type) %>%
-        summarise(target_sample = sum(target_sample, na.rm = TRUE), achieved_n = sum(achieved_n, na.rm = TRUE), .groups = "drop") %>%
-        mutate(pct = ifelse(target_sample > 0, achieved_n / target_sample, 0), series = unname(POP_TYPE_LABELS[pop_type]))
+        summarise(target_active = sum(target_active, na.rm = TRUE), achieved_n = sum(achieved_n, na.rm = TRUE), .groups = "drop") %>%
+        mutate(pct = ifelse(target_active > 0, achieved_n / target_active, 0), series = unname(POP_TYPE_LABELS[pop_type]))
 
       combined <- region_base %>%
         group_by(region) %>%
-        summarise(target_sample = sum(target_sample, na.rm = TRUE), achieved_n = sum(achieved_n, na.rm = TRUE), .groups = "drop") %>%
-        mutate(pct = ifelse(target_sample > 0, achieved_n / target_sample, 0), series = "Combined")
+        summarise(target_active = sum(target_active, na.rm = TRUE), achieved_n = sum(achieved_n, na.rm = TRUE), .groups = "drop") %>%
+        mutate(pct = ifelse(target_active > 0, achieved_n / target_active, 0), series = "Combined")
 
       s <- bind_rows(
         by_region_pop %>% select(region, pct, series),
@@ -387,6 +388,26 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum) {
     # totals), deliberately NOT reactive to filtered_stratum()/sidebar
     # filters — the whole point of this view is comparing partners against
     # each other, which a single-partner filter would defeat.
+    #
+    # 2026-09-19 (global target-basis toggle): deliberately did NOT thread
+    # the toggle into partner_order/partner_bar_abs/partner_bar_pct below.
+    # Both charts already have a PERMANENT, deliberate basis baked into
+    # their own design, independent of Decision A's now-toggleable default:
+    # partner_bar_abs is explicitly "each partner's own Original Target"
+    # (its own axis title), partner_bar_pct was explicitly redefined
+    # 2026-09-16b to always show % against Revised Target specifically
+    # ("a deliberate, different question from ... the rest of the
+    # dashboard"). Neither is the kind of generic, Decision-A-hardcoded
+    # driving computation this toggle is meant to un-hardcode - they're
+    # two intentionally-fixed, named views, and partner_order has to keep
+    # sorting both charts identically (see its own comment below) so it
+    # stays pinned too. Only partner_table just below (a plain reference
+    # table, no narrative baked into its columns beyond what it already
+    # labels explicitly) is made toggle-aware, matching every other table
+    # in the app (mod_table.R, Partner Report's LGA table). If Jack ever
+    # wants the two charts to follow the toggle instead, that's a one-line
+    # swap of partner_progress_summary -> partner_summary_active() below.
+    partner_summary_active <- reactive(build_partner_progress_summary(target_basis()))
     partner_pace_colors <- c("Behind pace" = "#C1443C", "On pace" = "#1E7B4D", "Complete" = "#1E7B4D", "Not started" = "#9AA3AF")
 
     # REVISED 2026-09-16b (Jack, real feedback round on the first draft) -
@@ -500,7 +521,7 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum) {
           # absolute number on every row, so a shared percentage scale
           # would misleadingly imply otherwise. Real numbers live in the
           # hover text/bar labels instead.
-          xaxis = list(title = "Progress toward each partner's own Original Target", showticklabels = FALSE, range = c(0, 1.15), zeroline = FALSE),
+          xaxis = list(title = "Progress toward each partner's own Original Target (always Original — independent of the sidebar's Target basis toggle)", showticklabels = FALSE, range = c(0, 1.15), zeroline = FALSE),
           # categoryorder/categoryarray pinned explicitly (2026-09-16b) -
           # see partner_order's own comment above for why.
           yaxis = list(title = "", categoryorder = "array", categoryarray = partner_order),
@@ -552,7 +573,7 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum) {
         textposition = "outside", hoverinfo = "text"
       ) %>%
         layout(
-          xaxis = list(title = "% of Revised Target achieved", tickformat = ".0%", range = c(0, 1.15)),
+          xaxis = list(title = "% of Revised Target achieved (always Revised — independent of the sidebar's Target basis toggle)", tickformat = ".0%", range = c(0, 1.15)),
           yaxis = list(title = "", categoryorder = "array", categoryarray = partner_order),
           legend = list(orientation = "h", y = -0.08),
           margin = list(l = 160, r = 20, t = 10, b = 40)
@@ -560,7 +581,13 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum) {
     })
 
     output$partner_table <- renderDT({
-      df <- partner_progress_summary %>%
+      # 2026-09-19: unlike the two charts above (deliberately pinned, see
+      # comment on partner_summary_active's own definition), this plain
+      # reference table follows the sidebar's Target basis toggle - Achieved/
+      # % achieved/Status come from partner_summary_active()'s target_active-
+      # based columns; Original/Revised Target stay their own two explicit
+      # reference columns regardless, unaffected by the toggle.
+      df <- partner_summary_active() %>%
         transmute(
           Partner = partner_label,
           `Original Target` = target_sample, `Revised Target` = target_sample_current,

@@ -63,7 +63,7 @@ mod_partner_report_ui <- function(id) {
   )
 }
 
-mod_partner_report_server <- function(id, selected_partners) {
+mod_partner_report_server <- function(id, selected_partners, target_basis) {
   moduleServer(id, function(input, output, session) {
     observeEvent(selected_partners(), {
       sp <- selected_partners()
@@ -72,9 +72,14 @@ mod_partner_report_server <- function(id, selected_partners) {
       }
     }, ignoreInit = TRUE)
 
+    # 2026-09-19 (global target-basis toggle): threaded through to
+    # partner_progress_by_lga() so Achieved/% achieved/Status here follow
+    # the sidebar toggle - the two Target KPI cards (kpi_target_original/
+    # kpi_target below) stay Original/Revised reference values regardless,
+    # unaffected by the toggle, same as everywhere else in the app.
     lga_df <- reactive({
       req(input$report_partner)
-      partner_progress_by_lga(input$report_partner)
+      partner_progress_by_lga(input$report_partner, target_basis())
     })
 
     qual <- reactive({
@@ -101,10 +106,13 @@ mod_partner_report_server <- function(id, selected_partners) {
       # "Inf%" on an unguarded division - achieved>0/target==0 is Inf, not
       # NaN, so fmt_pct()'s own NA guard alone doesn't catch it. Same guard
       # used in the PDF export below (build_partner_pdf()) and the Excel
-      # export. FIX 2026-09-16 (Decision A): % achieved is now of target_sample
-      # (original) - matches partner workbooks. target_sample_current still
-      # has its own card (kpi_target) as the supplementary Revised Target.
-      denom <- sum(lga_df()$target_sample)
+      # export. FIX 2026-09-16 (Decision A), extended 2026-09-19 (global
+      # toggle): % achieved now follows the sidebar's Target basis toggle
+      # (target_active, default Original - matches partner workbooks).
+      # target_sample/target_sample_current still have their own fixed
+      # Original/Revised reference cards (kpi_target_original/kpi_target),
+      # unaffected by the toggle.
+      denom <- sum(lga_df()$target_active)
       pct <- if (denom > 0) sum(lga_df()$achieved_n) / denom else NA_real_
       paste0(comma(sum(lga_df()$achieved_n)), " (", fmt_pct(pct), ")")
     })
@@ -166,24 +174,27 @@ mod_partner_report_server <- function(id, selected_partners) {
 
     output$download_xlsx <- downloadHandler(
       filename = function() paste0("MSNA_2026_partner_report_", input$report_partner, "_", Sys.Date(), ".xlsx"),
-      content = function(file) build_partner_excel(input$report_partner, file)
+      # 2026-09-19: exports now respect the sidebar's Target basis toggle at
+      # the moment of download, same as the live tab.
+      content = function(file) build_partner_excel(input$report_partner, file, target_basis())
     )
 
     output$download_pdf <- downloadHandler(
       filename = function() paste0("MSNA_2026_partner_report_", input$report_partner, "_", Sys.Date(), ".pdf"),
-      content = function(file) build_partner_pdf(input$report_partner, file)
+      content = function(file) build_partner_pdf(input$report_partner, file, target_basis())
     )
   })
 }
 
 # ---- report builders (also usable standalone / from other modules) --------
 
-build_partner_excel <- function(org_id_val, file) {
-  lga_df <- partner_progress_by_lga(org_id_val)
+build_partner_excel <- function(org_id_val, file, target_basis = "original") {
+  lga_df <- partner_progress_by_lga(org_id_val, target_basis)
   qual <- partner_quality_summary(org_id_val)
   label <- ORG_LABELS[[org_id_val]]
   total_target <- sum(lga_df$target_sample)
   total_target_current <- sum(lga_df$target_sample_current)
+  total_active <- sum(lga_df$target_active)
   total_achieved <- sum(lga_df$achieved_n)
   total_collected <- sum(lga_df$collected_n)
   total_confirmed_deletion <- sum(lga_df$confirmed_deletion_n)
@@ -192,9 +203,11 @@ build_partner_excel <- function(org_id_val, file) {
   # FIX 2026-09-11: same zero-denominator gap as the live Achieved tile's
   # merged percentage above (kpi_achieved) - see that guard's comment for
   # the failure case (achieved>0/target==0 -> Inf%).
-  # FIX 2026-09-16 (Decision A): of total_target (original), not _current -
-  # matches partner workbooks.
-  pct_achieved_summary <- if (total_target > 0) total_achieved / total_target else NA_real_
+  # FIX 2026-09-16 (Decision A), extended 2026-09-19 (global toggle): of
+  # total_active (the toggle's current basis, default Original - matches
+  # partner workbooks). total_target/total_target_current stay the fixed
+  # Original/Revised reference figures shown above regardless.
+  pct_achieved_summary <- if (total_active > 0) total_achieved / total_active else NA_real_
 
   wb <- createWorkbook()
   addWorksheet(wb, "Summary")
@@ -218,7 +231,7 @@ build_partner_excel <- function(org_id_val, file) {
   writeData(
     wb, "Summary",
     paste(
-      "Achieved = completed, matched interviews that are not a SETTLED (confirmed/contested) tracker deletion, capped at each cluster's own target (oversampling can't count toward or mask coverage elsewhere), measured against Original Target (corrected 2026-09-16, Decision A - was Revised Target, switched to match partner workbooks). Policy changed 2026-09-11: a pending/unresolved flag no longer excludes an interview - only a confirmed deletion does.",
+      paste0("Achieved = completed, matched interviews that are not a SETTLED (confirmed/contested) tracker deletion, capped at each cluster's own target (oversampling can't count toward or mask coverage elsewhere), measured against ", target_basis_label(target_basis), " (2026-09-19: follows the dashboard's Target basis toggle at the time this report was generated, default Original to match partner workbooks). Policy changed 2026-09-11: a pending/unresolved flag no longer excludes an interview - only a confirmed deletion does."),
       "Collected = every completed interview actually done, including oversampled surplus.",
       "Confirmed Deleted = a settled tracker deletion, genuinely gone. Pending Deletion (informational only, not part of the identity below) = how much of Achieved still carries an unresolved flag that could still become a confirmed deletion. Collected always equals Achieved + Confirmed Deleted + Oversampling Surplus (real completed interviews beyond a cluster's own target).",
       "Original Target = the frozen design-time total, unchanged since fielding began. Revised Target = the live required minimum (1_sampling's representativity calculation, recomputed fresh every refresh against the current accessible population) — can rise or fall, not just grow, as accessibility/population changes."
@@ -256,19 +269,23 @@ build_partner_excel <- function(org_id_val, file) {
   saveWorkbook(wb, file, overwrite = TRUE)
 }
 
-build_partner_pdf <- function(org_id_val, file) {
-  lga_df <- partner_progress_by_lga(org_id_val)
+build_partner_pdf <- function(org_id_val, file, target_basis = "original") {
+  lga_df <- partner_progress_by_lga(org_id_val, target_basis)
   qual <- partner_quality_summary(org_id_val)
   label <- ORG_LABELS[[org_id_val]]
   total_target <- sum(lga_df$target_sample)
   total_target_current <- sum(lga_df$target_sample_current)
+  total_active <- sum(lga_df$target_active)
   total_achieved <- sum(lga_df$achieved_n)
   total_collected <- sum(lga_df$collected_n)
   total_confirmed_deletion <- sum(lga_df$confirmed_deletion_n)
   total_pending_deletion <- sum(lga_df$pending_deletion_n)
   total_oversampling_surplus <- sum(lga_df$oversampling_surplus_n)
-  # FIX 2026-09-16 (Decision A): of total_target (original), not _current.
-  pct <- if (total_target > 0) total_achieved / total_target else NA_real_
+  # FIX 2026-09-16 (Decision A), extended 2026-09-19 (global toggle): of
+  # total_active, default Original. total_target/total_target_current stay
+  # the fixed Original/Revised reference figures shown in the header below
+  # regardless of the toggle.
+  pct <- if (total_active > 0) total_achieved / total_active else NA_real_
 
   header_text <- paste0(
     label, "\nMSNA N-WEC 2026 — Progress Report\nGenerated: ", format(Sys.time(), "%d %b %Y %H:%M"),
@@ -277,7 +294,7 @@ build_partner_pdf <- function(org_id_val, file) {
     "\nConfirmed Deleted: ", comma(total_confirmed_deletion), "     Oversampling Surplus: ", comma(total_oversampling_surplus),
     "\nPending Deletion (informational, included in Achieved above): ", comma(total_pending_deletion),
     "\nSubmissions logged: ", comma(qual$submissions), "     Flagged for review: ", comma(qual$flagged), " (", fmt_pct(qual$flag_rate), ")",
-    "\nAchieved = capped at each cluster's own target, measured against Original Target (corrected 2026-09-16, Decision A - matches partner workbooks), excludes only SETTLED (confirmed) deletions - a pending flag no longer excludes (policy changed 2026-09-11). Collected = every completed interview, incl. oversampled surplus. Oversampling Surplus = real completed interviews beyond a cluster's own target, capped out of Achieved by design."
+    "\nAchieved = capped at each cluster's own target, measured against ", target_basis_label(target_basis), " (2026-09-19: follows the dashboard's Target basis toggle at generation time, default Original to match partner workbooks), excludes only SETTLED (confirmed) deletions - a pending flag no longer excludes (policy changed 2026-09-11). Collected = every completed interview, incl. oversampled surplus. Oversampling Surplus = real completed interviews beyond a cluster's own target, capped out of Achieved by design."
   )
   header_plot <- ggplot() + theme_void() + xlim(0, 1) + ylim(0, 1) +
     annotate("text", x = 0, y = 1, label = header_text, hjust = 0, vjust = 1, size = 4.2)
@@ -297,9 +314,10 @@ build_partner_pdf <- function(org_id_val, file) {
   } else {
     paste0(
       "Focus areas (lowest % achieved):\n",
-      # FIX 2026-09-16 (Decision A): target_sample (original) to match
-      # pct_achieved, which is now computed against target_sample too.
-      paste0("  - ", focus$adm2_name, " (", fmt_pct(focus$pct_achieved), ", ", focus$achieved_n, "/", comma(round(focus$target_sample)), ")", collapse = "\n")
+      # FIX 2026-09-16 (Decision A), extended 2026-09-19 (global toggle):
+      # target_active, to match pct_achieved, which is now computed
+      # against target_active too.
+      paste0("  - ", focus$adm2_name, " (", fmt_pct(focus$pct_achieved), ", ", focus$achieved_n, "/", comma(round(focus$target_active)), ")", collapse = "\n")
     )
   }
   shared <- lga_df %>% filter(shared_with != "")
