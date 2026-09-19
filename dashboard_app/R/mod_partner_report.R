@@ -24,14 +24,14 @@ mod_partner_report_ui <- function(id) {
       layout_columns(
         col_widths = c(3, 3, 3, 3, 3, 3, 3, 3),
         height = "480px",
-        value_box(title = info_title("Original Target (their LGAs)", "The frozen design-time total across this partner's assigned LGAs, unchanged since fielding began."), value = textOutput(ns("kpi_target_original")), showcase = icon("bullseye"), theme = "secondary"),
-        value_box(title = info_title("Revised Target (their LGAs)", "The live required minimum across this partner's assigned LGAs — 1_sampling's representativity calculation (10% MoE, ICC=0.06, +5% operational margin), recomputed fresh every refresh against the current accessible population. Corrected 2026-09-14: can rise OR fall (accessibility loss/a dropped LGA lowers the population base it's calculated against), not just grow as resampling adds clusters. Shown as reference alongside Original Target — corrected 2026-09-16 (Decision A): Achieved/% achieved/Status are computed against Original Target now, to match partner workbooks."), value = textOutput(ns("kpi_target")), showcase = icon("bullseye"), theme = "primary"),
+        value_box(title = info_title("Original Target (their LGAs)", "The fixed sample size set at fielding start, across this partner's assigned LGAs."), value = textOutput(ns("kpi_target_original")), showcase = icon("bullseye"), theme = "secondary"),
+        value_box(title = info_title("Revised Target (their LGAs)", "The current minimum needed across this partner's assigned LGAs, recalculated regularly as access changes."), value = textOutput(ns("kpi_target")), showcase = icon("bullseye"), theme = "primary"),
         value_box(
-          title = info_title("Achieved", "Completed, matched interviews that are not a SETTLED (confirmed/contested) tracker deletion — capped at each cluster's own target — shown with its share of Original Target. Policy changed 2026-09-11: a pending/unresolved flag no longer excludes an interview, only a confirmed deletion does — same figure resampling now uses too. Corrected 2026-09-16 (Decision A): the % here is of Original Target, not Revised — matches partner workbooks."),
+          title = info_title("Achieved", "Interviews that count toward target. % shown follows the sidebar's Target basis toggle."),
           value = textOutput(ns("kpi_achieved")), showcase = icon("clipboard-check"), theme = "success"
         ),
         value_box(
-          title = info_title("Collected", "Every completed interview actually done, including oversampled surplus — total field effort, not what counts toward target. A large gap vs. Achieved usually means oversampling of easy-to-reach clusters."),
+          title = info_title("Collected", "Every completed interview, including surplus — total field effort, not what counts toward target."),
           value = textOutput(ns("kpi_collected")), showcase = icon("layer-group"), theme = "warning"
         ),
         value_box(
@@ -39,12 +39,12 @@ mod_partner_report_ui <- function(id) {
           value = textOutput(ns("kpi_confirmed_deletion")), showcase = icon("trash"), theme = "danger"
         ),
         value_box(
-          title = info_title("Pending Deletion", "Informational only (changed 2026-09-11) — how much of Achieved above still carries an unresolved tracker flag (duplicate, unmatched, a still-open recovery-workbook item) that could still become a confirmed deletion later. Included in Achieved for now, not subtracted."),
+          title = info_title("Pending Deletion", "How much of Achieved above still has an open quality flag that could later become a confirmed deletion."),
           value = textOutput(ns("kpi_pending_deletion")), showcase = icon("hourglass-half"), theme = "warning"
         ),
         value_box(title = "Flagged for review", value = textOutput(ns("kpi_flagged")), showcase = icon("flag"), theme = "warning"),
         value_box(
-          title = info_title("Oversampled clusters", "Clusters in this partner's coverage where their own submissions have pushed the cluster's achieved count past its target_households. The surplus doesn't count toward Achieved above (its own separate Oversampling Surplus figure instead — changed 2026-09-11, was folded into Pending Deletion before), but is real field effort spent past target — worth reviewing before deciding which submissions to keep. A cluster jointly worked with another partner counts for both."),
+          title = info_title("Oversampled clusters", "Clusters where this partner's submissions pushed achieved past that cluster's target. Real effort, but worth reviewing before deciding what to keep."),
           value = textOutput(ns("kpi_oversampled")), showcase = icon("triangle-exclamation"), theme = "warning"
         )
       )
@@ -52,7 +52,7 @@ mod_partner_report_ui <- function(id) {
     card(
       card_header(
         "Progress by LGA (their assigned coverage area)",
-        info_icon("ACHIEVED: completed, matched interviews that are not a SETTLED (confirmed/contested) tracker deletion, capped at each cluster's own target. Policy changed 2026-09-11: a pending/unresolved flag no longer excludes an interview, only a confirmed deletion does. COLLECTED: every completed interview, including oversampled surplus."),
+        info_icon("Achieved = interviews that count toward target. Collected = every completed interview, including surplus."),
         span(
           class = "text-muted", style = "font-size: 0.8em; font-weight: normal; margin-left: 8px;",
           "Some LGAs are jointly covered by more than one partner (see \"Shared with\") — Achieved there reflects everyone's combined submissions, not this partner's alone."

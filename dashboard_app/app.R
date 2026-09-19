@@ -19,6 +19,24 @@ GLOBAL_CSS <- tags$style(HTML("
   .bslib-value-box { min-height: 132px; }
   .bslib-value-box .value-box-value { white-space: normal; word-break: break-word; line-height: 1.25; font-size: 1.3rem; }
   .bslib-value-box .value-box-title { white-space: normal; }
+  /* 2026-09-20 (Jack: DT column-filter dropdowns): DT's filter=\"top\" row
+     sets each <select>'s width inline to match its own (often narrow)
+     column, so a short word like \"Complete\" can wrap across 2-3 lines
+     inside the OPEN dropdown list on Windows/Chrome, which renders a
+     select's popup at the same width as the closed control rather than
+     auto-fitting the longest option. width: auto !important overrides
+     that inline style; overflow: visible on the header cell lets the
+     now-wider control sit without being clipped by the column's own
+     narrow boundary, at the cost of it visually overlapping a neighbouring
+     header by a few px on the very narrowest columns (Status) — a better
+     tradeoff than 3-line-wrapped option text. Applies to every DT table
+     with a filter row dashboard-wide (Progress by LGA, Partner Report's
+     LGA table, etc.), not just one. */
+  table.dataTable thead tr.filters th { overflow: visible; }
+  table.dataTable thead tr.filters select {
+    width: auto !important;
+    min-width: 110px;
+  }
 "))
 
 # A proper collapsed dropdown for every multi-select filter — showing all
@@ -69,13 +87,20 @@ filter_sidebar <- sidebar(
   # — nothing on the dashboard changes until a user actively toggles this.
   # See global.R's target_basis_label()/active_planned_interviews() and
   # compute_progress_by_stratum()'s target_active for the mechanism.
+  # 2026-09-20 (Jack: spacing review) - no margin-bottom here: the outer
+  # wrapper was adding its own 10px on top of radioButtons()'s existing
+  # form-group bottom margin (the same margin every pickerInput/
+  # checkboxGroupInput below already has), stacking into a visibly bigger
+  # gap after this block than between any other pair of filters. Dropping
+  # it lets the same natural form-group margin apply here as everywhere
+  # else in the sidebar.
   div(
-    style = "background: rgba(255,255,255,0.08); border-radius: 6px; padding: 8px 10px; margin-bottom: 10px;",
+    style = "background: rgba(255,255,255,0.08); border-radius: 6px; padding: 8px 10px;",
     div(
       style = "display: flex; align-items: center; gap: 6px;",
       strong("Target basis"),
       info_icon(
-        "Switches what every target-dependent figure on the dashboard is judged against. Original Target = the frozen design-time sample size, unchanged since fielding began. Revised Target = the live required minimum (1_sampling's representativity calculation), recomputed fresh every refresh against the current accessible population. Affects status/\"Complete\" classification, % achieved, Coverage Map colouring (LGA view only — the per-cluster view always uses each cluster's own fixed target_households, unaffected by this toggle), Still-Needed, and every KPI headline %. Original/Revised reference columns and popup lines elsewhere keep showing BOTH numbers regardless of this switch — only which one DRIVES the calculation changes.",
+        "Switches which target every % and status on the dashboard is measured against. Original = the fixed target set at the start of collection. Revised = the current minimum needed samples, recalculated as accessibility changes. Both are always shown for reference wherever they appear — this only changes which one drives the headline figures.",
         color = THEME_SIDEBAR_FG
       )
     ),

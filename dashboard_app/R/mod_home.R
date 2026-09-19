@@ -73,14 +73,29 @@ mod_home_ui <- function(id) {
             "fielding. As partners report on accessibility (insecurity, denied access, etc.), ",
             "newly-inaccessible areas are excluded from potential sampling, and remaining ",
             "accessible areas can gain supplementary clusters to help make up what was lost — ",
-            "so which specific clusters and wards are currently in scope, and occasionally the ",
-            "national target itself (see the revision note under ", em("Target interviews"),
-            " in \"At a glance\"), can genuinely change over the course of fielding without any ",
-            "data-quality issue. ",
+            "so which specific clusters and wards are currently in scope, and the ",
+            em("Revised Target"), " figure in \"At a glance\" (recomputed automatically every ",
+            "refresh against the live accessible population), can genuinely change over the ",
+            "course of fielding without any data-quality issue. ",
             if (!is.na(FRAME_AS_OF_LABEL)) {
               tagList(strong(FRAME_AS_OF_LABEL), " — every figure on this dashboard reflects this version of the frame.")
             } else {
               "The frame's current version date isn't available right now."
+            },
+            # MOVED HERE 2026-09-20 (Jack: "At a glance" should stay quick key
+            # figures, not host a paragraph of updates/context) — was a
+            # muted colspan=2 row inside output$glance's table. A separate,
+            # deliberate, reasoned change to the design's own ORIGINAL
+            # baseline (rare — happens "at least once", not every refresh) —
+            # distinct from the Revised Target figure just above, which
+            # updates automatically and can rise or fall on its own.
+            if (HAS_TARGET_REVISION) {
+              paste0(
+                " Separately, the design's own baseline has itself been revised at least once: ",
+                "original baseline at fielding start (", format(BASELINE_TARGET_DATE, "%d %b %Y"), "): ",
+                comma(BASELINE_TARGET_SAMPLE), ". Revised ", format(LATEST_TARGET_REVISION$date, "%d %b %Y"),
+                ": now ", comma(LATEST_TARGET_REVISION$total_target), " — ", LATEST_TARGET_REVISION$reason, "."
+              )
             }
           ),
           p(
@@ -175,11 +190,11 @@ mod_home_server <- function(id, target_basis) {
         class = "table table-sm",
         tags$tr(tags$td("Fielding window"), tags$td(strong(paste(format(FIELDING_START, "%d %b"), "-", format(FIELDING_PLANNED_END, "%d %b %Y"))))),
         tags$tr(
-          tags$td("Original Target", info_icon("The frozen design-time total across all covered LGAs, unchanged since fielding began — this page always shows the national picture and is not affected by the sidebar filters.")),
+          tags$td("Original Target", info_icon("The total planned interviews set at the start of collection, unchanged since. Always the national total, regardless of sidebar filters.")),
           tags$td(strong(comma(TOTAL_PLANNED_INTERVIEWS)))
         ),
         tags$tr(
-          tags$td("Revised Target", info_icon("The LIVE required minimum — 1_sampling's own representativity calculation (10% margin of error, ICC=0.06, +5% flat operational margin), recomputed fresh every refresh against the CURRENT accessible population for every covered stratum. Corrected 2026-09-14: unlike the old capacity-based figure, this can both rise AND fall (accessibility loss or a dropped LGA lowers the population base it's calculated against) — a retroactive correction against current conditions, not a one-way ratchet that only ever grows. Achieved/% achieved/Status everywhere on this dashboard are computed against Original Target, not this one (Decision A, 2026-09-16).")),
+          tags$td("Revised Target", info_icon("The current minimum sample size actually needed, recalculated regularly as population access changes — can rise or fall.")),
           # ADDED 2026-09-16 (Jack, visibility ask): fold the delta straight
           # into this row's own value, shared helper (global.R); red/bold
           # when the national-level gap crosses TARGET_DIVERGENCE_THRESHOLD.
@@ -197,35 +212,24 @@ mod_home_server <- function(id, target_basis) {
             }
           )
         ),
-        if (HAS_TARGET_REVISION) {
-          tags$tr(
-            tags$td(colspan = 2, class = "text-muted", style = "font-size: 0.82em; padding-top: 0;",
-              paste0(
-                "Separately, the design's own baseline has itself been revised at least once: original baseline at fielding start (", format(BASELINE_TARGET_DATE, "%d %b %Y"), "): ", comma(BASELINE_TARGET_SAMPLE), ". ",
-                "Revised ", format(LATEST_TARGET_REVISION$date, "%d %b %Y"), ": now ", comma(LATEST_TARGET_REVISION$total_target),
-                " — ", LATEST_TARGET_REVISION$reason, ". (A different thing from Original vs. Revised Target above — this is a deliberate, reasoned change to the design itself; Revised Target above is recomputed automatically every refresh against the live accessible population, and can rise or fall on its own.)"
-              )
-            )
-          )
-        },
         tags$tr(
-          tags$td("Achieved so far", info_icon(paste0("Completed, matched interviews that are not a SETTLED (confirmed/contested) tracker deletion, capped at each cluster's own target. Policy changed 2026-09-11: a pending/unresolved flag (duplicate, unmatched, still-open tracker item) no longer excludes an interview from Achieved - only an actually-confirmed deletion does. See 'Pending Deletion' below for how much of this is still at risk of moving. Oversampled surplus never counts here. National total, not affected by the sidebar filters. The % here follows the sidebar's Target basis toggle (currently ", target_basis_label(target_basis()), ") - was hardcoded to Original under Decision A, now switchable."))),
+          tags$td("Achieved so far", info_icon("Completed interviews that count toward target — excludes confirmed deletions and any surplus beyond a cluster's own target.")),
           tags$td(strong(comma(total_achieved), " (", fmt_pct(total_achieved / active_planned_interviews(target_basis())), " of ", target_basis_label(target_basis()), ")"))
         ),
         tags$tr(
-          tags$td("Collected so far", info_icon("Every completed interview actually done — includes oversampled surplus and any interview since removed by a confirmed deletion. Total field effort, not what counts toward target.")),
+          tags$td("Collected so far", info_icon("Every completed interview, including any later deleted or oversampled — total field effort, not what counts toward target.")),
           tags$td(strong(comma(total_collected)))
         ),
         tags$tr(
-          tags$td("Confirmed Deleted / Oversampling Surplus", info_icon("Of Collected but not Achieved (changed 2026-09-11 — see Achieved above): CONFIRMED DELETED is a settled tracker deletion — genuinely gone, feeds resampling. OVERSAMPLING SURPLUS is real, completed interviews beyond what a cluster's own target calls for — capped out of Achieved by design, not a data problem, but likely needs reviewing so a genuinely over-collected cluster doesn't keep being asked for more. Collected always equals Achieved + Confirmed Deleted + Oversampling Surplus, exactly.")),
+          tags$td("Confirmed Deleted / Oversampling Surplus", info_icon("The gap between Collected and Achieved. Confirmed Deleted = removed for good reason. Oversampling Surplus = real interviews beyond what a cluster needed — not a problem, but worth reviewing. Collected = Achieved + Confirmed Deleted + Oversampling Surplus, always.")),
           tags$td(strong(comma(total_confirmed_deletion), " / ", comma(total_oversampling_surplus)))
         ),
         tags$tr(
-          tags$td("Pending Deletion", info_icon("Informational only (changed 2026-09-11 — no longer part of the Collected/Achieved/Confirmed/Surplus identity above): how many of the interviews already counted in Achieved still carry an unresolved tracker flag (duplicate, unmatched, a still-open recovery-workbook item) that could still result in a confirmed deletion later. Included in Achieved for now, per Jack's explicit decision — not subtracted.")),
+          tags$td("Pending Deletion", info_icon("How many Achieved interviews still have an open quality flag that could later become a confirmed deletion. Still counted in Achieved for now.")),
           tags$td(strong(comma(total_pending_deletion)))
         ),
         tags$tr(
-          tags$td("Oversampled clusters", info_icon("Clusters with more achieved interviews than their own target_households — the surplus never counts toward Achieved or masks under-coverage elsewhere, but represents field effort spent past target that will likely need reviewing for deletion. Not a new sample design; a cluster's target is unchanged.")),
+          tags$td("Oversampled clusters", info_icon("Clusters that collected more interviews than their own target. The surplus doesn't count toward Achieved and will likely need reviewing.")),
           tags$td(strong(comma(nrow(oversampled_clusters)), " (", comma(sum(oversampled_clusters$surplus)), " surplus interviews)"))
         ),
         tags$tr(tags$td("Target by population group"), tags$td(strong("Non-IDP: ", comma(target_non_idp), " / IDP: ", comma(target_idp)))),
@@ -233,7 +237,7 @@ mod_home_server <- function(id, target_basis) {
         tags$tr(tags$td("States / regions"), tags$td(strong(n_states, " states across ", n_regions, " regions (", paste(sort(unique(strata_frame$adm1_name)), collapse = ", "), ")"))),
         tags$tr(tags$td("Field partners"), tags$td(strong(length(setdiff(unique(partner_lga_assignment$org_id), "other"))))),
         tags$tr(
-          tags$td("Partners with zero submissions", info_icon("Partners assigned at least one LGA who haven't submitted any interviews yet — worth a direct follow-up.")),
+          tags$td("Partners with zero submissions", info_icon("Partners assigned an LGA who haven't submitted any interviews yet.")),
           tags$td(strong(if (length(PARTNERS_NOT_STARTED) == 0) "None" else paste(unname(ORG_LABELS[PARTNERS_NOT_STARTED]), collapse = ", ")))
         )
       )
@@ -275,11 +279,11 @@ mod_home_server <- function(id, target_basis) {
         tags$tr(tags$td("Submissions that day"), tags$td(strong(comma(today_count)))),
         tags$tr(tags$td("Submissions the day before"), tags$td(strong(comma(yesterday_n)))),
         tags$tr(
-          tags$td("Total achieved to date", info_icon(paste0("Completed, matched interviews that are not a SETTLED (confirmed/contested) tracker deletion, capped at each cluster's own target. Policy changed 2026-09-11: a pending/unresolved flag no longer excludes an interview here, only a confirmed deletion does — same figure resampling now uses too. Oversampled surplus never counts here. National total, not affected by the sidebar filters — same figure as \"Achieved so far\" above, shown again here alongside today's daily activity for context. Denominator follows the sidebar's Target basis toggle (currently ", target_basis_label(target_basis()), ")."))),
+          tags$td("Total achieved to date", info_icon("Same figure as 'Achieved so far' above, shown alongside today's activity for context.")),
           tags$td(strong(comma(total_achieved), " / ", comma(total_target), " (", fmt_pct(total_achieved / total_target), ")"))
         ),
         tags$tr(
-          tags$td("Total collected to date", info_icon("Every completed interview actually done — includes oversampled surplus, duplicates, and unmatched submissions.")),
+          tags$td("Total collected to date", info_icon("Every completed interview, including surplus, duplicates and unmatched submissions.")),
           tags$td(strong(comma(total_collected)))
         ),
         tags$tr(tags$td("Most recent upload timestamp"), tags$td(strong(format(last_upload, "%d %b %Y %H:%M"))))

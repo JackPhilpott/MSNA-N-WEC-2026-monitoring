@@ -384,6 +384,21 @@ CLUSTER_STATUS_COLORS <- c(STATUS_COLORS, "Inaccessible" = "#7D8791")
 # review/possible deletion) — see mod_map.R's cluster_status().
 INACCESSIBLE_BORDER <- "#7D8791"
 
+# 2026-09-20 (Jack: Coverage Map hover review) - the LGA popup's Original/
+# Revised Target lines get a colour cue for which one is currently DRIVING
+# the dashboard's calculations (the sidebar's Target basis toggle), on top
+# of the existing divergence red-bold treatment (target_delta_label/
+# is_significant_target_divergence above, unrelated - that flags "these two
+# numbers disagree a lot", this flags "this is the one currently in use").
+# A dedicated blue rather than reusing POP_TYPE_COLORS/COMBINED_COLOR - both
+# already carry a different meaning (population group, combined series)
+# elsewhere on this same popup/dashboard, and reusing one here risked
+# reading as that meaning instead. TARGET_BASIS_INACTIVE_COLOR reuses
+# UNMATCHED_COLOR (already this app's established "muted/greyed-out" grey)
+# rather than inventing a second new colour for the same idea.
+TARGET_BASIS_ACTIVE_COLOR <- "#2A6FBF"
+TARGET_BASIS_INACTIVE_COLOR <- UNMATCHED_COLOR
+
 # Overall app "chrome" theme — first pass, expected to be revised. Navbar
 # and sidebar (filter panel) get the dark blue/grey; the main body stays
 # the Bootstrap default white/black (not overridden here) so cards, tables

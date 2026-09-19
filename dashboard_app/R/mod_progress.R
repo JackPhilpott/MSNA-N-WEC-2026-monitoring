@@ -30,7 +30,7 @@ mod_progress_ui <- function(id) {
       value_box(
         title = info_title(
           "Interviews achieved / planned",
-          "ACHIEVED: completed, matched interviews that are not a SETTLED (confirmed/contested) tracker deletion — capped at each cluster's own target. Policy changed 2026-09-11: a pending/unresolved flag (duplicate, unmatched, a still-open recovery-workbook item) no longer excludes an interview here, only an actually-confirmed deletion does — matching the same figure resampling uses. A cluster that's been oversampled only ever contributes up to its target here, never more, so oversampling in one cluster can't mask under-coverage in another. Reflects your current sidebar filter selection (state/LGA/partner/population group) — the Home tab always shows the fixed national total regardless of filters, so the two can legitimately differ.",
+          "Interviews that count toward target — excludes confirmed deletions and caps any surplus above a cluster's target.",
           icon_color = "white"
         ),
         value = textOutput(ns("kpi_achieved")),
@@ -40,7 +40,7 @@ mod_progress_ui <- function(id) {
       value_box(
         title = info_title(
           "Collected − Achieved",
-          "Every completed interview that does NOT currently count toward target: confirmed quality exclusions (duration floor, implausible food-consumption), duplicates, submissions that couldn't be matched to a sampled point, and any oversampled-cluster surplus. Not all of this needs deleting — oversampling surplus is wasted field effort, not a data problem — but it's the running total of what needs review or follow-up before it can count. Reflects your current sidebar filter selection, same as the tiles either side of it."
+          "Completed interviews that don't currently count toward target — quality exclusions, duplicates, unmatched, or surplus."
         ),
         value = textOutput(ns("kpi_followup")),
         showcase = icon("flag"),
@@ -49,14 +49,14 @@ mod_progress_ui <- function(id) {
       value_box(
         title = info_title(
           "Collected",
-          "COLLECTED: every completed interview actually done in the field — includes oversampled surplus, duplicates, and submissions that couldn't be matched to a sampled point. This is total field effort, not what counts toward the sample. A big gap between Collected and Achieved usually means oversampling of easy-to-reach clusters, which is wasted operational resource, not progress toward coverage elsewhere."
+          "Every completed interview done — total field effort, not what counts toward the sample."
         ),
         value = textOutput(ns("kpi_collected")),
         showcase = icon("layer-group"),
         theme = "warning"
       ),
       value_box(
-        title = info_title("% of target", "Achieved (capped, see that tile's definition) as a share of the planned sample. Oversampling does not inflate this. Reflects your current sidebar filter selection, same as the tile to the left."),
+        title = info_title("% of target", "Achieved as a share of target."),
         value = textOutput(ns("kpi_pct")),
         showcase = icon("percent"),
         theme = "success"
@@ -64,7 +64,7 @@ mod_progress_ui <- function(id) {
       value_box(
         title = info_title(
           "Planned days remaining",
-          "Calendar days left between today and the planned fielding end date, regardless of how fast or slow collection is actually going — a fixed countdown, not a pace estimate. Compare against \"Est. days required\": if that number is higher than this one, the current rate of progress won't reach target by the planned end date."
+          "Calendar days left until the planned end date — a fixed countdown, not a pace estimate."
         ),
         value = textOutput(ns("kpi_days_remaining")),
         showcase = icon("calendar-days"),
@@ -73,7 +73,7 @@ mod_progress_ui <- function(id) {
       value_box(
         title = info_title(
           "Est. days required",
-          "How many MORE days of data collection are needed to reach target at the CURRENT rate of Achieved progress (Achieved so far, within your current filter, divided by days since that filter's earliest submission). Unlike \"Planned days remaining\", this is driven entirely by actual pace, not the calendar — it can come out higher or lower, and moves as pace changes.",
+          "Days still needed to reach target at the current pace of progress. Compare to Planned days remaining to see if you're on track.",
           icon_color = "white"
         ),
         value = textOutput(ns("kpi_days_required")),
@@ -94,7 +94,7 @@ mod_progress_ui <- function(id) {
       card(
         card_header(
           "Daily submissions (by population group) vs. pace needed to finish on time",
-          info_icon("Bars = new interviews each day, by population group (right axis). Solid green line = cumulative Achieved to date (left axis) — same definition as the Achieved KPI tile above (quality-excluded, capped per cluster), so it reaches exactly that tile's total on the last day with data. Dotted red line = the constant daily rate that would reach 100% of target exactly on the fielding deadline, starting from the fielding start date — it runs all the way to the deadline, past the last day with real data, so you can see whether the green line is on track to reach it in time. Green line above the red line at the same date = ahead of pace; below = behind."),
+          info_icon("Bars = new interviews per day. Green line = cumulative Achieved to date. Red dotted line = the steady pace needed to hit target by the deadline. Above the line = ahead of pace, below = behind."),
           span(
             class = "text-muted", style = "font-size: 0.8em; font-weight: normal; margin-left: 8px;",
             "\"Unmatched\" = submissions where the enumerator picked the wrong LGA in-app, so they couldn't be linked to a sampled cluster (and therefore a pop. group) — see the Data Quality tab's LGA-mismatch flag."
@@ -111,7 +111,7 @@ mod_progress_ui <- function(id) {
       full_screen = TRUE,
       card_header(
         "Progress by partner",
-        info_icon("Every assigned partner, regardless of your sidebar filters — this always shows the full national picture, same convention as the Home tab, since the point is comparing partners against each other. Target is every stratum in every LGA assigned to that partner (partner_lga_assignment), not just LGAs where they've already submitted. \"Current pace\" is a whole-period average since that partner's own first submission — not the global fielding start date, so a partner who started later isn't penalised for days before they were even in the field. Achieved/% achieved reflect the WHOLE LGA's progress, including any other partner assigned to the same LGA (see \"Shared with\") — so a partner can show a nonzero % and still be \"Not started\" themselves if a partner they share an LGA with has already submitted there."),
+        info_icon("Shows every assigned partner nationally, regardless of sidebar filters. Target includes every LGA assigned to them, even ones not yet started. Achieved reflects the whole LGA's progress, including any partner sharing it (see 'Shared with')."),
         span(class = "text-muted", style = "font-size: 0.8em; font-weight: normal; margin-left: 8px;", "Sorted by % of target achieved (lowest first)")
       ),
       # REDESIGNED 2026-09-16 (Jack, first draft/proof-of-concept for the
@@ -389,24 +389,24 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum, target_basi
     # filters — the whole point of this view is comparing partners against
     # each other, which a single-partner filter would defeat.
     #
-    # 2026-09-19 (global target-basis toggle): deliberately did NOT thread
-    # the toggle into partner_order/partner_bar_abs/partner_bar_pct below.
-    # Both charts already have a PERMANENT, deliberate basis baked into
-    # their own design, independent of Decision A's now-toggleable default:
-    # partner_bar_abs is explicitly "each partner's own Original Target"
-    # (its own axis title), partner_bar_pct was explicitly redefined
-    # 2026-09-16b to always show % against Revised Target specifically
-    # ("a deliberate, different question from ... the rest of the
-    # dashboard"). Neither is the kind of generic, Decision-A-hardcoded
-    # driving computation this toggle is meant to un-hardcode - they're
-    # two intentionally-fixed, named views, and partner_order has to keep
-    # sorting both charts identically (see its own comment below) so it
-    # stays pinned too. Only partner_table just below (a plain reference
-    # table, no narrative baked into its columns beyond what it already
-    # labels explicitly) is made toggle-aware, matching every other table
-    # in the app (mod_table.R, Partner Report's LGA table). If Jack ever
-    # wants the two charts to follow the toggle instead, that's a one-line
-    # swap of partner_progress_summary -> partner_summary_active() below.
+    # 2026-09-19 (global target-basis toggle), REVISED 2026-09-20 (Jack,
+    # explicit): partner_bar_abs stays PERMANENTLY pinned to Original -
+    # "each partner's own Original Target" is baked into its own axis title
+    # and its whole bullet-chart design (a Revised-Target tick mark on an
+    # Original-scaled bar), and Jack confirmed it "accurately depicts both"
+    # already, unchanged. partner_bar_pct was ALSO permanently pinned
+    # (to Revised, since 2026-09-16b) until today - Jack's own words: "now I
+    # would have this one reflect the status of the original/revised toggle
+    # universal filter" - so it now reads target_active/pct_achieved/status
+    # straight off partner_summary_active() below (already computed against
+    # whichever basis is active - see build_partner_progress_summary() in
+    # global.R), same as partner_table just below it. partner_order still
+    # deliberately stays pinned to the static, Original-based
+    # partner_progress_summary - it's shared by BOTH charts to keep their
+    # row order visually consistent with each other (see its own comment
+    # below), and reordering rows every time the toggle flips would be a
+    # confusing side effect nobody asked for; only the BAR VALUES on
+    # partner_bar_pct move with the toggle now, not which row is on top.
     partner_summary_active <- reactive(build_partner_progress_summary(target_basis()))
     partner_pace_colors <- c("Behind pace" = "#C1443C", "On pace" = "#1E7B4D", "Complete" = "#1E7B4D", "Not started" = "#9AA3AF")
 
@@ -530,50 +530,31 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum, target_basi
         )
     })
 
-    # ---- OLD chart, kept as the simplified secondary view (Jack: "a very
-    # clear vision on % achieved of our minimum") - REDEFINED 2026-09-16 to
-    # show % against Revised Target specifically, not Original as it did
-    # under Decision A - a deliberate, different question from the new
-    # chart/Priority/the rest of the dashboard, computed locally here only.
+    # ---- Secondary view (Jack: "a very clear vision on % achieved of our
+    # minimum") - was permanently redefined 2026-09-16 to always show %
+    # against Revised Target specifically, independent of Decision A/the
+    # sidebar toggle. REVISED 2026-09-20 (Jack, explicit): now follows the
+    # sidebar's Target basis toggle instead, matching the rest of the
+    # dashboard - reads target_active/pct_achieved/status straight off
+    # partner_summary_active() (global.R's build_partner_progress_summary(),
+    # already computed against whichever basis is active), rather than
+    # re-deriving a local "_revised" variant of the same pace/status logic
+    # as before - that duplication is what caused the 2026-09-16b MDM bug
+    # (fill colour keyed off a different basis than the displayed %) in the
+    # first place; reusing the one shared computation removes the class of
+    # bug, not just this instance of it.
     output$partner_bar_pct <- renderPlotly({
-      df <- partner_progress_summary %>%
-        mutate(
-          partner_label = factor(partner_label, levels = partner_order),
-          pct_achieved_revised = ifelse(target_sample_current > 0, achieved_n / target_sample_current, NA_real_),
-          # BUG FIX 2026-09-16b (Jack: MDM showed 103% but still red - the
-          # displayed % had already switched to Revised Target, but the
-          # fill colour was still keyed off partner_progress_summary's own
-          # `status`, which per Decision A is ORIGINAL-target-based. Full
-          # status recomputed here against Revised instead, mirroring
-          # partner_progress_summary's own formula (global.R) exactly, not
-          # just patching the Complete threshold in isolation - pace itself
-          # (current_daily_pace/start_date) doesn't depend on which target
-          # you're judging completion against, only remaining/projected
-          # finish do, so those two are the only pieces recomputed.
-          remaining_revised = pmax(target_sample_current - achieved_n, 0),
-          projected_finish_revised = if_else(
-            !is.na(current_daily_pace) & current_daily_pace > 0 & remaining_revised > 0,
-            today_for_pace + ceiling(remaining_revised / current_daily_pace),
-            as.Date(NA)
-          ),
-          status_revised = case_when(
-            target_sample_current <= 0 ~ "Complete",
-            achieved_n >= target_sample_current ~ "Complete",
-            is.na(start_date) ~ "Not started",
-            is.na(current_daily_pace) | current_daily_pace <= 0 ~ "Behind pace",
-            projected_finish_revised <= FIELDING_PLANNED_END ~ "On pace",
-            TRUE ~ "Behind pace"
-          )
-        )
+      df <- partner_summary_active() %>%
+        mutate(partner_label = factor(partner_label, levels = partner_order))
 
       plot_ly(
-        df, y = ~partner_label, x = ~pct_achieved_revised, color = ~status_revised, colors = partner_pace_colors,
+        df, y = ~partner_label, x = ~pct_achieved, color = ~status, colors = partner_pace_colors,
         type = "bar", orientation = "h",
-        text = ~paste0(comma(achieved_n), " / ", comma(round(target_sample_current)), " (", percent(pct_achieved_revised, accuracy = 1), " of Revised)"),
+        text = ~paste0(comma(achieved_n), " / ", comma(round(target_active)), " (", percent(pct_achieved, accuracy = 1), " of ", target_basis_label(target_basis()), ")"),
         textposition = "outside", hoverinfo = "text"
       ) %>%
         layout(
-          xaxis = list(title = "% of Revised Target achieved (always Revised — independent of the sidebar's Target basis toggle)", tickformat = ".0%", range = c(0, 1.15)),
+          xaxis = list(title = paste0("% of ", target_basis_label(target_basis()), " achieved"), tickformat = ".0%", range = c(0, 1.15)),
           yaxis = list(title = "", categoryorder = "array", categoryarray = partner_order),
           legend = list(orientation = "h", y = -0.08),
           margin = list(l = 160, r = 20, t = 10, b = 40)

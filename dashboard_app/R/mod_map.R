@@ -16,7 +16,7 @@ mod_map_ui <- function(id) {
           style = "display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;",
           span(
             "Coverage map",
-            info_icon("Fill colour and \"% of target\" (LGA view only) reflect ACHIEVED — completed, matched interviews that are not a SETTLED (confirmed/contested) tracker deletion, capped at each cluster's own target — measured against whichever Target basis is selected in the sidebar (Original or Revised, default Original — 2026-09-19, replacing Decision A's permanently-Original choice). Both the Original and Revised figures are always shown in each popup regardless of the toggle. The per-cluster view always uses each cluster's own fixed target_households, unaffected by this toggle. Policy changed 2026-09-11: a pending/unresolved flag no longer excludes an interview, only a confirmed deletion does. Hover a cluster/LGA for its COLLECTED, CONFIRMED DELETED (settled, genuinely gone) and OVERSAMPLING SURPLUS (real completed interviews beyond target, capped out of Achieved) figures too — Collected always equals Achieved + Confirmed Deleted + Oversampling Surplus. PENDING DELETION is shown separately, informationally — how much of Achieved still carries an unresolved flag."),
+            info_icon("Colour and % reflect Achieved — completed interviews that count toward target. Coverage by LGA follows the sidebar's Target basis toggle; Coverage by cluster always uses each cluster's own fixed target. Hover any area for its Collected, Confirmed Deleted, Oversampling Surplus and Pending Deletion breakdown."),
             if (!is.na(FRAME_AS_OF_LABEL)) {
               span(class = "text-muted", style = "font-size: 0.75em; font-weight: normal; margin-left: 10px;", FRAME_AS_OF_LABEL)
             }
@@ -51,7 +51,7 @@ mod_map_ui <- function(id) {
           "Accessibility (via layers control): green = accessible, red = reported inaccessible. ",
           strong(paste0(N_ACCESSIBILITY_PARTNERS_REPORTED, " of ", TOTAL_ACCESSIBILITY_PARTNERS, " partners")),
           " have reported so far — a live, partial picture (default is accessible until a partner reports otherwise), not a final count.",
-          info_icon("Reflects partner reports on their own LGA-scoped ward portions, rolled up across the whole sampling universe. This reclassifies clusters partners are already fielding — it is not a new sample design; no clusters have been added, removed, or reallocated.")
+          info_icon("Based on partners' own accessibility reports for their assigned areas.")
         )
       ),
       leafletOutput(ns("map"), height = "780px")
@@ -85,15 +85,24 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
         # achieved into the LGA-level fill colour/status/% achieved.
         #
         # Zeroed, not filter()ed out - an LGA where EVERY stratum is Dropped
-        # (both pop types) must still appear on the map, just as all-zero/
-        # "Complete" (nothing left to do), not vanish from the choropleth
-        # entirely. Original target_sample deliberately left untouched -
-        # that's a frozen historical figure, not a "current" one this rule
-        # is about. target_active is recomputed AFTER this zeroing (not
-        # zeroed directly) so it inherits the correct zero-or-not treatment
-        # from whichever of target_sample/target_sample_current it
+        # (both pop types) must still appear on the map, not vanish from the
+        # choropleth entirely. Original target_sample deliberately left
+        # untouched - that's a frozen historical figure, not a "current" one
+        # this rule is about. target_active is recomputed AFTER this zeroing
+        # (not zeroed directly) so it inherits the correct zero-or-not
+        # treatment from whichever of target_sample/target_sample_current it
         # currently stands for - same pattern as global.R's
         # build_partner_progress_summary()/partner_progress_by_lga().
+        #
+        # 2026-09-20 (Jack: extend the cluster-grain Inaccessible fix to LGA
+        # grain too) - a fully-Dropped LGA used to render as solid red
+        # "<35%"/"Not started" here, indistinguishable from a genuinely
+        # far-behind one (the exact bug Option 3 fixed at cluster grain on
+        # 2026-09-17, just never carried up to this grain). n_strata/
+        # n_dropped (status is NOT one of the zeroed columns above, so it
+        # survives into this summarise untouched) let lga_map_data() below
+        # tell "every constituent stratum is Dropped" apart from "genuinely
+        # not started" - see all_dropped there.
         mutate(across(
           c(target_sample_current, achieved_n, collected_n, confirmed_deletion_n,
             pending_deletion_n, oversampling_surplus_n),
@@ -116,9 +125,14 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
           confirmed_deletion_n = sum(confirmed_deletion_n, na.rm = TRUE),
           pending_deletion_n = sum(pending_deletion_n, na.rm = TRUE),
           oversampling_surplus_n = sum(oversampling_surplus_n, na.rm = TRUE),
+          n_strata = n(),
+          n_dropped_strata = sum(status == "Dropped"),
           .groups = "drop"
         ) %>%
-        mutate(pct_achieved = ifelse(target_active > 0, achieved_n / target_active, NA_real_))
+        mutate(
+          pct_achieved = ifelse(target_active > 0, achieved_n / target_active, NA_real_),
+          all_dropped = n_strata > 0 & n_dropped_strata == n_strata
+        )
     })
 
     # in-scope admin2 polygons — used for the LGA fill, the zoom-to-extent,
@@ -130,7 +144,7 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
     scope_admin2_sf <- reactive({
       lga <- filtered_lga() %>%
         select(adm2_pcode, target_sample, target_sample_current, target_active, achieved_n, collected_n,
-               confirmed_deletion_n, pending_deletion_n, oversampling_surplus_n, pct_achieved)
+               confirmed_deletion_n, pending_deletion_n, oversampling_surplus_n, pct_achieved, all_dropped)
       admin2_sf %>% inner_join(lga, by = "adm2_pcode")
     })
 
@@ -182,12 +196,26 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
       scope_admin2_sf() %>%
         mutate(
           pct_achieved = coalesce(pct_achieved, 0),
-          fill_color = pct_color(pct_achieved),
+          # 2026-09-20 (Jack: extend Inaccessible styling to LGA grain) - a
+          # fully-Dropped LGA (all_dropped, see filtered_lga() above) gets
+          # the same grey used for "No data" in this view's own legend
+          # instead of pct_color(0)'s solid red - that red bin was, until
+          # now, the ONLY thing a fully-inaccessible LGA could ever render
+          # as (pct_achieved is coalesced to 0 just above, so pct_color()
+          # never actually saw the NA case its own "No data" grey branch is
+          # for - this repurposes that branch for a real, now-reachable
+          # case instead of leaving it dead).
+          fill_color = ifelse(all_dropped, "#9AA3AF", pct_color(pct_achieved)),
           label_pct = fmt_pct(pct_achieved),
           # FIX 2026-09-16 (Decision A), extended 2026-09-19 (global
-          # toggle): target_active - see the header comment on
-          # filtered_lga() above.
+          # toggle), extended 2026-09-20 (Inaccessible at LGA grain):
+          # target_active - see the header comment on filtered_lga() above.
+          # all_dropped checked FIRST, same reasoning as cluster grain's
+          # is_inaccessible check - a fully-Dropped LGA's achieved_n is
+          # always 0 (zeroed during the LGA rollup), so there's no
+          # "stranded achieved" case to protect the way cluster grain does.
           status = case_when(
+            all_dropped ~ "Inaccessible",
             target_active <= 0 | achieved_n >= target_active ~ "Complete",
             achieved_n > 0 ~ "In progress",
             TRUE ~ "Not started"
@@ -482,6 +510,32 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
       req(map_tab_active())
       req(input$map_view == "lga")
       md <- lga_map_data()
+      # 2026-09-20 (Jack: hover-info review), both scoped to the LGA popup
+      # only, not any other table/tab:
+      # a) "Achieved: X (Y%)" now uses the SAME colour as the polygon's own
+      #    fill (pct_color(pct_achieved) - already computed as fill_color on
+      #    md), so the hover text visually echoes the traffic-light read the
+      #    map itself is already giving at a glance.
+      # b) whichever of Original/Revised Target is currently the sidebar's
+      #    active basis is bolded in TARGET_BASIS_ACTIVE_COLOR (global.R);
+      #    the other is greyed to TARGET_BASIS_INACTIVE_COLOR - a scalar per
+      #    render (the toggle is one value for the whole session), unlike
+      #    target_diverges below (a genuine per-row signal). Original never
+      #    gets the divergence treatment (that's always attached to the
+      #    Revised line specifically, unchanged) - divergence takes priority
+      #    over the active/inactive cue when both would apply to Revised,
+      #    since "these two disagree a lot" is the more urgent signal.
+      original_active <- !identical(target_basis(), "revised")
+      original_style <- if (original_active) {
+        paste0("color:", TARGET_BASIS_ACTIVE_COLOR, ";font-weight:bold;")
+      } else {
+        paste0("color:", TARGET_BASIS_INACTIVE_COLOR, ";")
+      }
+      revised_active_style <- if (identical(target_basis(), "revised")) {
+        paste0("color:", TARGET_BASIS_ACTIVE_COLOR, ";font-weight:bold;")
+      } else {
+        paste0("color:", TARGET_BASIS_INACTIVE_COLOR, ";")
+      }
       leafletProxy("map", data = md) %>%
         clearGroup("LGA progress") %>%
         addPolygons(
@@ -510,11 +564,15 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
               # Divergence >=25% (global.R's TARGET_DIVERGENCE_THRESHOLD)
               # gets a red bold treatment so a meaningfully-shifted LGA
               # stands out without needing to read the number closely.
-              "Achieved: ", coalesce(achieved_n, 0), " (", label_pct, " of ", target_basis_label(target_basis()), ")<br>",
-              "Original Target: ", coalesce(target_sample, 0), "<br>",
-              ifelse(target_diverges, "<b style='color:#C1443C;'>", ""),
+              "Achieved: <span style='color:", fill_color, ";font-weight:bold;'>", coalesce(achieved_n, 0), " (", label_pct, " of ", target_basis_label(target_basis()), ")</span><br>",
+              # 2026-09-20 (Jack: extend Inaccessible styling to LGA grain) -
+              # same inline-warning treatment as the cluster view's own
+              # stranded_inaccessible badge, using the same grey.
+              ifelse(all_dropped, paste0("<b style='color:#9AA3AF;'>&#9888; Every stratum here is currently Inaccessible (dropped from the sampling frame)</b><br>"), ""),
+              "<span style='", original_style, "'>Original Target: ", coalesce(target_sample, 0), "</span><br>",
+              ifelse(target_diverges, "<b style='color:#C1443C;'>", paste0("<span style='", revised_active_style, "'>")),
               "Revised Target: ", coalesce(target_sample_current, 0), " (", target_delta, ")",
-              ifelse(target_diverges, "</b>", ""), "<br>",
+              ifelse(target_diverges, "</b>", "</span>"), "<br>",
               "Collected: ", coalesce(collected_n, 0), "<br>",
               "Confirmed Deleted: ", coalesce(confirmed_deletion_n, 0),
               " | Oversampling Surplus: ", coalesce(oversampling_surplus_n, 0), "<br>",
@@ -768,7 +826,13 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
             # actual per-polygon fill logic) - see that function's own
             # comment for why 75-100% moved off the shared #4C9A6A accent.
             colors = c("#C1443C", "#D99A2B", "#8FC79A", "#1E7B4D", "#9AA3AF"),
-            labels = c("<35%", "35-75%", "75-100%", "100%+", "No data"),
+            # 2026-09-20: relabelled from "No data" - that bin was
+            # unreachable in practice (pct_achieved is coalesced to 0 before
+            # pct_color() ever runs, so its NA/grey branch never actually
+            # fired) until today's fix repurposed it for a real, now-common
+            # case: an LGA where every stratum is currently Dropped/
+            # Inaccessible - see lga_map_data()'s all_dropped.
+            labels = c("<35%", "35-75%", "75-100%", "100%+", "Inaccessible"),
             title = paste0("% of ", target_basis_label(target_basis()), " achieved (LGA)"), opacity = 0.9
           )
       } else {
