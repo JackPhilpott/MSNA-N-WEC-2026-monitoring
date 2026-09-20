@@ -44,7 +44,7 @@ mod_partner_report_ui <- function(id) {
         ),
         value_box(title = "Flagged for review", value = textOutput(ns("kpi_flagged")), showcase = icon("flag"), theme = "warning"),
         value_box(
-          title = info_title("Oversampled clusters", "Clusters where this partner's submissions pushed achieved past that cluster's target. Real effort, but worth reviewing before deciding what to keep."),
+          title = info_title("Oversampled clusters", "Clusters where this partner's submissions pushed achieved past that cluster's target. Counts toward Achieved in full, but worth reviewing for representativity."),
           value = textOutput(ns("kpi_oversampled")), showcase = icon("triangle-exclamation"), theme = "warning"
         )
       )
@@ -231,9 +231,9 @@ build_partner_excel <- function(org_id_val, file, target_basis = "original") {
   writeData(
     wb, "Summary",
     paste(
-      paste0("Achieved = completed, matched interviews that are not a SETTLED (confirmed/contested) tracker deletion, capped at each cluster's own target (oversampling can't count toward or mask coverage elsewhere), measured against ", target_basis_label(target_basis), " (2026-09-19: follows the dashboard's Target basis toggle at the time this report was generated, default Original to match partner workbooks). Policy changed 2026-09-11: a pending/unresolved flag no longer excludes an interview - only a confirmed deletion does."),
+      paste0("Achieved = completed, matched interviews that are not a SETTLED (confirmed/contested) tracker deletion, measured against ", target_basis_label(target_basis), " (2026-09-19: follows the dashboard's Target basis toggle at the time this report was generated, default Original to match partner workbooks). Policy changed 2026-09-11: a pending/unresolved flag no longer excludes an interview - only a confirmed deletion does. Policy changed again 2026-09-20 (Jack's decision, informed by discussion with donors): Achieved now includes oversampled interviews in full too - a cluster collected past its own target is no longer capped out of Achieved. Target figures are untouched by this."),
       "Collected = every completed interview actually done, including oversampled surplus.",
-      "Confirmed Deleted = a settled tracker deletion, genuinely gone. Pending Deletion (informational only, not part of the identity below) = how much of Achieved still carries an unresolved flag that could still become a confirmed deletion. Collected always equals Achieved + Confirmed Deleted + Oversampling Surplus (real completed interviews beyond a cluster's own target).",
+      "Confirmed Deleted = a settled tracker deletion, genuinely gone. Pending Deletion (informational only, not part of the identity below) = how much of Achieved still carries an unresolved flag that could still become a confirmed deletion. Collected always equals Achieved + Confirmed Deleted + Oversampling Surplus - as of 2026-09-20 that last term is usually near zero (a small match-quality leftover, no longer real oversampling, which now counts toward Achieved directly - see the Coverage Map/digest's Oversampled clusters for the real diagnostic).",
       "Original Target = the frozen design-time total, unchanged since fielding began. Revised Target = the live required minimum (1_sampling's representativity calculation, recomputed fresh every refresh against the current accessible population) — can rise or fall, not just grow, as accessibility/population changes."
     ),
     startRow = 16
@@ -294,7 +294,7 @@ build_partner_pdf <- function(org_id_val, file, target_basis = "original") {
     "\nConfirmed Deleted: ", comma(total_confirmed_deletion), "     Oversampling Surplus: ", comma(total_oversampling_surplus),
     "\nPending Deletion (informational, included in Achieved above): ", comma(total_pending_deletion),
     "\nSubmissions logged: ", comma(qual$submissions), "     Flagged for review: ", comma(qual$flagged), " (", fmt_pct(qual$flag_rate), ")",
-    "\nAchieved = capped at each cluster's own target, measured against ", target_basis_label(target_basis), " (2026-09-19: follows the dashboard's Target basis toggle at generation time, default Original to match partner workbooks), excludes only SETTLED (confirmed) deletions - a pending flag no longer excludes (policy changed 2026-09-11). Collected = every completed interview, incl. oversampled surplus. Oversampling Surplus = real completed interviews beyond a cluster's own target, capped out of Achieved by design."
+    "\nAchieved = measured against ", target_basis_label(target_basis), " (2026-09-19: follows the dashboard's Target basis toggle at generation time, default Original to match partner workbooks), excludes only SETTLED (confirmed) deletions - a pending flag no longer excludes (policy changed 2026-09-11), and includes oversampled interviews in full (policy changed 2026-09-20, no longer capped per cluster). Collected = every completed interview, incl. oversampled surplus. Oversampling Surplus above is usually near zero - a small match-quality leftover, not real oversampling."
   )
   header_plot <- ggplot() + theme_void() + xlim(0, 1) + ylim(0, 1) +
     annotate("text", x = 0, y = 1, label = header_text, hjust = 0, vjust = 1, size = 4.2)

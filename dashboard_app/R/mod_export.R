@@ -11,7 +11,7 @@ mod_export_ui <- function(id) {
       col_widths = c(6, 6),
       card(
         card_header("Filtered submissions"),
-        p(class = "text-muted", "Every submission-level column currently in scope (respects all sidebar filters) — every raw submission, including consent refusals and duplicate copies. This is a larger number than both \"Collected\" (completed interviews only) and \"Achieved\" (completed, matched, non-duplicate, AND capped at each cluster's own target) elsewhere in the dashboard — see the Home tab for those definitions. Respondent-identifying fields (age/gender/household size/exact GPS) are excluded — see the Sample Representativeness tab for the same information in aggregate."),
+        p(class = "text-muted", "Every submission-level column currently in scope (respects all sidebar filters) — every raw submission, including consent refusals and duplicate copies. This is a larger number than both \"Collected\" (completed interviews only) and \"Achieved\" (completed, matched, non-duplicate, not a settled deletion) elsewhere in the dashboard — see the Home tab for those definitions. Respondent-identifying fields (age/gender/household size/exact GPS) are excluded — see the Sample Representativeness tab for the same information in aggregate."),
         uiOutput(ns("subs_count")),
         downloadButton(ns("dl_subs_csv"), "Download CSV", class = "btn-outline-primary w-100 mb-2"),
         downloadButton(ns("dl_subs_xlsx"), "Download Excel", class = "btn-outline-primary w-100")

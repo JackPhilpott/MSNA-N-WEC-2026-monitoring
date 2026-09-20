@@ -452,6 +452,9 @@ build_partner_package <- function(org) {
   idp_full_o <- t1_all %>% filter(org_id == org)
   n_achieved <- sum(full_o$interview_outcome == "completed" & !is.na(full_o$matched_survey_id) & !(full_o$uuid %in% achieved_excluded_uuids))
 
+  # Still a real, useful per-cluster diagnostic (which clusters/how much
+  # surplus) - unaffected by the 2026-09-20 change below, same reasoning as
+  # dashboard_app/global.R's compute_oversampled_clusters().
   oversampled_clusters <- full_o %>%
     filter(interview_outcome == "completed", !is.na(matched_survey_id), !(uuid %in% achieved_excluded_uuids)) %>%
     count(matched_cluster_id, name = "n_achieved_cluster") %>%
@@ -460,7 +463,16 @@ build_partner_package <- function(org) {
     mutate(surplus = n_achieved_cluster - target_households) %>%
     rename(cluster_id = matched_cluster_id) %>%
     arrange(desc(surplus))
-  n_achieved_total_capped <- n_achieved - sum(oversampled_clusters$surplus)
+  # n_achieved_total_capped REMOVED 2026-09-20 (Jack's explicit decision,
+  # informed by discussion with donors: achieved should include all
+  # oversampled interviews, target stays as-is - the same change landed in
+  # dashboard_app/global.R's compute_progress_by_stratum() the same night).
+  # build_email_fn.R's "headline Achieved" used this specifically because
+  # its own comment said "matching the dashboard" - now that the dashboard
+  # itself is uncapped, n_achieved (already uncapped, unchanged) IS that
+  # match. Kept oversampled_clusters itself (above) as the real diagnostic
+  # for which clusters/how much surplus, same as the dashboard's own
+  # Oversampled clusters view.
 
   # n_duration_under_20 (deletion floor - CONFIRMED, from the tracker):
   # reconciles exactly with the Confirmed Deletions sheet. The retired
@@ -606,7 +618,7 @@ build_partner_package <- function(org) {
        cluster_avail = cluster_avail, scorecard = scorecard, flag_categories = flag_categories,
        oversampled_clusters = oversampled_clusters,
        cluster_lookup_nonidp = cluster_lookup_nonidp, cluster_lookup_idp = cluster_lookup_idp,
-       n_collected_total = nrow(full_o), n_achieved_total = n_achieved, n_achieved_total_capped = n_achieved_total_capped,
+       n_collected_total = nrow(full_o), n_achieved_total = n_achieved,
        target_sample = target_sample,
        start_date = start_date, n_flagged_enums = sum(scorecard$notes != ""),
        n_duration_under_20_total = sum(scorecard$n_duration_under_20),

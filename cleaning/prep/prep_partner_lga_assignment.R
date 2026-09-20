@@ -60,12 +60,26 @@ source("cleaning/real/sanity_checks.R")
 # one-time prep script was rerun, same bug class as prep_admin3_wards.R.
 source("scripts/shared/latest_frame_file.R")
 
+# 2026-09-20 fix: "Solidarité" (missing the trailing "s") was this map's
+# key for Partnerscoverage.xlsx's Solidarités column - stale since the
+# 2026-08-27 source-file rename (1_sampling/CLAUDE.md, "Solidarités
+# partner-name fix"), which corrected the raw Excel header cell itself.
+# Every OTHER consumer of that Excel file already uses the corrected
+# spelling; this script's own hardcoded copy was simply never updated when
+# that rename propagated everywhere else, so `intersect(names(ORG_COL_MAP),
+# names(raw))` silently dropped the real "Solidarités" column below,
+# meaning their whole LGA assignment fell out with zero warning fired
+# (their column read as an unrecognised "chrome" column instead of a
+# missing-mapping error, since it partially matched neither list cleanly
+# until traced directly). Same failure shape flagged before, still not
+# grep'd for across every hardcoded partner-name literal in this repo -
+# worth doing that sweep, not just patching this one instance again.
 ORG_COL_MAP <- c(
   "FACT" = "fact", "IMC" = "imc", "FHI 360" = "fhi360", "PLAN" = "plan",
   "Street Child of Nigeria" = "street_child", "INTERSOS" = "intersos",
   "JRS" = "jrs", "NRC" = "nrc", "CARE" = "care", "ZOA" = "zoa", "ACF" = "acf",
   "COOPI" = "coopi", "DRC" = "drc", "Save the Children" = "sci",
-  "Solidarité" = "si", "IRC" = "irc", "IRC/LHI" = "irc_lhi", "CRS" = "crs",
+  "Solidarités" = "si", "IRC" = "irc", "IRC/LHI" = "irc_lhi", "CRS" = "crs",
   "Malteser" = "malteser", "MDM" = "mdm"
 )
 
@@ -193,19 +207,6 @@ fuzzy_matched <- unmatched %>%
   }) %>%
   ungroup()
 
-still_unmatched <- unmatched %>%
-  anti_join(bind_rows(matched_exact, fuzzy_matched) %>% select(region, state, lga, org_id), by = c("region", "state", "lga", "org_id"))
-
-if (nrow(still_unmatched) > 0) {
-  msg <- paste0(
-    nrow(still_unmatched), " partner-LGA row(s) could not be matched to the sampling frame (tried exact, substring, and fuzzy): ",
-    paste(unique(paste0(still_unmatched$state, "/", still_unmatched$lga)), collapse = "; "),
-    ". These will show as 'Not partner-assigned' on the dashboard until fixed — check for a naming mismatch against the current stage2 sampling frame (input_data/sampling_frame/, latest _v<N>_WORKING.csv)."
-  )
-  cat("WARNING: ", msg, "\n", sep = "")
-  write_sanity_warnings(msg, source_label = "prep_partner_lga_assignment.R")
-}
-
 # 2026-09-16 (Jack, via cross-session flag): Guzamala showed "Not partner-
 # assigned" on the dashboard despite FACT covering it - traced to this
 # script relying EXCLUSIVELY on the manually-maintained Partnerscoverage.xlsx,
@@ -222,28 +223,142 @@ if (nrow(still_unmatched) > 0) {
 # actually missing - Abadam and Nganzai already had a correct `fact` row via
 # the spreadsheet path, so this union is additive, not a replacement of
 # rows that were already right.
+#
+# Moved earlier (2026-09-20, Jack's decision relayed via Coordinator) from
+# its original position after `still_unmatched` below: the excluded-LGA
+# lookups built from `full_frame` are now needed BEFORE still_unmatched
+# fires its warning, not just after, so the severity-split below can check
+# each still-unmatched row against them. See that block's own comment for
+# the full reasoning.
 full_frame <- read_csv(
   latest_frame_file("NGA_MSNA_2026_stage2_sampling_frame", "FULL"),
   show_col_types = FALSE, col_types = cols(.default = "c")
 )
 
+# Name -> org_id, reusing ORG_COL_MAP (the same spreadsheet-column vocabulary,
+# now that its "Solidarités" key matches the frame's own spelling directly -
+# see the 2026-09-20 fix above) plus one alias the frame's own
+# partners_covering spelling still needs that ORG_COL_MAP doesn't cover on
+# its own: standalone "LHI" (ORG_COL_MAP only ever had the joint "IRC/LHI"
+# spreadsheet column, never a standalone "LHI" one, since Partnerscoverage.xlsx
+# never had one - expand_joint_irc_lhi() above already treats "lhi" as a real,
+# valid org_id for the joint case, so reusing it here for the frame's own
+# "IRC, LHI" multi-partner cell, comma-separated - a different separator from
+# the spreadsheet's single joint column, checked directly against the frame's
+# actual distinct values before writing this, not assumed). Used by both the
+# excluded-LGA lookups right below and the Guzamala-style union further down.
+FRAME_PARTNER_NAME_MAP <- c(ORG_COL_MAP, "LHI" = "lhi")
+
+# 2026-09-16 (Jack, via cross-session flag): 8 LGAs that ARE genuinely
+# excluded from the design (accessibility_loss_below_population_threshold,
+# zero covered rows — Borno/Gubio+Kukawa, Yobe/Gujba, Sokoto/Isa+Kebbe+
+# Sabon Birni, Kebbi/Sakaba+Shanga) showed bare "Not partner-assigned" on
+# the dashboard — technically accurate (no ACTIVE org_id above covers
+# them) but loses the "was assigned, then excluded" context, which reads
+# as ambiguous/worse than it is. NOT the same bug shape as Guzamala above
+# (that was a stale-derived-file gap for a LGA that's actually covered);
+# this is structural — these LGAs correctly have zero rows in `out` below
+# because `frame_lga` (used for exact/fuzzy matching above) is built from
+# the WORKING frame, which omits excluded LGAs entirely, so their
+# Partnerscoverage.xlsx row can never match and always lands in
+# still_unmatched even though it's not a naming bug. Two SEPARATE, small
+# lookups derived here (deliberately NOT unioned into `out`/
+# partner_lga_assignment.csv itself, which drives real active-coverage
+# logic — target scoping, shared_coverage_adm2, TOTAL_ACCESSIBILITY_PARTNERS,
+# filter_base — dashboard-wide; folding a historical/excluded partner in
+# there would make an excluded LGA look ACTIVELY covered everywhere, not
+# just relabel it): one flags which adm2_pcodes are excluded at all
+# (regardless of whether a historical partner is on record), the other
+# carries the historical partner(s) when known. Both read from the FULL
+# frame's own `partners_covering` (same vocabulary/mapping as frame_derived
+# further down), not Partnerscoverage.xlsx, since the FULL frame retains
+# partners_covering on excluded rows and the xlsx's raw declaration would
+# need the same re-matching machinery that's structurally guaranteed to
+# fail here. Consumed by dashboard_app/global.R's partner_coverage_label()
+# fallback, AND (2026-09-20) by the still_unmatched severity-split below.
+excluded_lgas <- full_frame %>%
+  filter(coverage_status == "excluded") %>%
+  distinct(adm1_pcode, adm1_name, adm2_pcode, adm2_name)
+
+excluded_long <- full_frame %>%
+  filter(coverage_status == "excluded", !is.na(partners_covering), partners_covering != "") %>%
+  distinct(adm1_pcode, adm1_name, adm2_pcode, adm2_name, partners_covering) %>%
+  separate_rows(partners_covering, sep = ",\\s*") %>%
+  mutate(partner_name = str_squish(partners_covering))
+
+unmapped_excluded_names <- setdiff(unique(excluded_long$partner_name), names(FRAME_PARTNER_NAME_MAP))
+if (length(unmapped_excluded_names) > 0) {
+  msg <- paste0(
+    "prep_partner_lga_assignment.R: excluded LGAs' partners_covering has name(s) not recognised: ",
+    paste(unmapped_excluded_names, collapse = ", "),
+    ". Add to FRAME_PARTNER_NAME_MAP or ORG_COL_MAP, or these LGAs' 'Excluded (was: ...)' label silently falls back to 'no prior assignment on record'."
+  )
+  cat("WARNING: ", msg, "\n", sep = "")
+  write_sanity_warnings(msg, source_label = "prep_partner_lga_assignment.R")
+}
+
+excluded_lga_prior_partners <- excluded_long %>%
+  filter(partner_name %in% names(FRAME_PARTNER_NAME_MAP)) %>%
+  mutate(org_id = unname(FRAME_PARTNER_NAME_MAP[partner_name])) %>%
+  distinct(adm1_pcode, adm1_name, adm2_pcode, adm2_name, org_id) %>%
+  arrange(adm1_name, adm2_name, org_id)
+
+write_csv(excluded_lgas, "input_data/partner_coverage/excluded_lgas.csv")
+write_csv(excluded_lga_prior_partners, "input_data/partner_coverage/excluded_lga_prior_partners.csv")
+
+cat("\nWrote", nrow(excluded_lgas), "excluded-LGA row(s) (",
+    length(unique(excluded_lgas$adm2_pcode)), "distinct excluded LGAs ), of which",
+    length(unique(excluded_lga_prior_partners$adm2_pcode)), "have a historical partner on record.\n")
+
+still_unmatched <- unmatched %>%
+  anti_join(bind_rows(matched_exact, fuzzy_matched) %>% select(region, state, lga, org_id), by = c("region", "state", "lga", "org_id"))
+
+# 2026-09-20 (Jack's decision, relayed via Coordinator, in response to a
+# review flag that this warning's own wording ("will show as 'Not partner-
+# assigned'") was misleading for the 8 excluded LGAs above — they don't
+# actually show that bare label, they show "Excluded (was: X)" via the
+# excluded_lga_prior_partners.csv fallback, so the warning read as an open
+# problem when it wasn't one). Jack chose the logic fix over a wording-only
+# edit: split still_unmatched by whether it's already expected, structural,
+# by-design behavior (excluded from the design AND a historical partner is
+# already on record — genuinely nothing to fix, silence is correct) versus
+# everything else (a real naming mismatch on a still-fieldable LGA, or an
+# excluded LGA with no prior partner on record — both worth a human
+# actually looking at, same as before).
+excluded_with_partner_keys <- excluded_lga_prior_partners %>%
+  distinct(adm1_name, adm2_name) %>%
+  mutate(norm_key = paste0(str_to_lower(adm1_name), "|", str_squish(str_to_lower(adm2_name)))) %>%
+  pull(norm_key)
+
+still_unmatched <- still_unmatched %>%
+  mutate(expected_excluded = norm_key %in% excluded_with_partner_keys)
+
+still_unmatched_quiet <- still_unmatched %>% filter(expected_excluded)
+still_unmatched_loud <- still_unmatched %>% filter(!expected_excluded)
+
+if (nrow(still_unmatched_quiet) > 0) {
+  cat("INFO: ", nrow(still_unmatched_quiet),
+      " partner-LGA row(s) map to LGA(s) already excluded from the design with a historical partner on record (expected, by-design - see excluded_lga_prior_partners.csv / the dashboard's 'Excluded (was: ...)' label, not a bug): ",
+      paste(unique(paste0(still_unmatched_quiet$state, "/", still_unmatched_quiet$lga)), collapse = "; "), ".\n", sep = "")
+}
+
+if (nrow(still_unmatched_loud) > 0) {
+  msg <- paste0(
+    nrow(still_unmatched_loud), " partner-LGA row(s) could not be matched to the sampling frame (tried exact, substring, and fuzzy): ",
+    paste(unique(paste0(still_unmatched_loud$state, "/", still_unmatched_loud$lga)), collapse = "; "),
+    ". These will show as 'Not partner-assigned' on the dashboard until fixed — check for a naming mismatch against the current stage2 sampling frame (input_data/sampling_frame/, latest _v<N>_WORKING.csv)."
+  )
+  cat("WARNING: ", msg, "\n", sep = "")
+  write_sanity_warnings(msg, source_label = "prep_partner_lga_assignment.R")
+}
+
 frame_covering <- full_frame %>%
   filter(coverage_status == "covered", !is.na(partners_covering), partners_covering != "") %>%
   distinct(adm1_pcode, adm1_name, adm2_pcode, adm2_name, partners_covering)
 
-# Name -> org_id, reusing ORG_COL_MAP (the same spreadsheet-column vocabulary)
-# plus two aliases the frame's own partners_covering spelling needs that
-# ORG_COL_MAP doesn't already cover: "Solidarités" (frame) vs "Solidarité"
-# (ORG_COL_MAP's spreadsheet column name - trailing 's' differs) and "LHI" on
-# its own (ORG_COL_MAP only ever had the joint "IRC/LHI" spreadsheet column,
-# never a standalone "LHI" one, since Partnerscoverage.xlsx never had one -
-# expand_joint_irc_lhi() above already treats "lhi" as a real, valid org_id
-# for the joint case, so reusing it here for the frame's own "IRC, LHI"
-# multi-partner cell, comma-separated - a different separator from the
-# spreadsheet's single joint column, checked directly against the frame's
-# actual distinct values before writing this, not assumed).
-FRAME_PARTNER_NAME_MAP <- c(ORG_COL_MAP, "Solidarités" = "si", "LHI" = "lhi")
-
+# FRAME_PARTNER_NAME_MAP already defined above, alongside full_frame and the
+# excluded-LGA lookups (moved up 2026-09-20 so still_unmatched's severity
+# split could use them) — reused here unchanged.
 frame_long <- frame_covering %>%
   separate_rows(partners_covering, sep = ",\\s*") %>%
   mutate(partner_name = str_squish(partners_covering))
@@ -290,7 +405,12 @@ saveRDS(
     n_rows = nrow(out),
     n_lgas = length(unique(out$adm2_pcode)),
     n_partners = length(unique(out$org_id)),
-    n_unmatched = nrow(still_unmatched)
+    # 2026-09-20: split into the two severities still_unmatched now carries
+    # (see that block's own comment above) rather than one combined count -
+    # n_unmatched_loud is the one actually worth watching; n_unmatched_quiet
+    # is expected, by-design "excluded with a known prior partner" noise.
+    n_unmatched_loud = nrow(still_unmatched_loud),
+    n_unmatched_quiet_excluded = nrow(still_unmatched_quiet)
   ),
   "input_data/partner_coverage/partner_lga_assignment_meta.rds"
 )
@@ -299,64 +419,3 @@ cat("\nWrote", nrow(out), "partner-LGA assignment rows,",
     length(unique(out$adm2_pcode)), "distinct LGAs,",
     length(unique(out$org_id)), "distinct partners.\n")
 print(out %>% count(org_id, sort = TRUE))
-
-# 2026-09-16 (Jack, via cross-session flag): 8 LGAs that ARE genuinely
-# excluded from the design (accessibility_loss_below_population_threshold,
-# zero covered rows — Borno/Gubio+Kukawa, Yobe/Gujba, Sokoto/Isa+Kebbe+
-# Sabon Birni, Kebbi/Sakaba+Shanga) showed bare "Not partner-assigned" on
-# the dashboard — technically accurate (no ACTIVE org_id above covers
-# them) but loses the "was assigned, then excluded" context, which reads
-# as ambiguous/worse than it is. NOT the same bug shape as Guzamala above
-# (that was a stale-derived-file gap for a LGA that's actually covered);
-# this is structural — these LGAs correctly have zero rows in `out` above
-# because `frame_lga` (used for exact/fuzzy matching) is built from the
-# WORKING frame, which omits excluded LGAs entirely, so their
-# Partnerscoverage.xlsx row can never match and always lands in
-# still_unmatched (see that warning above) even though it's not a naming
-# bug. Two SEPARATE, small lookups derived here (deliberately NOT unioned
-# into `out`/partner_lga_assignment.csv itself, which drives real
-# active-coverage logic — target scoping, shared_coverage_adm2,
-# TOTAL_ACCESSIBILITY_PARTNERS, filter_base — dashboard-wide; folding a
-# historical/excluded partner in there would make an excluded LGA look
-# ACTIVELY covered everywhere, not just relabel it): one flags which
-# adm2_pcodes are excluded at all (regardless of whether a historical
-# partner is on record), the other carries the historical partner(s) when
-# known. Both read from the FULL frame's own `partners_covering` (same
-# vocabulary/mapping as frame_derived above), not Partnerscoverage.xlsx,
-# since the FULL frame retains partners_covering on excluded rows and the
-# xlsx's raw declaration would need the same re-matching machinery that's
-# structurally guaranteed to fail here. Consumed only by
-# dashboard_app/global.R's partner_coverage_label() fallback.
-excluded_lgas <- full_frame %>%
-  filter(coverage_status == "excluded") %>%
-  distinct(adm1_pcode, adm1_name, adm2_pcode, adm2_name)
-
-excluded_long <- full_frame %>%
-  filter(coverage_status == "excluded", !is.na(partners_covering), partners_covering != "") %>%
-  distinct(adm1_pcode, adm1_name, adm2_pcode, adm2_name, partners_covering) %>%
-  separate_rows(partners_covering, sep = ",\\s*") %>%
-  mutate(partner_name = str_squish(partners_covering))
-
-unmapped_excluded_names <- setdiff(unique(excluded_long$partner_name), names(FRAME_PARTNER_NAME_MAP))
-if (length(unmapped_excluded_names) > 0) {
-  msg <- paste0(
-    "prep_partner_lga_assignment.R: excluded LGAs' partners_covering has name(s) not recognised: ",
-    paste(unmapped_excluded_names, collapse = ", "),
-    ". Add to FRAME_PARTNER_NAME_MAP or ORG_COL_MAP, or these LGAs' 'Excluded (was: ...)' label silently falls back to 'no prior assignment on record'."
-  )
-  cat("WARNING: ", msg, "\n", sep = "")
-  write_sanity_warnings(msg, source_label = "prep_partner_lga_assignment.R")
-}
-
-excluded_lga_prior_partners <- excluded_long %>%
-  filter(partner_name %in% names(FRAME_PARTNER_NAME_MAP)) %>%
-  mutate(org_id = unname(FRAME_PARTNER_NAME_MAP[partner_name])) %>%
-  distinct(adm1_pcode, adm1_name, adm2_pcode, adm2_name, org_id) %>%
-  arrange(adm1_name, adm2_name, org_id)
-
-write_csv(excluded_lgas, "input_data/partner_coverage/excluded_lgas.csv")
-write_csv(excluded_lga_prior_partners, "input_data/partner_coverage/excluded_lga_prior_partners.csv")
-
-cat("\nWrote", nrow(excluded_lgas), "excluded-LGA row(s) (",
-    length(unique(excluded_lgas$adm2_pcode)), "distinct excluded LGAs ), of which",
-    length(unique(excluded_lga_prior_partners$adm2_pcode)), "have a historical partner on record.\n")

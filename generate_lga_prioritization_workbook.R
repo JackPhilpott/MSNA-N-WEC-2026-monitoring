@@ -226,7 +226,8 @@ build_lga_prioritization_workbook <- function(file) {
     "measured against THIS, matching partner workbooks (Decision A, 2026-09-16). Revised Target",
     "(representativity) is shown alongside as reference — 1_sampling's live required-minimum calculation,",
     "shown, not used for prioritization. Achieved excludes only SETTLED (confirmed/contested) tracker",
-    "deletions, capped per cluster — same definition as the live dashboard."
+    "deletions and includes oversampled interviews in full (policy changed 2026-09-20) — same definition",
+    "as the live dashboard."
   ), height = 70)
   wp(paste(
     "Realized MoE % (current) / (at completion of assigned clusters) come from 1_sampling's own",

@@ -71,12 +71,23 @@ header for the full reasoning.
 Every stratum-level and cluster-level progress figure satisfies one identity
 EXACTLY, by construction, not by careful bookkeeping:
 
-    Collected = Achieved + Confirmed Deletion + Pending Deletion
+    Collected = Achieved + Confirmed Deletion + Oversampling Surplus
+
+(CORRECTED 2026-09-20 — this section previously named the third term
+"Pending Deletion" and gave it the `pmax(collected_n - achieved_n -
+confirmed_deletion_n, 0L)` residual formula; that formula and name both
+belong to Oversampling Surplus, and had since the 2026-09-11 rename this
+section was never updated for. Pending Deletion is real but is NOT part of
+this identity — see its own bullet below.)
 
 - **Collected** (`collected_n`): every submission matched to the
   stratum/cluster, regardless of quality flags.
 - **Achieved**: `is_achieved()` — the NARROW, pessimistic count (excludes any
-  flag at all) — see "Two Achieved bases" above.
+  flag at all) — see "Two Achieved bases" above. UNCAPPED as of 2026-09-20
+  (Jack's decision, informed by discussion with donors) — every oversampled
+  interview now counts in full; until then this was additionally capped at
+  each cluster's own target before being summed to stratum/LGA/national
+  grain. Target itself is untouched by this change.
 - **Confirmed Deletion** (`is_confirmed_deletion()`, `dashboard_app/global.R`):
   `interview_outcome == "completed"` AND `deletion_status %in% c("confirmed",
   "contested")` — settled, either via an automated no-appeal rule (currently
@@ -84,18 +95,29 @@ EXACTLY, by construction, not by careful bookkeeping:
   `issue_tracker.R`) or a resolved recovery-workbook item. Deliberately
   gates on `interview_outcome == "completed"` too, not just `deletion_status`
   — otherwise a non-collected row could inflate this count.
-- **Pending Deletion** (`pending_deletion_n`): a RESIDUAL,
+- **Oversampling Surplus** (`oversampling_surplus_n`): a RESIDUAL,
   `pmax(collected_n - achieved_n - confirmed_deletion_n, 0L)` — deliberately
   NOT summed independently from duplicate/unmatched/pending-flag counts, so
   the identity above can never drift out of balance from double-counting.
-
-Oversampling is excluded through its own separate, pre-existing mechanism
-(the oversampling cap inside `compute_progress_by_stratum()`), not folded
-into this identity.
+  Named for what it used to capture (real interviews beyond a cluster's
+  target, back when Achieved was capped); since Achieved absorbed that
+  2026-09-20, this residual is normally near zero now — whatever's left is
+  a genuinely different, much smaller thing (a completed, collected row
+  that never resolved to a specific `matched_cluster_id`, so it can't enter
+  Achieved's per-cluster count, and isn't a confirmed deletion either). It
+  is NOT where to look for real oversampling any more — see
+  `compute_oversampled_clusters()` (`dashboard_app/global.R`), unaffected by
+  this change, for which clusters/partners actually collected past target.
+- **Pending Deletion** (`pending_deletion_n`) — NOT part of the identity
+  above, a separate informational subset of Achieved: how many of a
+  stratum/cluster's Achieved interviews still carry an unresolved tracker
+  flag (pending/sent/rejected, not yet confirmed/contested) that could
+  still become a real deletion later. Directly counted, not a residual.
 
 `compute_progress_by_stratum()` (stratum grain) and `compute_cluster_progress()`
-(cluster grain — uncapped Achieved, no oversampling term, matching the
-existing cluster-level convention) both implement this same identity.
+(cluster grain) both implement this same identity — both fully uncapped as
+of 2026-09-20 (cluster grain always was; there was never anything else at
+single-cluster grain for a cap to protect against masking).
 `TOTAL_PLANNED_INTERVIEWS_CURRENT` (alongside the original, frozen
 `TOTAL_PLANNED_INTERVIEWS`) tracks the LIVE revised target as resampling adds
 clusters — computed after `cluster_targets`/`strata_target_current` are

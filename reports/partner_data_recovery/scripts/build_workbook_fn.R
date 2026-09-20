@@ -328,7 +328,7 @@ build_partner_workbook <- function(pkg, out_path, deadline = "4 September 2026")
       `Cluster ID` = cluster_id, `State` = adm1_name, `LGA` = adm2_name, `Ward` = adm3_name,
       `Target Households` = target_households, `Achieved in Cluster` = n_achieved_cluster,
       `Surplus (over target)` = surplus,
-      `Note` = "Still counted as usual in this workbook's own totals below (no specific interview here has been excluded) - but the headline Achieved figure quoted in our covering email is adjusted down for this surplus, to match the dashboard. No action needed on your side; please prioritise other clusters for any further effort."
+      `Note` = "Counted in full, including this surplus, in this workbook's own totals below and in the headline Achieved figure quoted in our covering email - both match the dashboard, which has included oversampled interviews in full since 2026-09-20. No action needed on your side; please prioritise other clusters for any further effort."
     )
     writeData(wb, s6b, out6b, headerStyle = hdr_ref, withFilter = TRUE)
     for (r in 1:(nrow(out6b)+1)) addStyle(wb, s6b, note_style, rows = r, cols = 8, stack = TRUE)

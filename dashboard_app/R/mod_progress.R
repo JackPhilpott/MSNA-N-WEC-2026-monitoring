@@ -30,7 +30,7 @@ mod_progress_ui <- function(id) {
       value_box(
         title = info_title(
           "Interviews achieved / planned",
-          "Interviews that count toward target — excludes confirmed deletions and caps any surplus above a cluster's target.",
+          "Interviews that count toward target — excludes confirmed deletions. Includes oversampled interviews in full as of 2026-09-20.",
           icon_color = "white"
         ),
         value = textOutput(ns("kpi_achieved")),
@@ -40,7 +40,7 @@ mod_progress_ui <- function(id) {
       value_box(
         title = info_title(
           "Collected − Achieved",
-          "Completed interviews that don't currently count toward target — quality exclusions, duplicates, unmatched, or surplus."
+          "Completed interviews that don't currently count toward target — quality exclusions, duplicates, or unmatched."
         ),
         value = textOutput(ns("kpi_followup")),
         showcase = icon("flag"),
@@ -249,25 +249,29 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum, target_basi
       # Cumulative line = true Achieved (fixed 2026-09-04, per Jack: this
       # used to just be matched+non-duplicate summed/cumsum'd - agreed with
       # neither Collected (no dup/unmatched exclusion) nor Achieved (missing
-      # the quality-exclusion filter AND the per-cluster cap) - a THIRD,
-      # unlabelled quantity despite the legend saying "Cumulative achieved".
-      # Now applies the exact same is_achieved() + cluster_targets capping
-      # compute_progress_by_stratum() uses (global.R), but CUMULATIVELY per
-      # cluster per day - capping is a running-total concept, a cluster
-      # can't be "capped" on any single day in isolation - then summed
-      # across clusters, so the line's last point reconciles exactly with
-      # the Achieved KPI tile above (verified via the smoke test: both read
-      # 11,737 on the unfiltered national view). Restricted to
-      # matched_strata_id %in% filtered_stratum()'s own strata_id, not just
-      # is_achieved(filtered_subs()) directly - filtered_stratum() applies
-      # its own state/LGA/pop-type/partner filter AFTER compute_progress_
-      # by_stratum(), so a handful of rows could otherwise sit in a stratum
-      # filtered_stratum() has excluded, breaking that same reconciliation.
+      # the quality-exclusion filter) - a THIRD, unlabelled quantity despite
+      # the legend saying "Cumulative achieved". Applies the exact same
+      # is_achieved() filter compute_progress_by_stratum() uses (global.R),
+      # summed cumulatively per day, so the line's last point reconciles
+      # exactly with the Achieved KPI tile above (verified via the smoke
+      # test). Restricted to matched_strata_id %in% filtered_stratum()'s own
+      # strata_id, not just is_achieved(filtered_subs()) directly -
+      # filtered_stratum() applies its own state/LGA/pop-type/partner filter
+      # AFTER compute_progress_by_stratum(), so a handful of rows could
+      # otherwise sit in a stratum filtered_stratum() has excluded, breaking
+      # that same reconciliation.
+      #
+      # UNCAPPED as of 2026-09-20 (Jack's explicit decision, informed by
+      # discussion with donors: achieved should include all oversampled
+      # interviews, target stays as-is) - this used to also apply the same
+      # per-cluster-per-day pmin(cumsum(n), target_households) cap
+      # compute_progress_by_stratum() applied before that date (removed
+      # there in the same pass, see that function's own header in global.R
+      # for the full reasoning). Since every cluster's cumulative count is
+      # no longer capped, the cluster_targets join this needed is gone too.
       achieved_scope <- filtered_stratum()$strata_id
       achieved_rows <- filtered_subs() %>%
-        filter(is_achieved(.), matched_strata_id %in% achieved_scope, !is.na(matched_cluster_id)) %>%
-        left_join(cluster_targets, by = c("matched_cluster_id" = "cluster_id")) %>%
-        mutate(target_households = coalesce(target_households, 0))
+        filter(is_achieved(.), matched_strata_id %in% achieved_scope, !is.na(matched_cluster_id))
 
       if (nrow(achieved_rows) == 0) {
         by_day_total <- tibble(
@@ -276,18 +280,18 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum, target_basi
         )
       } else {
         by_day_total <- achieved_rows %>%
-          count(matched_cluster_id, submission_date, target_households, name = "n") %>%
+          count(matched_cluster_id, submission_date, name = "n") %>%
           complete(
             submission_date = seq(min(df$submission_date), max(df$submission_date), by = "day"),
-            nesting(matched_cluster_id, target_households),
+            nesting(matched_cluster_id),
             fill = list(n = 0)
           ) %>%
           arrange(matched_cluster_id, submission_date) %>%
           group_by(matched_cluster_id) %>%
-          mutate(capped_cum_n = pmin(cumsum(n), target_households)) %>%
+          mutate(cum_n = cumsum(n)) %>%
           ungroup() %>%
           group_by(submission_date) %>%
-          summarise(cumulative = sum(capped_cum_n), .groups = "drop") %>%
+          summarise(cumulative = sum(cum_n), .groups = "drop") %>%
           arrange(submission_date)
       }
 

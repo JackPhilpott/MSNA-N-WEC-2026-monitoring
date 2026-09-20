@@ -9,13 +9,19 @@ build_partner_email <- function(pkg, precautionary = FALSE, deadline = "4 Septem
   # confirmation - not FYI-only like Confirmed Deletions/Oversampled.
   n_other <- nrow(pkg$other_sheet)
   total_needing_input <- n_gps + n_idp + n_other
-  # Headline Achieved uses the CAPPED figure (per cluster target, matching
-  # the dashboard) -- per Jack, 2026-08-31: this is an aggregate adjustment
-  # only, not a decision about which specific enumerator/interview would be
-  # excluded within an oversampled cluster (not yet decided), so the
-  # workbook's own Enumerator Performance totals stay uncapped/unchanged and
-  # will not sum to this headline figure for partners with any oversampling.
-  n_achieved_headline <- pkg$n_achieved_total_capped
+  # Headline Achieved matches the dashboard (per Jack, 2026-08-31 - this is
+  # an aggregate figure, not a decision about which specific enumerator/
+  # interview an oversampled cluster's surplus belongs to). Until 2026-09-20
+  # "matching the dashboard" meant using a per-cluster-target-capped figure,
+  # since that's what the dashboard showed then. Jack's decision that date
+  # (informed by discussion with donors) uncapped the dashboard's own
+  # Achieved - full_batch_pipeline.R's n_achieved_total was already computed
+  # uncapped and is now the correct match, so this now reads that directly
+  # instead of the (removed) capped variant. The workbook's own Enumerator
+  # Performance totals were always uncapped and now sum consistently with
+  # this headline figure too, for every partner including ones with
+  # oversampling.
+  n_achieved_headline <- pkg$n_achieved_total
   pct_achieved <- if (pkg$target_sample > 0) n_achieved_headline / pkg$target_sample else NA_real_
 
   # ---- pick one genuine positive, priority order ----

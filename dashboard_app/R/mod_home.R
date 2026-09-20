@@ -52,17 +52,19 @@ mod_home_ui <- function(id) {
             strong("Collected vs. Achieved: "),
             "wherever this dashboard reports progress against target, it draws a hard line ",
             "between ", strong("Collected"), " (every completed interview actually done in the ",
-            "field — includes oversampled surplus) and ", strong("Achieved"),
+            "field) and ", strong("Achieved"),
             " (completed, matched interviews that are not a SETTLED, confirmed tracker ",
-            "deletion — capped at each CLUSTER's own target before being summed up to ",
-            "LGA/partner level — what actually counts toward the sample frame). Policy changed ",
+            "deletion — what actually counts toward the sample frame). Policy changed ",
             "2026-09-11: a pending/unresolved flag (duplicate, unmatched, a still-open ",
             "recovery-workbook item) no longer excludes an interview from Achieved — only an ",
-            "actually-confirmed deletion does. A cluster that's been oversampled never contributes more than ",
-            "its own target to Achieved, so padding an easy-to-reach cluster can't compensate ",
-            "for, or mask, under-coverage somewhere else. A large Collected-vs-Achieved gap for ",
-            "a partner or LGA usually means real oversampling, worth reviewing so an over-collected ",
-            "cluster isn't asked for more. Look for the ", icon("circle-info", class = "text-muted"), " icon next to ",
+            "actually-confirmed deletion does. Policy changed again 2026-09-20 (Jack's decision, ",
+            "informed by discussion with donors): Achieved now includes every oversampled ",
+            "interview too — a cluster that collected past its own target no longer has that ",
+            "surplus capped out of Achieved, so it counts in full. Target figures are untouched by ",
+            "this; only Achieved moved. The ", em("Oversampled clusters"), " count elsewhere on this ",
+            "page still shows exactly which clusters collected past target and by whom — worth ",
+            "reviewing for representativity even though the interviews now count. Look for the ",
+            icon("circle-info", class = "text-muted"), " icon next to ",
             "a figure for its exact definition."
           ),
           p(
@@ -146,10 +148,15 @@ mod_home_server <- function(id, target_basis) {
 
     output$glance <- renderUI({
       # progress_by_stratum$achieved_n, not sum(is_achieved(submissions_raw))
-      # directly (2026-08-25 fix) — the latter is uncapped and has the same
-      # oversampling-inflation issue this whole Collected/Achieved split was
-      # built to fix; progress_by_stratum already applies the cluster-level
-      # cap (see compute_progress_by_stratum(), global.R).
+      # directly (2026-08-25 fix) — the latter has no Dropped-stratum
+      # exclusion or toggle-basis awareness at all; progress_by_stratum
+      # already scopes to strata_frame's current roster and the sidebar's
+      # target-basis toggle (see compute_progress_by_stratum(), global.R).
+      # (Until 2026-09-20 this comment also cited a cluster-level
+      # oversampling cap as a reason to prefer this source - that cap is
+      # gone now, see compute_progress_by_stratum()'s own header - but the
+      # roster-scoping/toggle reasons above still fully justify this choice
+      # on their own.)
       #
       # 2026-09-14 (Jack, explicit general rule): a Dropped stratum's real
       # data must never enter a national/regional sum, only ever shown at
@@ -213,7 +220,7 @@ mod_home_server <- function(id, target_basis) {
           )
         ),
         tags$tr(
-          tags$td("Achieved so far", info_icon("Completed interviews that count toward target — excludes confirmed deletions and any surplus beyond a cluster's own target.")),
+          tags$td("Achieved so far", info_icon("Completed interviews that count toward target — excludes confirmed deletions. Includes oversampled interviews in full as of 2026-09-20.")),
           tags$td(strong(comma(total_achieved), " (", fmt_pct(total_achieved / active_planned_interviews(target_basis())), " of ", target_basis_label(target_basis()), ")"))
         ),
         tags$tr(
@@ -221,7 +228,7 @@ mod_home_server <- function(id, target_basis) {
           tags$td(strong(comma(total_collected)))
         ),
         tags$tr(
-          tags$td("Confirmed Deleted / Oversampling Surplus", info_icon("The gap between Collected and Achieved. Confirmed Deleted = removed for good reason. Oversampling Surplus = real interviews beyond what a cluster needed — not a problem, but worth reviewing. Collected = Achieved + Confirmed Deleted + Oversampling Surplus, always.")),
+          tags$td("Confirmed Deleted / Oversampling Surplus", info_icon("Confirmed Deleted = removed for good reason. Oversampling Surplus (usually near zero) is a leftover match-quality residual, not real oversampling — see Oversampled clusters below for that. Collected = Achieved + Confirmed Deleted + Oversampling Surplus, always.")),
           tags$td(strong(comma(total_confirmed_deletion), " / ", comma(total_oversampling_surplus)))
         ),
         tags$tr(
@@ -229,7 +236,7 @@ mod_home_server <- function(id, target_basis) {
           tags$td(strong(comma(total_pending_deletion)))
         ),
         tags$tr(
-          tags$td("Oversampled clusters", info_icon("Clusters that collected more interviews than their own target. The surplus doesn't count toward Achieved and will likely need reviewing.")),
+          tags$td("Oversampled clusters", info_icon("Clusters that collected more interviews than their own target. Counts toward Achieved in full, but worth reviewing for representativity.")),
           tags$td(strong(comma(nrow(oversampled_clusters)), " (", comma(sum(oversampled_clusters$surplus)), " surplus interviews)"))
         ),
         tags$tr(tags$td("Target by population group"), tags$td(strong("Non-IDP: ", comma(target_non_idp), " / IDP: ", comma(target_idp)))),

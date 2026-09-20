@@ -1057,51 +1057,40 @@ compute_progress_by_stratum <- function(subs, target_basis = c("original", "revi
   target_basis <- match.arg(target_basis)
   completed_matched <- subs %>% filter(is_achieved(.))
 
-  # ---- ACHIEVED: cap at cluster level FIRST, then sum to stratum ----------
-  achieved_by_cluster <- completed_matched %>%
+  # ---- ACHIEVED: uncapped, summed straight to stratum ---------------------
+  # 2026-09-20 (Jack's explicit decision, informed by discussion with
+  # donors: "include ALL oversampled interviews in achieved counts, without
+  # inflating stratum target" - the operational/monitoring-layer half of a
+  # larger change; the analytical/weighting layer is separate and untouched
+  # here). REMOVED the per-cluster pmin(cluster_achieved_n, target_households)
+  # cap this used to apply before summing to stratum grain - a cluster that
+  # collected more than its own target now counts every one of those
+  # interviews toward Achieved, same as 1_sampling's own achieved_sample
+  # (frame_status.R) has done since 2026-09-13. Target itself (target_sample/
+  # target_sample_current) is completely untouched by this - only the
+  # achieved side moves, so pct_achieved can now exceed 100% for an
+  # oversampled stratum, same as compute_cluster_progress() and
+  # compute_oversampled_clusters() (both below) have always allowed at
+  # cluster grain.
+  #
+  # Until 2026-09-20 this capped cluster_achieved_n at each cluster's own
+  # target_households before summing, specifically so one oversampled
+  # cluster couldn't mask another, undersampled one nearby when several are
+  # summed to a stratum/LGA/national total. That cap also carried a
+  # 2026-09-14 "stranded-achieved credit" carve-out (a cluster retired from
+  # cluster_targets by a later resampling redraw, which mints a fresh
+  # <strata>_suppN cluster_id with no crosswalk to the old one, passed
+  # through UNCAPPED rather than being silently zeroed - see git history on
+  # this block for the full incident, 1,875 of 18,896 households, if that
+  # mechanism is ever needed again). Since every branch now produces the
+  # same uncapped value, that carve-out and the cluster_targets join it
+  # needed are both gone too - not just superseded but provably redundant
+  # under the new policy, not merely unused.
+  achieved <- completed_matched %>%
     filter(!is.na(matched_cluster_id)) %>%
     count(matched_cluster_id, matched_strata_id, name = "cluster_achieved_n") %>%
-    left_join(cluster_targets, by = c("matched_cluster_id" = "cluster_id")) %>%
-    mutate(
-      # 2026-09-14 (stranded-achieved credit, ported from 1_sampling's
-      # frame_status.R::compute_strata_achieved() - same policy in force
-      # there since 2026-09-13: a completed interview is permanent, never
-      # retroactively excluded by a LATER change, including its own
-      # cluster being retired). Every resampling redraw mints a fresh
-      # <strata>_suppN cluster_id for the replacement points and drops the
-      # old cluster_id from cluster_targets entirely, with no crosswalk
-      # recorded anywhere (confirmed deliberate in draw_supplementary_
-      # clusters_batch.R/merge_partner_resample_batch.R - cluster_ids are
-      # derived labels, not permanent keys). 1_sampling's own target math
-      # already re-credits a retired cluster's real achieved households to
-      # its still-live stratum; this dashboard never got the equivalent
-      # fix, so those households were silently zeroed by the pmin() below
-      # instead - verified against live data 2026-09-14: 1,875 of 18,896
-      # nationally Achieved households (9.9%) were invisible in every
-      # stratum/LGA progress figure in this file as a direct, quantified
-      # result (heaviest in Augie, Musawa, Arewa-Dandi, Dutsin-Ma, Silame,
-      # Bagudo, Konduga, Funtua - the LGAs with the most redraw rounds).
-      # A cluster missing from cluster_targets (target_households NA
-      # before the coalesce below) is RETIRED, not oversampled - it has no
-      # current per-cluster target to be capped against, so its achieved
-      # count passes through UNCAPPED (stranded = TRUE) rather than being
-      # pmin()'d to 0. This mirrors frame_status.R's own stranded_non_idp,
-      # likewise added to its stratum's achieved_sample with no per-
-      # cluster cap: the cap's whole purpose (stop one oversampled
-      # CURRENT cluster from masking an undersampled one nearby) doesn't
-      # apply to a cluster that no longer exists to be "oversampled" in.
-      # Scope note: this only rescues rows whose matched_strata_id is
-      # still live (present in strata_frame below) - a handful of rows
-      # (~110, 4 wholly-retired strata) and a separate ~27-row pop_type-NA
-      # matching bug (Bassa) are NOT fixed by this and remain flagged to
-      # Jack separately, not silently folded in here.
-      stranded = is.na(target_households),
-      target_households = coalesce(target_households, 0),
-      capped_achieved_n = if_else(stranded, cluster_achieved_n, pmin(cluster_achieved_n, target_households))
-    )
-  achieved <- achieved_by_cluster %>%
     group_by(matched_strata_id) %>%
-    summarise(achieved_n = sum(capped_achieved_n), .groups = "drop")
+    summarise(achieved_n = sum(cluster_achieved_n), .groups = "drop")
 
   # separate count (not pivot_wider) so a filtered subset with zero reserve
   # rows just produces a zero-row table, not a missing/erroring column.
@@ -1126,19 +1115,26 @@ compute_progress_by_stratum <- function(subs, target_basis = c("original", "revi
   confirmed_deletion <- subs %>% filter(is_confirmed_deletion(.)) %>%
     count(matched_strata_id, name = "confirmed_deletion_n")
 
-  # ---- OVERSAMPLING SURPLUS (renamed 2026-09-11, was "pending_deletion_n"):
-  # collected_n - achieved_n - confirmed_deletion_n is STILL a meaningful
-  # residual, but it no longer means "pending deletion" now that
-  # is_achieved() (above) already counts every not-yet-confirmed row as
-  # achieved. The only thing that can still make achieved_n fall short of
-  # collected_n - confirmed_deletion_n is the per-cluster capping above
-  # (pmin(cluster_achieved_n, target_households)) - i.e. real completed
-  # interviews beyond what a cluster's target calls for. Kept as an exact
-  # residual (not independently summed) for the same reason as before: no
-  # risk of a double-counted row breaking the identity.
-  # Collected = Achieved + Confirmed Deletion + Oversampling Surplus,
-  # exactly, by construction - the SAME 3-term identity as before, just
-  # with its third term meaning something different now.
+  # ---- OVERSAMPLING SURPLUS (renamed 2026-09-11, was "pending_deletion_n";
+  # meaning changed AGAIN 2026-09-20 - kept the same field/column name both
+  # times since nothing about ITS OWN formula changed, only what could still
+  # feed it): collected_n - achieved_n - confirmed_deletion_n is still
+  # computed as an exact residual, for the same double-counting-proof reason
+  # as always, but as of 2026-09-20 (achieved_n no longer capped per cluster,
+  # see ACHIEVED above) it is NO LONGER "real interviews beyond a cluster's
+  # target" - that's now folded straight into achieved_n itself. What's left
+  # in this residual is a genuinely different, normally much smaller thing:
+  # a completed, is_collected() row that never resolved to a specific
+  # matched_cluster_id (so it can't be counted by achieved_n's per-cluster
+  # count at all) and isn't a confirmed_deletion either - typically an
+  # unresolved duplicate or a broken point-match. It is NOT the place to
+  # look for real oversampling any more - use compute_oversampled_clusters()
+  # (below), unaffected by this change, for the actual "which clusters/
+  # partners collected past target" signal, since that function already
+  # computed real, uncapped per-cluster achieved from the start.
+  # Collected = Achieved + Confirmed Deletion + Oversampling Surplus still
+  # holds exactly, by construction - the SAME 3-term identity as before,
+  # just with its third term meaning something different again.
   #
   # ---- PENDING DELETION (redefined 2026-09-11): now a genuinely
   # independent, directly-counted INFORMATIONAL subset of Achieved, not a
@@ -1299,12 +1295,16 @@ compute_cluster_progress <- function(subs) {
 # ---- oversampled clusters (2026-08-27) — moved here from reports_partner_
 # digest.R (that file's own copy removed, this is now the single source
 # both use) so the dashboard can show the same oversampling analytics the
-# partner digest already had — one cluster's surplus submissions can't
-# count toward or mask under-coverage elsewhere (see compute_progress_by_
-# stratum() above), but the surplus itself, and which partner is
-# responsible for it, was previously only visible in the digest workbook
-# and the Coverage Map's purple border/tooltip — no count, no table, no
-# assigned-vs-submitting-partner mismatch check anywhere else. A sampling-
+# partner digest already had. UNAFFECTED by the 2026-09-20 achieved-capping
+# removal (see compute_progress_by_stratum() above): this function already
+# computed real, uncapped per-cluster achieved from the start (there was
+# never anything else to mask surplus AGAINST at single-cluster grain), so
+# it remains the one place to see genuine "collected past target" clusters
+# and who's responsible for it — that surplus now also counts toward
+# Achieved everywhere else, but it's still worth surfacing here for
+# resourcing/representativity review. Previously only visible in the digest
+# workbook and the Coverage Map's purple border/tooltip — no count, no
+# table, no assigned-vs-submitting-partner mismatch check anywhere else. A sampling-
 # DESIGN question (achieved vs. target_households), not a response-quality
 # one, so computed from cluster_targets (same source the Coverage Map's
 # border and Progress by LGA capping already use), not the cleaning logs.

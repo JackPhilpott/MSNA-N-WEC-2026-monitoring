@@ -137,41 +137,42 @@ build_partner_quality_digest_excel <- function(file, cleaning_log) {
 
   yn <- function(x) factor(ifelse(x, "Yes", "No"), levels = c("Yes", "No"))
 
-  # ---- Achieved, capped at cluster level, attributed by partner (added
-  # 2026-08-24 — see is_collected()/is_achieved()/cluster_targets in
-  # global.R). If a cluster's achieved submissions come from more than one
-  # org (rare — clusters usually belong to one partner's assigned LGA),
-  # EACH org with a submission there gets the cluster's full capped total
-  # counted, same non-splitting convention partner_progress_by_lga()
-  # already uses for jointly-covered LGAs ("shared_with") — not divided
-  # proportionally, deliberately: inventing a split rule adds complexity
-  # for a case that's rare in practice and doesn't change which partners
-  # need follow-up. Enumerator-level Achieved (below) is deliberately NOT
-  # capped this way — confirmed with Jack 2026-08-24: enumerators don't
-  # have individual targets to cap against, and that sheet's job is
-  # quality-rate patterns, not coverage tracking.
+  # ---- Achieved, attributed by partner (added 2026-08-24 — see
+  # is_collected()/is_achieved() in global.R). If a cluster's achieved
+  # submissions come from more than one org (rare — clusters usually belong
+  # to one partner's assigned LGA), EACH org with a submission there gets
+  # the cluster's full total counted, same non-splitting convention
+  # partner_progress_by_lga() already uses for jointly-covered LGAs
+  # ("shared_with") — not divided proportionally, deliberately: inventing a
+  # split rule adds complexity for a case that's rare in practice and
+  # doesn't change which partners need follow-up. Enumerator-level Achieved
+  # (below) was already computed this same uncapped way (no individual
+  # per-enumerator target exists to cap against; that sheet's job is
+  # quality-rate patterns, not coverage tracking) — as of 2026-09-20 this
+  # partner rollup now matches it, see below.
+  #
+  # UNCAPPED as of 2026-09-20 (Jack's explicit decision, informed by
+  # discussion with donors: achieved should include all oversampled
+  # interviews, target stays as-is) — this used to duplicate global.R's own
+  # per-cluster pmin(cluster_achieved_n, target_households) cap verbatim,
+  # including its 2026-09-14 stranded-achieved-credit carve-out for clusters
+  # retired from cluster_targets (a real incident: that carve-out was
+  # missing here for two days in 2026-09-16, a 94-interview national
+  # undercount caught by smoke_test.R's cross-check against progress_by_
+  # stratum — see git history on this block for the full story if the old
+  # capped behavior is ever needed again). Removed here in the same pass as
+  # global.R's compute_progress_by_stratum(), for the same reason this
+  # duplicate existed at all and had already drifted out of sync once
+  # before: the two must always be changed together, not just one of them.
   achieved_rows <- submissions_raw[achieved_flag & !is.na(submissions_raw$matched_cluster_id), ]
-  # FIX 2026-09-16 (Jack, via cross-session flag - the 94-interview national
-  # undercount smoke_test.R's sum(partners$Achieved) >= sum(progress_by_
-  # stratum$achieved_n) assertion caught): this cluster-level cap never
-  # picked up the 2026-09-14 stranded-achieved-credit policy compute_
-  # progress_by_stratum() already applies (global.R) - a cluster retired
-  # from cluster_targets (target_households NA, coalesced to 0 below) was
-  # still being pmin()'d to 0 here instead of passed through uncapped. Same
-  # stranded branch, ported verbatim from global.R's achieved_by_cluster.
-  cluster_capped <- achieved_rows %>%
-    count(matched_cluster_id, name = "cluster_achieved_n") %>%
-    left_join(cluster_targets, by = c("matched_cluster_id" = "cluster_id")) %>%
-    mutate(
-      stranded = is.na(target_households),
-      target_households = coalesce(target_households, 0),
-      capped_achieved_n = if_else(stranded, cluster_achieved_n, pmin(cluster_achieved_n, target_households))
-    )
-  achieved_capped_by_org <- achieved_rows %>%
+  achieved_by_org <- achieved_rows %>%
     distinct(matched_cluster_id, org_id) %>%
-    left_join(cluster_capped %>% select(matched_cluster_id, capped_achieved_n), by = "matched_cluster_id") %>%
+    left_join(
+      achieved_rows %>% count(matched_cluster_id, name = "cluster_achieved_n"),
+      by = "matched_cluster_id"
+    ) %>%
     group_by(org_id) %>%
-    summarise(achieved_capped = sum(capped_achieved_n), .groups = "drop")
+    summarise(achieved_total = sum(cluster_achieved_n), .groups = "drop")
 
   # ---- dashboard-flag (sample-integrity) rollups, by partner AND by
   # enumerator — the by-enumerator one is new 2026-08-20, didn't exist
@@ -187,9 +188,9 @@ build_partner_quality_digest_excel <- function(file, cleaning_log) {
       hh_size_mismatches = sum(flag_hh_size_mismatch), duplicates = sum(is_duplicate),
       off_hours = sum(flag_off_hours), .groups = "drop"
     ) %>%
-    left_join(achieved_capped_by_org, by = "org_id") %>%
-    mutate(achieved = coalesce(achieved_capped, 0L)) %>%
-    select(-achieved_capped)
+    left_join(achieved_by_org, by = "org_id") %>%
+    mutate(achieved = coalesce(achieved_total, 0L)) %>%
+    select(-achieved_total)
 
   integrity_by_enum <- submissions_raw %>%
     mutate(achieved_flag = achieved_flag) %>%
@@ -398,8 +399,8 @@ build_partner_quality_digest_excel <- function(file, cleaning_log) {
     ),
     `What it shows` = c(
       "Submissions with a serious (tier A) issue, or already marked for removal by the cleaning script, cross-checked against whether they're still counted in your live achieved total.",
-      "One row per partner: Collected vs. Achieved (capped, see \"A note on the numbers\" below) progress, sample-integrity flags (GPS/duration/roster/off-hours/duplicates), cleaning-log flags (tier A/B/C, which issues, how many), and how many clusters they've oversampled.",
-      "Same as Partners, one row per enumerator — the individual-level view. Achieved here is NOT capped the way Partners' is (see \"A note on the numbers\").",
+      "One row per partner: Collected vs. Achieved progress (see \"A note on the numbers\" below), sample-integrity flags (GPS/duration/roster/off-hours/duplicates), cleaning-log flags (tier A/B/C, which issues, how many), and how many clusters they've oversampled.",
+      "Same as Partners, one row per enumerator — the individual-level view. Achieved is computed the same uncapped way as Partners' (see \"A note on the numbers\") — no individual per-enumerator target exists, so there was never a cap to apply here either.",
       "Clusters that have received MORE completed interviews than their target. Wasted fieldwork effort, and likely surplus data that will need a deletion decision.",
       "Which check TYPES are most common overall, independent of who caused them — for spotting tool-level or systemic issues vs individual behaviour.",
       "Row-level detail behind the sample-integrity numbers (GPS/duration/roster/off-hours/duplicates) — find the exact record.",
@@ -440,14 +441,17 @@ build_partner_quality_digest_excel <- function(file, cleaning_log) {
     "\"Collected\" vs \"Achieved\" (Partners/Enumerators sheets): Collected is every completed interview,",
     "full stop — includes oversampled surplus, i.e. total field effort. Achieved is what",
     "actually counts toward the sample frame — completed, matched interviews that are not a SETTLED",
-    "(confirmed/contested) tracker deletion — capped at each CLUSTER's",
-    "own target before being summed up, so a partner can't inflate their Achieved by overshooting an",
-    "easy cluster while another goes unmet. Policy changed 2026-09-11: a pending/unresolved flag no",
+    "(confirmed/contested) tracker deletion. Policy changed 2026-09-11: a pending/unresolved flag no",
     "longer excludes an interview here, only a confirmed deletion does — same figure resampling now",
-    "uses too. A big Collected-vs-Achieved gap on the Partners sheet is now genuine oversampling —",
-    "wasted operational resource, not real progress. Enumerators' \"Achieved\" is deliberately NOT capped the",
-    "same way (no individual per-enumerator target exists to cap against) — read it as their own",
-    "completed/matched/not-a-settled-deletion count, not a coverage figure."
+    "uses too. Policy changed AGAIN 2026-09-20 (Jack's decision, informed by discussion with donors):",
+    "Achieved now includes ALL of a partner's/enumerator's completed, matched interviews, with no",
+    "per-cluster cap — a cluster collected past its own target counts in full, same as 1_sampling's own",
+    "achieved figure has done since 2026-09-13. This sheet has no target column to compare against, but",
+    "Achieved on this sheet can now sit noticeably closer to (or equal) Collected than it used to for a",
+    "partner with oversampled clusters, since that surplus is no longer subtracted out here. This is a",
+    "genuine, deliberate methodology change, not a data-quality fix — see the \"Oversampled clusters\"",
+    "sheet for which clusters/partners are actually driving it; that sheet was never capped and hasn't",
+    "changed."
   ))
   write_para(paste(
     "On the Partners/Enumerators sheets: \"Tier A/B/C\" are counts of DISTINCT SUBMISSIONS with an issue in",

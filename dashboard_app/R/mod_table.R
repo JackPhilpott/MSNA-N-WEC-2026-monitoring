@@ -17,7 +17,7 @@ mod_table_ui <- function(id) {
       full_screen = TRUE,
       card_header(
         "Achieved vs. target, per LGA x population group",
-        info_icon("Achieved = interviews that count toward target. Collected = every completed interview, including surplus. Confirmed Deleted = settled, genuinely gone. Oversampling Surplus = real interviews beyond a cluster's target. Pending Deletion = already in Achieved, but still flagged. Collected = Achieved + Confirmed Deleted + Oversampling Surplus."),
+        info_icon("Achieved = interviews that count toward target, including oversampled surplus in full. Collected = every completed interview. Confirmed Deleted = settled, genuinely gone. Oversampling Surplus here is usually near zero (a small match-quality leftover, not real oversampling). Pending Deletion = already in Achieved, but still flagged."),
         span(
           class = "text-muted", style = "font-size: 0.8em; font-weight: normal; margin-left: 8px;",
           "Original Target = the fixed sample size set at collection start. Revised Target = the current minimum needed, recalculated as accessibility changes. Status and % achieved follow the sidebar's Target basis toggle. Δ vs Original flags a 25%+ shift between the two."

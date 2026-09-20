@@ -513,6 +513,41 @@ stopifnot(all(
 cat("Holds at every one of", nrow(cluster_progress_check), "clusters (cluster grain).\n")
 cat("Collected/Achieved/Confirmed Deletion/Oversampling Surplus identity test passed.\n")
 
+cat("\n=== Achieved is genuinely uncapped (2026-09-20 policy change) ===\n")
+# Regression test locking in the 2026-09-20 policy change (Jack's decision,
+# informed by discussion with donors: achieved should include ALL
+# oversampled interviews, target stays as-is) - removed the per-cluster
+# pmin(cluster_achieved_n, target_households) cap compute_progress_by_
+# stratum() used to apply before summing to stratum grain. Independently
+# recomputes what the OLD capped total would have been (not by calling any
+# removed code - the formula itself, same as it lived in global.R/
+# reports_partner_digest.R before this date) and asserts real achieved is
+# now >= that everywhere, and strictly greater somewhere - proving the cap
+# is actually gone in practice against live data, not just that the new
+# formula still parses.
+old_capped_achieved <- submissions_raw %>%
+  filter(is_achieved(.), !is.na(matched_cluster_id)) %>%
+  count(matched_cluster_id, matched_strata_id, name = "cluster_achieved_n") %>%
+  left_join(cluster_targets, by = c("matched_cluster_id" = "cluster_id")) %>%
+  mutate(
+    stranded = is.na(target_households),
+    target_households = coalesce(target_households, 0),
+    capped_n = if_else(stranded, cluster_achieved_n, pmin(cluster_achieved_n, target_households))
+  ) %>%
+  group_by(matched_strata_id) %>%
+  summarise(old_capped_achieved_n = sum(capped_n), .groups = "drop")
+
+achieved_compare <- full_progress %>%
+  select(strata_id, achieved_n) %>%
+  left_join(old_capped_achieved, by = c("strata_id" = "matched_strata_id")) %>%
+  mutate(old_capped_achieved_n = coalesce(old_capped_achieved_n, 0L))
+
+stopifnot(all(achieved_compare$achieved_n >= achieved_compare$old_capped_achieved_n))
+n_strata_now_higher <- sum(achieved_compare$achieved_n > achieved_compare$old_capped_achieved_n)
+cat("Strata where achieved_n now exceeds what the old per-cluster cap would have given:", n_strata_now_higher, "\n")
+stopifnot(n_strata_now_higher > 0)
+cat("Uncapped-achieved regression test passed.\n")
+
 cat("\n=== filter feedback-loop regression test (app.R server) ===\n")
 # Regression test for the "constant refreshing/jumping" bug: the mutual
 # cross-filter observers used to call update*Input() unconditionally on
