@@ -59,11 +59,17 @@ latest_frame_file <- function(prefix, suffix, dir = file.path(INPUT_DIR, "sampli
 SHOW_ANALYSIS_TAB <- FALSE
 
 # ---- fielding window --------------------------------------------------------
-# FIELDING_PLANNED_END: confirmed 2026-08-15 as the realistic current
-# end-of-collection estimate. FIELDING_START is computed below, once
-# submissions_raw is loaded — the first date that actually appears in the
-# data, so the date filter/home page can't disagree with what's really there.
-FIELDING_PLANNED_END <- as.Date("2026-09-11")
+# FIELDING_PLANNED_END: the realistic current end-of-collection estimate,
+# updated as the timeline shifts (was 2026-08-15's 2026-09-11 estimate;
+# moved to 2026-09-27 per Jack, 2026-09-20). Drives the "Fielding window"
+# row, the Planned/Est. days KPI tiles, and the trend chart's pace line
+# (days_total/days_remaining, global.R below; FIELDING_START to
+# FIELDING_PLANNED_END, mod_progress.R) — all computed from this constant,
+# nothing else to update when it moves. FIELDING_START is computed below,
+# once submissions_raw is loaded — the first date that actually appears in
+# the data, so the date filter/home page can't disagree with what's really
+# there.
+FIELDING_PLANNED_END <- as.Date("2026-09-27")
 
 # ---- load data -------------------------------------------------------------
 
@@ -1221,6 +1227,27 @@ compute_progress_by_stratum <- function(subs, target_basis = c("original", "revi
       target_active = if (target_basis == "revised") target_sample_current else target_sample,
       target_active_label = if (target_basis == "revised") "Revised Target" else "Original Target",
       pct_achieved = ifelse(target_active > 0, achieved_n / target_active, NA_real_),
+      # FIX 2026-09-21 (Jack, found recurring from a known weekend pattern -
+      # the accessibility-reports-returned gap was the same shape a few
+      # hours earlier): achieved_n going uncapped on 2026-09-20 was correct
+      # at THIS grain (a single stratum), but every place downstream that
+      # SUMS achieved_n across more than one stratum (LGA/partner/national)
+      # was never updated to match - summing raw achieved_n and raw
+      # target_active independently, then subtracting/dividing ONCE at the
+      # aggregate level, lets one oversampled stratum's surplus silently
+      # cancel a completely different, genuinely-short stratum's gap in the
+      # rolled-up total (a real interview in stratum A can never substitute
+      # for a household still needed in stratum B). credited_achieved_n and
+      # remaining_n are computed HERE, per stratum, specifically so every
+      # downstream rollup can sum THESE instead of raw achieved_n/
+      # target_active and be safe by construction - cap/floor-before-sum,
+      # never subtract/divide-after-sum. Identity, by construction, always:
+      # credited_achieved_n + remaining_n == target_active (achieved_n
+      # itself is NOT touched or renamed - still the honest uncapped "total
+      # real interviews collected" figure, shown alongside these two, not
+      # replaced by them - Jack's explicit "show both" decision).
+      credited_achieved_n = pmin(achieved_n, pmax(target_active, 0)),
+      remaining_n = pmax(target_active - achieved_n, 0),
       # DROPPED status (2026-09-11): a stratum currently excluded for
       # accessibility_loss_below_population_threshold - see strata_frame's
       # own header above. Checked FIRST: such a stratum's target_sample_
@@ -1235,9 +1262,17 @@ compute_progress_by_stratum <- function(subs, target_basis = c("original", "revi
       # currently driving Status/%/Still-Needed elsewhere - a stratum
       # doesn't stop being genuinely Dropped just because the toggle is set
       # to Original.
+      # 2026-09-21: "Complete" via remaining_n <= 0. At THIS grain (one
+      # stratum) that is exactly equivalent to the old achieved_n >=
+      # target_active - remaining_n is pmax(target_active - achieved_n, 0)
+      # from this same mutate - so this is a zero-behaviour-change
+      # uniformity edit: every status case_when in the app now keys off
+      # remaining_n, and the validity suite's structural guard against the
+      # raw comparison can be a true zero-hit invariant with no
+      # "except at stratum grain" carve-out to keep reasoning about.
       status = case_when(
         coverage_status == "excluded" | target_not_computable ~ "Dropped",
-        target_active <= 0 | achieved_n >= target_active ~ "Complete",
+        target_active <= 0 | remaining_n <= 0 ~ "Complete",
         achieved_n > 0 ~ "In progress",
         TRUE ~ "Not started"
       )
@@ -1413,7 +1448,7 @@ build_partner_progress_summary <- function(target_basis = c("original", "revised
       filter(adm2_pcode %in% my_adm2) %>%
       mutate(across(
         c(target_sample_current, achieved_n, collected_n, confirmed_deletion_n,
-          pending_deletion_n, oversampling_surplus_n),
+          pending_deletion_n, oversampling_surplus_n, credited_achieved_n, remaining_n),
         ~ ifelse(status == "Dropped", 0, .)
       )) %>%
       mutate(target_active = if (target_basis == "revised") target_sample_current else target_sample) %>%
@@ -1421,6 +1456,18 @@ build_partner_progress_summary <- function(target_basis = c("original", "revised
                 target_sample_current = sum(target_sample_current, na.rm = TRUE),
                 target_active = sum(target_active, na.rm = TRUE),
                 achieved_n = sum(achieved_n, na.rm = TRUE),
+                # FIX 2026-09-21: credited_achieved_n/remaining_n are summed
+                # straight from compute_progress_by_stratum()'s own per-
+                # stratum capped/floored columns - safe by construction,
+                # unlike the removed `max(target_active - achieved_n, 0)`
+                # single subtraction this used to do AFTER summing raw
+                # achieved_n across every stratum in this partner's LGAs
+                # (one oversampled stratum could mask a genuinely short one).
+                # achieved_n itself stays raw/uncapped above - still the
+                # honest "total real interviews" figure, shown alongside
+                # these two per Jack's "show both" decision, not replaced.
+                credited_achieved_n = sum(credited_achieved_n, na.rm = TRUE),
+                remaining_n = sum(remaining_n, na.rm = TRUE),
                 collected_n = sum(collected_n, na.rm = TRUE),
                 confirmed_deletion_n = sum(confirmed_deletion_n, na.rm = TRUE),
                 pending_deletion_n = sum(pending_deletion_n, na.rm = TRUE),
@@ -1430,7 +1477,7 @@ build_partner_progress_summary <- function(target_basis = c("original", "revised
     has_started <- is.finite(start_date)
     days_active <- if (has_started) as.numeric(today_for_pace - start_date) + 1 else NA_real_
     current_pace <- if (has_started && days_active > 0) totals$achieved_n / days_active else NA_real_
-    remaining <- max(totals$target_active - totals$achieved_n, 0)
+    remaining <- totals$remaining_n
     days_left_to_deadline <- as.numeric(FIELDING_PLANNED_END - today_for_pace) + 1
     required_pace <- if (days_left_to_deadline > 0) remaining / days_left_to_deadline else NA_real_
     projected_finish <- if (!is.na(current_pace) && current_pace > 0 && remaining > 0) {
@@ -1441,9 +1488,14 @@ build_partner_progress_summary <- function(target_basis = c("original", "revised
       as.Date(NA)
     }
 
+    # FIX 2026-09-21: "Complete" now keys off remaining <= 0 (the safe,
+    # per-stratum-floored figure), not totals$achieved_n >= totals$
+    # target_active directly - the raw comparison could read "Complete" from
+    # cross-stratum masking even where a specific stratum genuinely still
+    # needed households, same root cause as the remaining/pct fixes above.
     status <- case_when(
       totals$target_active <= 0 ~ "Complete",
-      totals$achieved_n >= totals$target_active ~ "Complete",
+      remaining <= 0 ~ "Complete",
       !has_started ~ "Not started",
       is.na(current_pace) || current_pace <= 0 ~ "Behind pace",
       projected_finish <= FIELDING_PLANNED_END ~ "On pace",
@@ -1476,7 +1528,18 @@ build_partner_progress_summary <- function(target_basis = c("original", "revised
       achieved_n = totals$achieved_n, collected_n = totals$collected_n,
       confirmed_deletion_n = totals$confirmed_deletion_n, pending_deletion_n = totals$pending_deletion_n,
       oversampling_surplus_n = totals$oversampling_surplus_n,
-      pct_achieved = ifelse(totals$target_active > 0, totals$achieved_n / totals$target_active, NA_real_),
+      # FIX 2026-09-21: pct_achieved here now means "progress toward target,
+      # capped per stratum before summing" - can never exceed 100% at this
+      # rollup grain by construction (credited_achieved_n <= target_active
+      # always). pct_achieved_raw is the OLD, uncapped ratio (achieved_n/
+      # target_active), kept alongside per Jack's "show both" decision - a
+      # partner's true "total real interviews vs target" figure, which CAN
+      # legitimately read >100% and is a genuinely different, still useful
+      # question ("how much real fieldwork happened") from "how much of the
+      # true remaining need is closed" (what pct_achieved now answers).
+      credited_achieved_n = totals$credited_achieved_n, remaining_n = totals$remaining_n,
+      pct_achieved = ifelse(totals$target_active > 0, totals$credited_achieved_n / totals$target_active, NA_real_),
+      pct_achieved_raw = ifelse(totals$target_active > 0, totals$achieved_n / totals$target_active, NA_real_),
       shared_with = shared_with,
       start_date = if (has_started) start_date else as.Date(NA),
       days_active = days_active, current_daily_pace = current_pace, required_daily_pace = required_pace,
@@ -1574,7 +1637,7 @@ partner_progress_by_lga <- function(org_id_val, target_basis = c("original", "re
     filter(adm2_pcode %in% my_adm2) %>%
     mutate(across(
       c(target_sample_current, achieved_n, collected_n, confirmed_deletion_n,
-        pending_deletion_n, oversampling_surplus_n),
+        pending_deletion_n, oversampling_surplus_n, credited_achieved_n, remaining_n),
       ~ ifelse(status == "Dropped", 0, .)
     )) %>%
     mutate(target_active = if (target_basis == "revised") target_sample_current else target_sample) %>%
@@ -1590,15 +1653,24 @@ partner_progress_by_lga <- function(org_id_val, target_basis = c("original", "re
       target_sample_current = sum(target_sample_current, na.rm = TRUE),
       target_active = sum(target_active, na.rm = TRUE),
       achieved_n = sum(achieved_n, na.rm = TRUE),
+      # FIX 2026-09-21: this collapses an LGA's non_idp + idp strata into
+      # one row - summing the per-stratum capped/floored columns from
+      # compute_progress_by_stratum() keeps one pop-type's surplus from
+      # masking the other's shortfall (see that function's own comment).
+      credited_achieved_n = sum(credited_achieved_n, na.rm = TRUE),
+      remaining_n = sum(remaining_n, na.rm = TRUE),
       collected_n = sum(collected_n, na.rm = TRUE),
       confirmed_deletion_n = sum(confirmed_deletion_n, na.rm = TRUE),
       pending_deletion_n = sum(pending_deletion_n, na.rm = TRUE),
       oversampling_surplus_n = sum(oversampling_surplus_n, na.rm = TRUE), .groups = "drop"
     ) %>%
     mutate(
-      pct_achieved = ifelse(target_active > 0, achieved_n / target_active, NA_real_),
+      # pct_achieved = capped progress toward target (never >100% here);
+      # pct_achieved_raw = the old uncapped ratio, kept per "show both".
+      pct_achieved = ifelse(target_active > 0, credited_achieved_n / target_active, NA_real_),
+      pct_achieved_raw = ifelse(target_active > 0, achieved_n / target_active, NA_real_),
       status = case_when(
-        target_active <= 0 | achieved_n >= target_active ~ "Complete",
+        target_active <= 0 | remaining_n <= 0 ~ "Complete",
         achieved_n > 0 ~ "In progress",
         TRUE ~ "Not started"
       ),
@@ -1872,9 +1944,20 @@ bin_continuous_counts <- function(x, bins = 40) {
   tibble(center = h$mids, n = h$counts)
 }
 
-days_elapsed <- as.numeric(max(submissions_raw$submission_date, na.rm = TRUE) - FIELDING_START) + 1
 days_total <- as.numeric(FIELDING_PLANNED_END - FIELDING_START) + 1
-days_remaining <- max(0, days_total - days_elapsed)
+# FIX 2026-09-21 (Jack, real bug caught live: card showed 8 days remaining
+# on 2026-09-21 with FIELDING_PLANNED_END=2026-09-27 - should have been 6).
+# Previously days_remaining = days_total - days_elapsed, where days_elapsed
+# was anchored to max(submissions_raw$submission_date) - the latest date
+# that actually appears in the data - not to today's real date. Any
+# reporting/pull lag between a real submission and today directly inflated
+# this figure (live data's own lag that day: max submission_date was
+# 2026-09-19, 2 days behind, producing 27-19=8 instead of the real 27-21=6).
+# The tooltip already promised "Calendar days left until the planned end
+# date" - a real calendar countdown from today, not from however current
+# the data happens to be - so this now reads Sys.Date() directly, matching
+# that promise exactly. days_elapsed itself had no other consumer, removed.
+days_remaining <- max(0, as.numeric(FIELDING_PLANNED_END - Sys.Date()))
 
 # ---- modules -----------------------------------------------------------
 for (f in list.files("R", pattern = "\\.R$", full.names = TRUE)) source(f)

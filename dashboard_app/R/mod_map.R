@@ -105,7 +105,7 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
         # not started" - see all_dropped there.
         mutate(across(
           c(target_sample_current, achieved_n, collected_n, confirmed_deletion_n,
-            pending_deletion_n, oversampling_surplus_n),
+            pending_deletion_n, oversampling_surplus_n, credited_achieved_n, remaining_n),
           ~ ifelse(status == "Dropped", 0, .)
         )) %>%
         # identical(), not == : target_basis() can be NULL very briefly
@@ -121,6 +121,12 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
           target_sample_current = sum(target_sample_current, na.rm = TRUE),
           target_active = sum(target_active, na.rm = TRUE),
           achieved_n = sum(achieved_n, na.rm = TRUE),
+          # FIX 2026-09-21: an LGA row collapses its Non-IDP + IDP strata -
+          # summing the per-stratum capped/floored columns (global.R's
+          # compute_progress_by_stratum()) keeps one pop-type's surplus
+          # from masking the other's gap in the fill colour / % achieved.
+          credited_achieved_n = sum(credited_achieved_n, na.rm = TRUE),
+          remaining_n = sum(remaining_n, na.rm = TRUE),
           collected_n = sum(collected_n, na.rm = TRUE),
           confirmed_deletion_n = sum(confirmed_deletion_n, na.rm = TRUE),
           pending_deletion_n = sum(pending_deletion_n, na.rm = TRUE),
@@ -130,7 +136,8 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
           .groups = "drop"
         ) %>%
         mutate(
-          pct_achieved = ifelse(target_active > 0, achieved_n / target_active, NA_real_),
+          pct_achieved = ifelse(target_active > 0, credited_achieved_n / target_active, NA_real_),
+          pct_achieved_raw = ifelse(target_active > 0, achieved_n / target_active, NA_real_),
           all_dropped = n_strata > 0 & n_dropped_strata == n_strata
         )
     })
@@ -143,8 +150,8 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
     # suffixed .x/.y columns instead.
     scope_admin2_sf <- reactive({
       lga <- filtered_lga() %>%
-        select(adm2_pcode, target_sample, target_sample_current, target_active, achieved_n, collected_n,
-               confirmed_deletion_n, pending_deletion_n, oversampling_surplus_n, pct_achieved, all_dropped)
+        select(adm2_pcode, target_sample, target_sample_current, target_active, achieved_n, credited_achieved_n, remaining_n,
+               collected_n, confirmed_deletion_n, pending_deletion_n, oversampling_surplus_n, pct_achieved, pct_achieved_raw, all_dropped)
       admin2_sf %>% inner_join(lga, by = "adm2_pcode")
     })
 
@@ -214,9 +221,20 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
           # is_inaccessible check - a fully-Dropped LGA's achieved_n is
           # always 0 (zeroed during the LGA rollup), so there's no
           # "stranded achieved" case to protect the way cluster grain does.
+          # FIX 2026-09-21 (found by Dashboard's independent review of the
+          # rollup fix - Coordinator switched the two global.R status
+          # case_whens to remaining_n but missed this third one): "Complete"
+          # keys off remaining_n <= 0 (per-stratum floored, from
+          # filtered_lga()), not raw achieved_n >= target_active - an LGA
+          # whose IDP surplus covered its Non-IDP shortfall in the raw sum
+          # rendered "Complete" here (8 live LGAs at the time) while its own
+          # credited %/fill colour, a few lines above, correctly said short.
+          # status drives the map's status-filter checkboxes, so this was a
+          # visibility bug, not just a label. Cluster grain (below) stays
+          # raw by design - a single cluster has nothing to mask.
           status = case_when(
             all_dropped ~ "Inaccessible",
-            target_active <= 0 | achieved_n >= target_active ~ "Complete",
+            target_active <= 0 | remaining_n <= 0 ~ "Complete",
             achieved_n > 0 ~ "In progress",
             TRUE ~ "Not started"
           ),
@@ -564,7 +582,13 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
               # Divergence >=25% (global.R's TARGET_DIVERGENCE_THRESHOLD)
               # gets a red bold treatment so a meaningfully-shifted LGA
               # stands out without needing to read the number closely.
-              "Achieved: <span style='color:", fill_color, ";font-weight:bold;'>", coalesce(achieved_n, 0), " (", label_pct, " of ", target_basis_label(target_basis()), ")</span><br>",
+              # FIX 2026-09-21: label_pct/fill_color are credited-based
+              # (per-stratum capped, see filtered_lga()) - an LGA's IDP
+              # surplus no longer colours over its Non-IDP shortfall. Raw
+              # all-interviews count kept alongside ("show both").
+              "Credited toward target: <span style='color:", fill_color, ";font-weight:bold;'>", coalesce(credited_achieved_n, 0), " (", label_pct, " of ", target_basis_label(target_basis()), ")</span>",
+              " | Still needed: ", coalesce(remaining_n, 0), "<br>",
+              "Achieved (all interviews incl. surplus): ", coalesce(achieved_n, 0), " (", fmt_pct(pct_achieved_raw), " raw)<br>",
               # 2026-09-20 (Jack: extend Inaccessible styling to LGA grain) -
               # same inline-warning treatment as the cluster view's own
               # stranded_inaccessible badge, using the same grey.

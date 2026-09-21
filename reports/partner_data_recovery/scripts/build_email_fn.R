@@ -22,7 +22,14 @@ build_partner_email <- function(pkg, precautionary = FALSE, deadline = "4 Septem
   # this headline figure too, for every partner including ones with
   # oversampling.
   n_achieved_headline <- pkg$n_achieved_total
-  pct_achieved <- if (pkg$target_sample > 0) n_achieved_headline / pkg$target_sample else NA_real_
+  # FIX 2026-09-21: "% of your target" is now credited (capped per stratum
+  # before summing, see full_batch_pipeline.R) so surplus in one LGA/pop-
+  # type can't hide a shortfall in another. Raw Achieved still shown as the
+  # count; Still needed is the sum of each stratum's own gap. NULL-guarded
+  # so an older pkg (built before the fix) still renders.
+  n_credited_headline <- if (!is.null(pkg$n_credited_total)) pkg$n_credited_total else n_achieved_headline
+  n_remaining_headline <- if (!is.null(pkg$n_remaining_total)) pkg$n_remaining_total else max(pkg$target_sample - n_achieved_headline, 0)
+  pct_achieved <- if (pkg$target_sample > 0) n_credited_headline / pkg$target_sample else NA_real_
 
   # ---- pick one genuine positive, priority order ----
   positive <- if (n_gps == 0 && n_idp == 0) {
@@ -65,15 +72,17 @@ build_partner_email <- function(pkg, precautionary = FALSE, deadline = "4 Septem
     paste0(
       "Your team is only a few days into MSNA N-WEC 2026 data collection, so this is a lighter early check-in rather than a full review - we'd rather flag something now, while it's easy to fix, than let it become a bigger issue later.\n\n",
       "Since starting on ", format(pkg$start_date, "%d %B"), ", your team has collected ", comma(pkg$n_collected_total),
-      " interviews, of which ", comma(n_achieved_headline), " currently count toward your Achieved total - ",
-      percent(pct_achieved, accuracy=0.1), " of your overall target.",
+      " interviews, of which ", comma(n_achieved_headline), " currently count toward your Achieved total (",
+      comma(n_credited_headline), " credited toward target - ", percent(pct_achieved, accuracy=0.1),
+      " of your overall target, with ", comma(n_remaining_headline), " still needed across your LGAs; surplus in one LGA or population group doesn't count against a gap in another).",
       if (!is.null(positive)) paste0(" ", positive) else ""
     )
   } else {
     paste0(
       "As part of ongoing monitoring of the MSNA N-WEC 2026 data collection, we've completed a detailed review of your team's submissions to date. This email summarises where things stand, and the attached workbook contains everything we need your team's help with.\n\n",
       "Your team has collected ", comma(pkg$n_collected_total), " interviews so far, of which ", comma(n_achieved_headline),
-      " currently count toward your Achieved total - ", percent(pct_achieved, accuracy=0.1), " of your target. Of the remainder, ",
+      " currently count toward your Achieved total (", comma(n_credited_headline), " credited toward target - ", percent(pct_achieved, accuracy=0.1),
+      " of your target, with ", comma(n_remaining_headline), " still needed across your LGAs; surplus in one LGA or population group doesn't count against a gap in another). Of the remainder, ",
       comma(n_del), " interview", if(n_del!=1) "s" else "", " ", if(n_del!=1) "are" else "is", " confirmed for removal, and a further ",
       comma(total_needing_input), " need your team's input to confirm whether they can be recovered rather than deleted.",
       if (!is.null(positive)) paste0(" ", positive) else ""

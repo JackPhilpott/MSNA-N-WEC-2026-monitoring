@@ -112,9 +112,14 @@ mod_partner_report_server <- function(id, selected_partners, target_basis) {
       # target_sample/target_sample_current still have their own fixed
       # Original/Revised reference cards (kpi_target_original/kpi_target),
       # unaffected by the toggle.
+      # FIX 2026-09-21: % is credited_achieved_n / target (per-stratum
+      # capped in global.R, summed per LGA in partner_progress_by_lga(),
+      # summed again here - safe both times since each LGA's figure is
+      # already capped at its own strata). Raw all-interviews count stays
+      # as the headline number ("show both").
       denom <- sum(lga_df()$target_active)
-      pct <- if (denom > 0) sum(lga_df()$achieved_n) / denom else NA_real_
-      paste0(comma(sum(lga_df()$achieved_n)), " (", fmt_pct(pct), ")")
+      pct <- if (denom > 0) sum(lga_df()$credited_achieved_n) / denom else NA_real_
+      paste0(comma(sum(lga_df()$achieved_n)), " (", fmt_pct(pct), " credited; ", comma(sum(lga_df()$remaining_n)), " still needed)")
     })
     output$kpi_collected <- renderText({ comma(sum(lga_df()$collected_n)) })
     output$kpi_confirmed_deletion <- renderText({ comma(sum(lga_df()$confirmed_deletion_n)) })
@@ -147,7 +152,11 @@ mod_partner_report_server <- function(id, selected_partners, target_basis) {
           # ADDED 2026-09-16 (Jack, visibility ask): shared helper (global.R).
           `Δ vs Original` = target_delta_pct(target_sample, target_sample_current),
           Collected = collected_n, `Confirmed Deleted` = confirmed_deletion_n, `Pending Deletion` = pending_deletion_n,
-          Achieved = achieved_n, `% achieved` = pct_achieved,
+          Achieved = achieved_n,
+          # FIX 2026-09-21 ("show both"): credited/still-needed are the
+          # per-stratum capped/floored rollups; % achieved is credited-based.
+          `Credited toward target` = credited_achieved_n, `Still needed` = remaining_n,
+          `% achieved` = pct_achieved, `% achieved (raw)` = pct_achieved_raw,
           Status = factor(status, levels = names(STATUS_COLORS)),
           `Shared with` = shared_with
         )
@@ -156,7 +165,7 @@ mod_partner_report_server <- function(id, selected_partners, target_basis) {
         # tables - target_sample_current is now sourced from 1_sampling's
         # representativity calc and is genuinely fractional. Display-only.
         formatRound(c("Original Target", "Revised Target"), 0) %>%
-        formatPercentage("% achieved", 1) %>%
+        formatPercentage(c("% achieved", "% achieved (raw)"), 1) %>%
         formatPercentage("Δ vs Original", 1) %>%
         # ADDED 2026-09-16 (Jack): same 25% divergence highlight as
         # mod_table.R's own "Delta vs Original" column - see that file's
@@ -196,6 +205,11 @@ build_partner_excel <- function(org_id_val, file, target_basis = "original") {
   total_target_current <- sum(lga_df$target_sample_current)
   total_active <- sum(lga_df$target_active)
   total_achieved <- sum(lga_df$achieved_n)
+  # FIX 2026-09-21: per-stratum capped/floored rollups (global.R) - the
+  # summary % and the new Still-needed line key off these, not raw
+  # achieved across every LGA (surplus in one masked shortfall in another).
+  total_credited <- sum(lga_df$credited_achieved_n)
+  total_remaining <- sum(lga_df$remaining_n)
   total_collected <- sum(lga_df$collected_n)
   total_confirmed_deletion <- sum(lga_df$confirmed_deletion_n)
   total_pending_deletion <- sum(lga_df$pending_deletion_n)
@@ -207,7 +221,8 @@ build_partner_excel <- function(org_id_val, file, target_basis = "original") {
   # total_active (the toggle's current basis, default Original - matches
   # partner workbooks). total_target/total_target_current stay the fixed
   # Original/Revised reference figures shown above regardless.
-  pct_achieved_summary <- if (total_active > 0) total_achieved / total_active else NA_real_
+  pct_achieved_summary <- if (total_active > 0) total_credited / total_active else NA_real_
+  pct_achieved_raw_summary <- if (total_active > 0) total_achieved / total_active else NA_real_
 
   wb <- createWorkbook()
   addWorksheet(wb, "Summary")
@@ -215,30 +230,33 @@ build_partner_excel <- function(org_id_val, file, target_basis = "original") {
     wb, "Summary",
     data.frame(
       Field = c("Partner", "Report generated", "Original Target interviews (their LGAs)", "Revised Target interviews (their LGAs)",
-                "Achieved interviews", "Collected interviews", "Confirmed Deleted", "Oversampling Surplus", "Pending Deletion (informational, included in Achieved)",
-                "% achieved", "Submissions logged", "Flagged for review", "Flag rate", "Consent refusals"),
+                "Achieved interviews (all, incl. surplus)", "Credited toward target (capped per stratum)", "Still needed (sum of each stratum's own gap)",
+                "Collected interviews", "Confirmed Deleted", "Oversampling Surplus", "Pending Deletion (informational, included in Achieved)",
+                "% achieved (credited)", "% achieved (raw)", "Submissions logged", "Flagged for review", "Flag rate", "Consent refusals"),
       Value = c(
         label, format(Sys.time(), "%d %b %Y %H:%M"), comma(total_target), comma(total_target_current),
-        comma(total_achieved), comma(total_collected), comma(total_confirmed_deletion), comma(total_oversampling_surplus), comma(total_pending_deletion),
-        fmt_pct(pct_achieved_summary), comma(qual$submissions), comma(qual$flagged),
+        comma(total_achieved), comma(total_credited), comma(total_remaining),
+        comma(total_collected), comma(total_confirmed_deletion), comma(total_oversampling_surplus), comma(total_pending_deletion),
+        fmt_pct(pct_achieved_summary), fmt_pct(pct_achieved_raw_summary), comma(qual$submissions), comma(qual$flagged),
         fmt_pct(qual$flag_rate), comma(qual$consent_refused)
       )
     ),
     colNames = FALSE
   )
   setColWidths(wb, "Summary", cols = 1:2, widths = c(28, 40))
-  addStyle(wb, "Summary", createStyle(textDecoration = "bold"), rows = 1:14, cols = 1)
+  addStyle(wb, "Summary", createStyle(textDecoration = "bold"), rows = 1:17, cols = 1)
   writeData(
     wb, "Summary",
     paste(
       paste0("Achieved = completed, matched interviews that are not a SETTLED (confirmed/contested) tracker deletion, measured against ", target_basis_label(target_basis), " (2026-09-19: follows the dashboard's Target basis toggle at the time this report was generated, default Original to match partner workbooks). Policy changed 2026-09-11: a pending/unresolved flag no longer excludes an interview - only a confirmed deletion does. Policy changed again 2026-09-20 (Jack's decision, informed by discussion with donors): Achieved now includes oversampled interviews in full too - a cluster collected past its own target is no longer capped out of Achieved. Target figures are untouched by this."),
       "Collected = every completed interview actually done, including oversampled surplus.",
       "Confirmed Deleted = a settled tracker deletion, genuinely gone. Pending Deletion (informational only, not part of the identity below) = how much of Achieved still carries an unresolved flag that could still become a confirmed deletion. Collected always equals Achieved + Confirmed Deleted + Oversampling Surplus - as of 2026-09-20 that last term is usually near zero (a small match-quality leftover, no longer real oversampling, which now counts toward Achieved directly - see the Coverage Map/digest's Oversampled clusters for the real diagnostic).",
-      "Original Target = the frozen design-time total, unchanged since fielding began. Revised Target = the live required minimum (1_sampling's representativity calculation, recomputed fresh every refresh against the current accessible population) — can rise or fall, not just grow, as accessibility/population changes."
+      "Original Target = the frozen design-time total, unchanged since fielding began. Revised Target = the live required minimum (1_sampling's representativity calculation, recomputed fresh every refresh against the current accessible population) — can rise or fall, not just grow, as accessibility/population changes.",
+      "Credited toward target / Still needed (2026-09-21): Achieved is capped at each stratum's (LGA x population group) own target BEFORE the LGA and partner totals are summed, so an oversampled stratum's surplus never offsets another stratum's shortfall - a real interview in one place can't stand in for one still needed somewhere else. '% achieved (credited)' can therefore never read 100% while any stratum is still short. '% achieved (raw)' is the plain all-interviews / target share, kept for reference."
     ),
-    startRow = 16
+    startRow = 19
   )
-  addStyle(wb, "Summary", createStyle(fontSize = 9, textDecoration = "italic", fontColour = "#666666", wrapText = TRUE), rows = 16, cols = 1)
+  addStyle(wb, "Summary", createStyle(fontSize = 9, textDecoration = "italic", fontColour = "#666666", wrapText = TRUE), rows = 19, cols = 1)
 
   sheet2 <- "Progress by LGA"
   addWorksheet(wb, sheet2)
@@ -251,10 +269,11 @@ build_partner_excel <- function(org_id_val, file, target_basis = "original") {
               # itself here rather than relying on a numFmt.
               `Original Target` = round(target_sample), `Revised Target` = round(target_sample_current),
               Collected = collected_n, `Confirmed Deleted` = confirmed_deletion_n, `Pending Deletion` = pending_deletion_n,
-              Achieved = achieved_n, `% achieved` = pct_achieved, Status = status,
+              Achieved = achieved_n, `Credited toward target` = credited_achieved_n, `Still needed` = remaining_n,
+              `% achieved` = pct_achieved, `% achieved (raw)` = pct_achieved_raw, Status = status,
               `Shared with` = shared_with)
   writeDataTable(wb, sheet2, export_df, tableStyle = "TableStyleLight9")
-  pct_col <- which(names(export_df) == "% achieved")
+  pct_col <- which(names(export_df) %in% c("% achieved", "% achieved (raw)"))
   status_col <- which(names(export_df) == "Status")
   addStyle(wb, sheet2, createStyle(numFmt = "0%"), rows = 2:(nrow(export_df) + 1), cols = pct_col, gridExpand = TRUE, stack = TRUE)
   for (s in names(STATUS_COLORS)) {
@@ -277,6 +296,10 @@ build_partner_pdf <- function(org_id_val, file, target_basis = "original") {
   total_target_current <- sum(lga_df$target_sample_current)
   total_active <- sum(lga_df$target_active)
   total_achieved <- sum(lga_df$achieved_n)
+  # FIX 2026-09-21: per-stratum capped/floored rollups - see build_partner_
+  # excel() above for the reasoning; same fix here.
+  total_credited <- sum(lga_df$credited_achieved_n)
+  total_remaining <- sum(lga_df$remaining_n)
   total_collected <- sum(lga_df$collected_n)
   total_confirmed_deletion <- sum(lga_df$confirmed_deletion_n)
   total_pending_deletion <- sum(lga_df$pending_deletion_n)
@@ -285,16 +308,19 @@ build_partner_pdf <- function(org_id_val, file, target_basis = "original") {
   # total_active, default Original. total_target/total_target_current stay
   # the fixed Original/Revised reference figures shown in the header below
   # regardless of the toggle.
-  pct <- if (total_active > 0) total_achieved / total_active else NA_real_
+  pct <- if (total_active > 0) total_credited / total_active else NA_real_
+  pct_raw <- if (total_active > 0) total_achieved / total_active else NA_real_
 
   header_text <- paste0(
     label, "\nMSNA N-WEC 2026 — Progress Report\nGenerated: ", format(Sys.time(), "%d %b %Y %H:%M"),
     "\n\nOriginal Target: ", comma(total_target), "     Revised Target: ", comma(total_target_current),
-    "\nAchieved: ", comma(total_achieved), " (", fmt_pct(pct), ")", "     Collected: ", comma(total_collected),
+    "\nCredited toward target: ", comma(total_credited), " (", fmt_pct(pct), ")     Still needed: ", comma(total_remaining),
+    "\nAchieved (all interviews incl. surplus): ", comma(total_achieved), " (", fmt_pct(pct_raw), " raw)", "     Collected: ", comma(total_collected),
     "\nConfirmed Deleted: ", comma(total_confirmed_deletion), "     Oversampling Surplus: ", comma(total_oversampling_surplus),
     "\nPending Deletion (informational, included in Achieved above): ", comma(total_pending_deletion),
     "\nSubmissions logged: ", comma(qual$submissions), "     Flagged for review: ", comma(qual$flagged), " (", fmt_pct(qual$flag_rate), ")",
-    "\nAchieved = measured against ", target_basis_label(target_basis), " (2026-09-19: follows the dashboard's Target basis toggle at generation time, default Original to match partner workbooks), excludes only SETTLED (confirmed) deletions - a pending flag no longer excludes (policy changed 2026-09-11), and includes oversampled interviews in full (policy changed 2026-09-20, no longer capped per cluster). Collected = every completed interview, incl. oversampled surplus. Oversampling Surplus above is usually near zero - a small match-quality leftover, not real oversampling."
+    "\nAchieved = measured against ", target_basis_label(target_basis), " (2026-09-19: follows the dashboard's Target basis toggle at generation time, default Original to match partner workbooks), excludes only SETTLED (confirmed) deletions - a pending flag no longer excludes (policy changed 2026-09-11), and includes oversampled interviews in full (policy changed 2026-09-20, no longer capped per cluster). Collected = every completed interview, incl. oversampled surplus. Oversampling Surplus above is usually near zero - a small match-quality leftover, not real oversampling.",
+    "\nCredited toward target (2026-09-21) = Achieved capped at each LGA x population-group stratum's own target BEFORE summing, so surplus in one stratum never offsets a shortfall in another; Still needed = the sum of every stratum's own remaining gap. The credited % can't read 100% while any stratum is still short."
   )
   header_plot <- ggplot() + theme_void() + xlim(0, 1) + ylim(0, 1) +
     annotate("text", x = 0, y = 1, label = header_text, hjust = 0, vjust = 1, size = 4.2)
@@ -317,7 +343,7 @@ build_partner_pdf <- function(org_id_val, file, target_basis = "original") {
       # FIX 2026-09-16 (Decision A), extended 2026-09-19 (global toggle):
       # target_active, to match pct_achieved, which is now computed
       # against target_active too.
-      paste0("  - ", focus$adm2_name, " (", fmt_pct(focus$pct_achieved), ", ", focus$achieved_n, "/", comma(round(focus$target_active)), ")", collapse = "\n")
+      paste0("  - ", focus$adm2_name, " (", fmt_pct(focus$pct_achieved), " credited, ", focus$credited_achieved_n, "/", comma(round(focus$target_active)), ", ", focus$remaining_n, " still needed)", collapse = "\n")
     )
   }
   shared <- lga_df %>% filter(shared_with != "")

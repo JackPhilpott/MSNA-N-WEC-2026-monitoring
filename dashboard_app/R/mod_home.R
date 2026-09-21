@@ -169,6 +169,14 @@ mod_home_server <- function(id, target_basis) {
       # that identity, not just under-report it).
       national_agg <- progress_active() %>% filter(status != "Dropped")
       total_achieved <- sum(national_agg$achieved_n)
+      # FIX 2026-09-21 (Jack): national rollups summed raw achieved_n across
+      # every stratum, so one oversampled stratum's surplus cancelled
+      # another's shortfall in the headline % / still-needed. These two are
+      # capped/floored per stratum in compute_progress_by_stratum() before
+      # being summed here. total_achieved above stays raw - it's still the
+      # honest "all real interviews" count, shown alongside ("show both").
+      total_credited <- sum(national_agg$credited_achieved_n)
+      total_remaining <- sum(national_agg$remaining_n)
       # FIXED 2026-09-11: was sum(is_collected(submissions_raw)) - a raw,
       # unscoped sum over every submission, computed independently from the
       # other three figures on this row (which all come from
@@ -220,8 +228,12 @@ mod_home_server <- function(id, target_basis) {
           )
         ),
         tags$tr(
-          tags$td("Achieved so far", info_icon("Completed interviews that count toward target — excludes confirmed deletions. Includes oversampled interviews in full as of 2026-09-20.")),
-          tags$td(strong(comma(total_achieved), " (", fmt_pct(total_achieved / active_planned_interviews(target_basis())), " of ", target_basis_label(target_basis()), ")"))
+          tags$td("Achieved so far", info_icon("Every completed interview that counts — excludes confirmed deletions, includes oversampled interviews in full (2026-09-20). The bracketed % is the raw share of target; see the next row for progress that can't be inflated by surplus.")),
+          tags$td(strong(comma(total_achieved), " (raw ", fmt_pct(total_achieved / active_planned_interviews(target_basis())), " of ", target_basis_label(target_basis()), ")"))
+        ),
+        tags$tr(
+          tags$td("Credited toward target / Still needed", info_icon("Achieved capped at each stratum's own target BEFORE summing nationally - an oversampled stratum's surplus never offsets another stratum's shortfall, so this % can't read 100% while any stratum is still short. Still needed = the sum of every stratum's own remaining gap. Fixed 2026-09-21.")),
+          tags$td(strong(comma(total_credited), " (", fmt_pct(total_credited / active_planned_interviews(target_basis())), " of ", target_basis_label(target_basis()), ") / ", comma(total_remaining), " still needed"))
         ),
         tags$tr(
           tags$td("Collected so far", info_icon("Every completed interview, including any later deleted or oversampled — total field effort, not what counts toward target.")),
@@ -273,6 +285,9 @@ mod_home_server <- function(id, target_basis) {
       # exactly "same figure as Achieved so far above", as the info_icon
       # below claims.
       total_achieved <- sum(progress_active()$achieved_n[progress_active()$status != "Dropped"])
+      # FIX 2026-09-21: credited (per-stratum capped) drives the % - see
+      # output$glance above for why. Raw count still shown as the number.
+      total_credited <- sum(progress_active()$credited_achieved_n[progress_active()$status != "Dropped"])
       total_collected <- sum(is_collected(submissions_raw))
       # FIX 2026-09-16 (Decision A), extended 2026-09-19 (global toggle):
       # follows the sidebar's Target basis toggle, matching output$glance
@@ -286,8 +301,8 @@ mod_home_server <- function(id, target_basis) {
         tags$tr(tags$td("Submissions that day"), tags$td(strong(comma(today_count)))),
         tags$tr(tags$td("Submissions the day before"), tags$td(strong(comma(yesterday_n)))),
         tags$tr(
-          tags$td("Total achieved to date", info_icon("Same figure as 'Achieved so far' above, shown alongside today's activity for context.")),
-          tags$td(strong(comma(total_achieved), " / ", comma(total_target), " (", fmt_pct(total_achieved / total_target), ")"))
+          tags$td("Total achieved to date", info_icon("Same figures as 'Achieved so far' / 'Credited toward target' above, shown alongside today's activity for context. The % is credited (capped per stratum), not raw.")),
+          tags$td(strong(comma(total_achieved), " / ", comma(total_target), " (", fmt_pct(total_credited / total_target), " credited toward target)"))
         ),
         tags$tr(
           tags$td("Total collected to date", info_icon("Every completed interview, including surplus, duplicates and unmatched submissions.")),

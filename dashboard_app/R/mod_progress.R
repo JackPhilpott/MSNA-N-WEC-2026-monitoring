@@ -56,7 +56,10 @@ mod_progress_ui <- function(id) {
         theme = "warning"
       ),
       value_box(
-        title = info_title("% of target", "Achieved as a share of target."),
+        title = info_title(
+          "% of target",
+          "Progress toward target, capped per stratum before summing - an oversampled stratum's surplus never offsets another stratum's shortfall, so this can never read 100% while any stratum is still short. The raw share (all interviews incl. surplus / target) is shown in brackets for reference. Fixed 2026-09-21."
+        ),
         value = textOutput(ns("kpi_pct")),
         showcase = icon("percent"),
         theme = "success"
@@ -94,7 +97,7 @@ mod_progress_ui <- function(id) {
       card(
         card_header(
           "Daily submissions (by population group) vs. pace needed to finish on time",
-          info_icon("Bars = new interviews per day. Green line = cumulative Achieved to date. Red dotted line = the steady pace needed to hit target by the deadline. Above the line = ahead of pace, below = behind."),
+          info_icon("Bars = new interviews per day. Green line = cumulative Achieved to date (ALL interviews incl. any surplus past a stratum's own target - the raw count, deliberately). Red dotted line = the steady pace needed to hit target by the deadline. Above the line = ahead of pace in total field effort - but surplus in one stratum can't close a gap in another, so read this alongside the '% of target' tile above (credited per stratum) before concluding the target itself is on track."),
           span(
             class = "text-muted", style = "font-size: 0.8em; font-weight: normal; margin-left: 8px;",
             "\"Unmatched\" = submissions where the enumerator picked the wrong LGA in-app, so they couldn't be linked to a sampled cluster (and therefore a pop. group) — see the Data Quality tab's LGA-mismatch flag."
@@ -153,10 +156,20 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum, target_basi
     })
 
     output$kpi_pct <- renderText({
+      # FIX 2026-09-21 (Jack): summed across many strata, raw achieved_n
+      # lets one oversampled stratum's surplus cancel another's shortfall
+      # (a real interview in A can't substitute for one still needed in
+      # B). credited_achieved_n is capped at each stratum's own target
+      # BEFORE the sum (compute_progress_by_stratum(), global.R), so this
+      # tile can't read "done" while any stratum is still short. Raw ratio
+      # kept in brackets per Jack's "show both" - it's a real, different
+      # question (total field effort vs target), not a wrong number.
       s <- filtered_stratum() %>% filter(status != "Dropped")
       tgt <- sum(s$target_active, na.rm = TRUE)
-      ach <- sum(s$achieved_n, na.rm = TRUE)
-      fmt_pct(if (tgt > 0) ach / tgt else NA_real_)
+      credited <- sum(s$credited_achieved_n, na.rm = TRUE)
+      raw <- sum(s$achieved_n, na.rm = TRUE)
+      if (tgt <= 0) return(fmt_pct(NA_real_))
+      paste0(fmt_pct(credited / tgt), " (raw ", fmt_pct(raw / tgt), ")")
     })
 
     output$kpi_collected <- renderText({
@@ -200,9 +213,14 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum, target_basi
       subs <- filtered_subs()
       # FIX 2026-09-16 (Decision A), extended 2026-09-19 (global toggle):
       # target_active - "Still Needed" follows the sidebar toggle now.
-      target <- sum(s$target_active, na.rm = TRUE)
       achieved <- sum(s$achieved_n, na.rm = TRUE)
-      remaining <- max(target - achieved, 0)
+      # FIX 2026-09-21: remaining_n is floored per stratum then summed
+      # (global.R) - was max(sum(target) - sum(achieved), 0), one
+      # subtraction after summing raw achieved across every stratum in
+      # scope, which let surplus in one stratum hide a shortfall in
+      # another. Pace itself (achieved / days) stays raw - that's real
+      # collection speed, not a target-tracking figure.
+      remaining <- sum(s$remaining_n, na.rm = TRUE)
       if (remaining <= 0) return("Target met")
       start_date <- suppressWarnings(min(subs$submission_date, na.rm = TRUE))
       if (!is.finite(start_date)) return("N/A")
@@ -355,15 +373,18 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum, target_basi
       region_base <- filtered_stratum() %>% filter(status != "Dropped")
       # FIX 2026-09-16 (Decision A), extended 2026-09-19 (global toggle):
       # target_active - follows the sidebar's Target basis toggle now.
+      # FIX 2026-09-21: credited_achieved_n (capped per stratum in
+      # global.R) instead of raw achieved_n - a region bar collapses many
+      # strata, exactly where surplus in one masked shortfall in another.
       by_region_pop <- region_base %>%
         group_by(region, pop_type) %>%
-        summarise(target_active = sum(target_active, na.rm = TRUE), achieved_n = sum(achieved_n, na.rm = TRUE), .groups = "drop") %>%
-        mutate(pct = ifelse(target_active > 0, achieved_n / target_active, 0), series = unname(POP_TYPE_LABELS[pop_type]))
+        summarise(target_active = sum(target_active, na.rm = TRUE), credited_achieved_n = sum(credited_achieved_n, na.rm = TRUE), .groups = "drop") %>%
+        mutate(pct = ifelse(target_active > 0, credited_achieved_n / target_active, 0), series = unname(POP_TYPE_LABELS[pop_type]))
 
       combined <- region_base %>%
         group_by(region) %>%
-        summarise(target_active = sum(target_active, na.rm = TRUE), achieved_n = sum(achieved_n, na.rm = TRUE), .groups = "drop") %>%
-        mutate(pct = ifelse(target_active > 0, achieved_n / target_active, 0), series = "Combined")
+        summarise(target_active = sum(target_active, na.rm = TRUE), credited_achieved_n = sum(credited_achieved_n, na.rm = TRUE), .groups = "drop") %>%
+        mutate(pct = ifelse(target_active > 0, credited_achieved_n / target_active, 0), series = "Combined")
 
       s <- bind_rows(
         by_region_pop %>% select(region, pct, series),
@@ -380,7 +401,7 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum, target_basi
       ) %>%
         layout(
           barmode = "group",
-          xaxis = list(title = "% of target achieved", tickformat = ".0%", range = c(0, 1.2)),
+          xaxis = list(title = "% of target achieved (credited per stratum - surplus never offsets another stratum's gap)", tickformat = ".0%", range = c(0, 1.2)),
           yaxis = list(title = ""),
           legend = list(orientation = "h", y = -0.15),
           margin = list(l = 90, r = 20, t = 20, b = 40)
@@ -457,7 +478,11 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum, target_basi
           # fraction of THIS partner's own Original Target - the bar's own
           # 0-1 scale, capped so an over-achieved partner's fill stops at
           # the bar's own full width rather than extending past it.
-          fill_frac = ifelse(target_sample > 0, pmin(achieved_n / target_sample, 1), 0),
+          # FIX 2026-09-21: credited_achieved_n (per-stratum capped, from
+          # build_partner_progress_summary(), original basis here) - raw
+          # achieved_n let a partner's oversampled LGA fill in for a short
+          # one. pmin(...,1) kept as a belt-and-braces guard only.
+          fill_frac = ifelse(target_sample > 0, pmin(credited_achieved_n / target_sample, 1), 0),
           # ADDED 2026-09-16b: the visible remainder of the bar (Achieved to
           # Original Target) - stacked on top of fill_frac so the FULL bar
           # always reaches exactly 1.0 (= Original Target), making the full
@@ -476,15 +501,23 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum, target_basi
           # order deliberately (Original first) since meeting Original
           # implies meeting Revised too, and case_when takes the first
           # match.
+          # FIX 2026-09-21: "At/above Original" now means every stratum
+          # met its own target (remaining_n == 0, per-stratum floored),
+          # not raw partner-total >= partner-target. The Revised-stage
+          # test stays raw: this static summary is original-basis only, so
+          # there's no revised-basis credited figure to key it off - a
+          # known, documented residual, not an oversight.
           stage = factor(case_when(
-            target_sample > 0 & achieved_n >= target_sample ~ "At/above Original Target",
+            target_sample > 0 & remaining_n <= 0 ~ "At/above Original Target",
             target_sample_current > 0 & achieved_n >= target_sample_current ~ "At/above Revised, below Original",
             TRUE ~ "Below Revised Target"
           ), levels = names(STAGE_COLORS)),
           hover_text = paste0(
-            "Achieved: ", comma(achieved_n), " / Original Target: ", comma(target_sample),
+            "Credited toward target: ", comma(credited_achieved_n), " / Original Target: ", comma(target_sample),
+            "\nStill needed: ", comma(remaining_n),
+            "\nAll interviews (incl. surplus): ", comma(achieved_n),
             " (Revised Target: ", comma(round(target_sample_current)), ")",
-            ifelse(exceeded, paste0("\nExceeded Original by ", comma(achieved_n - target_sample)), "")
+            ifelse(exceeded, paste0("\nExceeded Original in total by ", comma(achieved_n - target_sample)), "")
           )
         )
 
@@ -554,7 +587,10 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum, target_basi
       plot_ly(
         df, y = ~partner_label, x = ~pct_achieved, color = ~status, colors = partner_pace_colors,
         type = "bar", orientation = "h",
-        text = ~paste0(comma(achieved_n), " / ", comma(round(target_active)), " (", percent(pct_achieved, accuracy = 1), " of ", target_basis_label(target_basis()), ")"),
+        # FIX 2026-09-21: pct_achieved here is credited (per-stratum
+        # capped) as of build_partner_progress_summary(); label shows
+        # credited / target with the raw all-interviews count alongside.
+        text = ~paste0(comma(credited_achieved_n), " / ", comma(round(target_active)), " (", percent(pct_achieved, accuracy = 1), " of ", target_basis_label(target_basis()), "; ", comma(achieved_n), " incl. surplus)"),
         textposition = "outside", hoverinfo = "text"
       ) %>%
         layout(
@@ -579,7 +615,14 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum, target_basi
           Collected = collected_n, `Confirmed Deleted` = confirmed_deletion_n, `Oversampling Surplus` = oversampling_surplus_n,
           `Pending Deletion` = pending_deletion_n,
           Achieved = achieved_n,
+          # FIX 2026-09-21 ("show both"): Achieved stays the raw all-
+          # interviews count; the two new columns are the per-stratum-
+          # capped/floored rollups; % achieved is credited-based (can't
+          # read 100% while any stratum is short), raw % kept alongside.
+          `Credited toward target` = credited_achieved_n,
+          `Still needed` = remaining_n,
           `% achieved` = pct_achieved,
+          `% achieved (raw)` = pct_achieved_raw,
           `Shared with` = shared_with,
           `Start date` = start_date,
           `Current daily pace` = round(current_daily_pace, 1),
@@ -589,12 +632,13 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum, target_basi
         )
 
       # 0-based: 0 Partner, 1 Original Target, 2 Revised Target, 3 Collected,
-      # 4 Confirmed Deleted, 5 Pending Deletion, 6 Achieved, 7 % achieved,
-      # 8 Shared with, 9 Start date, 10 Current pace, 11 Required pace,
-      # 12 Projected finish, 13 Status.
+      # 4 Confirmed Deleted, 5 Oversampling Surplus, 6 Pending Deletion,
+      # 7 Achieved, 8 Credited toward target, 9 Still needed, 10 % achieved,
+      # 11 % achieved (raw), 12 Shared with, 13 Start date, 14 Current pace,
+      # 15 Required pace, 16 Projected finish, 17 Status.
       datatable(
         df, rownames = FALSE, filter = "top",
-        options = list(pageLength = 20, order = list(list(7, "asc")), columnDefs = list(list(className = "dt-right", targets = c(1:7, 10, 11))))
+        options = list(pageLength = 20, order = list(list(10, "asc")), columnDefs = list(list(className = "dt-right", targets = c(1:11, 14, 15))))
       ) %>%
         # 2026-09-14 (Jack): Original/Revised Target were showing raw
         # unrounded decimals here - target_sample_current (global.R) is now
@@ -608,7 +652,7 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum, target_basi
         # one page. Display-only rounding (sorting/filtering still use the
         # exact value) - restores the match the cards already implied.
         formatRound(c("Original Target", "Revised Target"), 0) %>%
-        formatPercentage("% achieved", 1) %>%
+        formatPercentage(c("% achieved", "% achieved (raw)"), 1) %>%
         formatStyle(
           "Status",
           color = styleEqual(names(partner_pace_colors), unname(partner_pace_colors))

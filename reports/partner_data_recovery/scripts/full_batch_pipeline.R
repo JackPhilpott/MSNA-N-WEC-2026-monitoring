@@ -451,6 +451,36 @@ build_partner_package <- function(org) {
   gps_full_o <- gps_all %>% filter(org_id == org)
   idp_full_o <- t1_all %>% filter(org_id == org)
   n_achieved <- sum(full_o$interview_outcome == "completed" & !is.na(full_o$matched_survey_id) & !(full_o$uuid %in% achieved_excluded_uuids))
+  # FIX 2026-09-21 (Jack): n_achieved above is a raw per-partner sum across
+  # every stratum (LGA x pop_type) - fine as "all real interviews", but
+  # build_email_fn.R divided it by target_sample for "% of your target",
+  # which lets one oversampled stratum's surplus cancel another stratum's
+  # shortfall (a real interview in A can't stand in for one needed in B).
+  # Cap/floor per stratum FIRST, then sum - identity by construction:
+  # n_credited + n_remaining == target_sample. Same fix as dashboard_app/
+  # global.R's compute_progress_by_stratum() the same day. Guarded on
+  # matched_strata_id being present so a pre-2026-09 real_submissions.csv
+  # degrades to the old raw figures rather than erroring (this pipeline is
+  # dormant at the time of writing).
+  if ("matched_strata_id" %in% names(full_o) && "strata_id" %in% names(strata_frame)) {
+    strata_targets_o <- strata_frame %>%
+      filter(adm2_pcode %in% my_adm2, coverage_status != "excluded") %>%
+      select(strata_id, target_sample) %>%
+      mutate(target_sample = coalesce(as.numeric(target_sample), 0))
+    achieved_by_stratum_o <- full_o %>%
+      filter(interview_outcome == "completed", !is.na(matched_survey_id), !(uuid %in% achieved_excluded_uuids)) %>%
+      count(matched_strata_id, name = "n_ach")
+    rollup_o <- strata_targets_o %>%
+      left_join(achieved_by_stratum_o, by = c("strata_id" = "matched_strata_id")) %>%
+      mutate(n_ach = coalesce(n_ach, 0L),
+             credited = pmin(n_ach, target_sample),
+             remaining = pmax(target_sample - n_ach, 0))
+    n_credited <- sum(rollup_o$credited)
+    n_remaining <- sum(rollup_o$remaining)
+  } else {
+    n_credited <- n_achieved
+    n_remaining <- max(target_sample - n_achieved, 0)
+  }
 
   # Still a real, useful per-cluster diagnostic (which clusters/how much
   # surplus) - unaffected by the 2026-09-20 change below, same reasoning as
@@ -619,6 +649,7 @@ build_partner_package <- function(org) {
        oversampled_clusters = oversampled_clusters,
        cluster_lookup_nonidp = cluster_lookup_nonidp, cluster_lookup_idp = cluster_lookup_idp,
        n_collected_total = nrow(full_o), n_achieved_total = n_achieved,
+       n_credited_total = n_credited, n_remaining_total = n_remaining,
        target_sample = target_sample,
        start_date = start_date, n_flagged_enums = sum(scorecard$notes != ""),
        n_duration_under_20_total = sum(scorecard$n_duration_under_20),
