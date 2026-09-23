@@ -1,6 +1,16 @@
 library(scales)
 
-build_partner_email <- function(pkg, precautionary = FALSE, deadline = "4 September 2026") {
+# ADDED 2026-09-23, per Jack: second_round=TRUE produces a condensed
+# follow-up variant (shorter per-category prose, pointing to the workbook
+# instead of re-explaining the mechanism each round) plus an explicit note
+# that the prior round's partner responses are already incorporated and
+# won't reappear here. first_email_date is only used inside that note's
+# text. deadline's old default ("4 September 2026") was a real staleness
+# trap - run_full_batch_emails.R never passed one explicitly, so every
+# batch since the first silently reused round 1's deadline; that call site
+# now passes deadline explicitly instead of relying on this default.
+build_partner_email <- function(pkg, precautionary = FALSE, deadline = "28 September 2026",
+                                 second_round = FALSE, first_email_date = "30 August 2026") {
   n_gps <- nrow(pkg$gps_sheet); n_idp <- nrow(pkg$idp_sheet); n_del <- nrow(pkg$del_sheet)
   n_listing_rows <- nrow(pkg$listing_sheet)
   n_listing_interviews <- if (n_listing_rows > 0) sum(pkg$listing_sheet$affected_interviews) else 0
@@ -63,14 +73,23 @@ build_partner_email <- function(pkg, precautionary = FALSE, deadline = "4 Septem
   }
 
   subject <- if (precautionary) {
-    paste0("MSNA N-WEC 2026 — ", toupper(pkg$org), " early data check-in")
+    paste0("MSNA N-WEC 2026 — ", toupper(pkg$org), " early data check-in", if (second_round) " (update)" else "")
   } else {
-    paste0("MSNA N-WEC 2026 — ", toupper(pkg$org), " data collection review & action needed by ", deadline)
+    paste0("MSNA N-WEC 2026 — ", toupper(pkg$org), " data collection review & action needed by ", deadline, if (second_round) " (update)" else "")
   }
+
+  followup_note <- if (second_round) {
+    paste0(
+      "This is a follow-up to the data recovery workbook we sent on ", first_email_date,
+      ". Everything your team told us in that response has already been incorporated - anything you resolved then won't reappear below. ",
+      "This version reflects only what's new or still outstanding since then, checked against your team's most current submissions.\n\n"
+    )
+  } else ""
 
   overall_para <- if (precautionary) {
     paste0(
-      "Your team is only a few days into MSNA N-WEC 2026 data collection, so this is a lighter early check-in rather than a full review - we'd rather flag something now, while it's easy to fix, than let it become a bigger issue later.\n\n",
+      if (second_round) "Your team is still relatively early in MSNA N-WEC 2026 data collection, so this remains a lighter check-in rather than a full review - we'd rather flag something now, while it's easy to fix, than let it become a bigger issue later.\n\n"
+      else "Your team is only a few days into MSNA N-WEC 2026 data collection, so this is a lighter early check-in rather than a full review - we'd rather flag something now, while it's easy to fix, than let it become a bigger issue later.\n\n",
       "Since starting on ", format(pkg$start_date, "%d %B"), ", your team has collected ", comma(pkg$n_collected_total),
       " interviews, of which ", comma(n_achieved_headline), " currently count toward your Achieved total (",
       comma(n_credited_headline), " credited toward target - ", percent(pct_achieved, accuracy=0.1),
@@ -90,13 +109,25 @@ build_partner_email <- function(pkg, precautionary = FALSE, deadline = "4 Septem
   }
 
   input_para <- if (total_needing_input > 0) {
-    parts <- character(0)
-    if (n_gps > 0) parts <- c(parts, paste0("- ", comma(n_gps), " interview", if(n_gps!=1) "s" else "", " where the recorded GPS location doesn't match the household point it's credited to. For each, we've suggested up to 3 nearby households nobody else has visited, based on our own sampling frame - we need your team to confirm which one (if any) is correct against your own field records."))
-    if (n_idp > 0) parts <- c(parts, paste0("- ", comma(n_idp), " interview", if(n_idp!=1) "s" else "", " where two of your team's submissions claim the same household listing slot in an IDP site, and there's often a plausible unclaimed number sitting right next to it (very likely a data-entry slip, not a real duplicate visit) - same ask, confirm the correct number."))
-    paste0(
-      paste(parts, collapse = "\n"),
-      "\n\nFor both, if your team can't determine the answer, that's a valid response - just say so. What we can't do anything with is silence: rows we don't hear back on stay flagged and unresolved rather than being cleared, so please do respond even if the answer is \"we don't know\" - a genuine resolution either way (confirmed as a real interview, or confirmed as incorrect and removed) is what actually closes these out."
-    )
+    if (second_round) {
+      parts <- character(0)
+      if (n_gps > 0) parts <- c(parts, paste0("- ", comma(n_gps), " interview", if(n_gps!=1) "s" else "", " still needing GPS confirmation"))
+      if (n_idp > 0) parts <- c(parts, paste0("- ", comma(n_idp), " interview", if(n_idp!=1) "s" else "", " still needing an IDP listing slot confirmed"))
+      sheet_names <- c(if (n_gps > 0) "GPS Duplicates", if (n_idp > 0) "IDP Listing Duplicates")
+      paste0(
+        paste(parts, collapse = "\n"),
+        "\n\nSame process as before - see the ", paste(sheet_names, collapse = " / "),
+        " sheet", if (length(sheet_names) != 1) "s" else "", " for details and dropdowns. \"We don't know\" is a valid answer; silence is the only thing that leaves a row unresolved."
+      )
+    } else {
+      parts <- character(0)
+      if (n_gps > 0) parts <- c(parts, paste0("- ", comma(n_gps), " interview", if(n_gps!=1) "s" else "", " where the recorded GPS location doesn't match the household point it's credited to. For each, we've suggested up to 3 nearby households nobody else has visited, based on our own sampling frame - we need your team to confirm which one (if any) is correct against your own field records."))
+      if (n_idp > 0) parts <- c(parts, paste0("- ", comma(n_idp), " interview", if(n_idp!=1) "s" else "", " where two of your team's submissions claim the same household listing slot in an IDP site, and there's often a plausible unclaimed number sitting right next to it (very likely a data-entry slip, not a real duplicate visit) - same ask, confirm the correct number."))
+      paste0(
+        paste(parts, collapse = "\n"),
+        "\n\nFor both, if your team can't determine the answer, that's a valid response - just say so. What we can't do anything with is silence: rows we don't hear back on stay flagged and unresolved rather than being cleared, so please do respond even if the answer is \"we don't know\" - a genuine resolution either way (confirmed as a real interview, or confirmed as incorrect and removed) is what actually closes these out."
+      )
+    }
   } else {
     NULL
   }
@@ -108,28 +139,49 @@ build_partner_email <- function(pkg, precautionary = FALSE, deadline = "4 Septem
   other_para <- if (n_other > 0) {
     n_date <- sum(pkg$other_sheet$reason == "date_outlier")
     n_crs <- sum(pkg$other_sheet$reason == "crs_unmatched")
-    parts <- character(0)
-    if (n_date > 0) parts <- c(parts, paste0("- ", comma(n_date), " interview", if(n_date!=1) "s" else "", " with a submission date that looks wrong (almost always a device clock issue) - the interview itself is matched to a real point, we just need your team to confirm the actual date it happened, if known."))
-    if (n_crs > 0) parts <- c(parts, paste0("- ", comma(n_crs), " interview", if(n_crs!=1) "s" else "", " that couldn't be matched to any of your team's assigned sample points at all - we need your team's help identifying which household/site this belongs to, if possible."))
-    paste0(
-      paste(parts, collapse = "\n"),
-      "\n\nIf your team can't determine the answer, that's a valid response - just say so. These stay flagged and pending either way; a confirmed correction resolves it properly, and if it turns out not to be a genuine interview, it will be removed at that point."
-    )
+    if (second_round) {
+      parts <- character(0)
+      if (n_date > 0) parts <- c(parts, paste0("- ", comma(n_date), " interview", if(n_date!=1) "s" else "", " still needing the submission date confirmed"))
+      if (n_crs > 0) parts <- c(parts, paste0("- ", comma(n_crs), " interview", if(n_crs!=1) "s" else "", " still unmatched to any assigned sample point"))
+      paste0(paste(parts, collapse = "\n"), "\n\nSee the Other Issues sheet for details. Same as above - a genuine \"we don't know\" is fine, silence is what leaves these pending.")
+    } else {
+      parts <- character(0)
+      if (n_date > 0) parts <- c(parts, paste0("- ", comma(n_date), " interview", if(n_date!=1) "s" else "", " with a submission date that looks wrong (almost always a device clock issue) - the interview itself is matched to a real point, we just need your team to confirm the actual date it happened, if known."))
+      if (n_crs > 0) parts <- c(parts, paste0("- ", comma(n_crs), " interview", if(n_crs!=1) "s" else "", " that couldn't be matched to any of your team's assigned sample points at all - we need your team's help identifying which household/site this belongs to, if possible."))
+      paste0(
+        paste(parts, collapse = "\n"),
+        "\n\nIf your team can't determine the answer, that's a valid response - just say so. These stay flagged and pending either way; a confirmed correction resolves it properly, and if it turns out not to be a genuine interview, it will be removed at that point."
+      )
+    }
   } else NULL
 
   listing_para <- if (n_listing_rows > 0) {
-    paste0(
-      comma(n_listing_interviews), " interview", if(n_listing_interviews!=1) "s" else "", " across ", comma(n_listing_rows),
-      " cluster", if(n_listing_rows!=1) "s" else "", " still have no Household Listing submission on file, so they can't yet be verified against a real sampling frame. ",
-      "See the Missing HH Listings sheet for the specific clusters, target/population figures, and affected interview IDs - we need your team to submit (or locate) the listing for these and confirm back to us once done."
-    )
+    if (second_round) {
+      paste0(
+        comma(n_listing_interviews), " interview", if(n_listing_interviews!=1) "s" else "", " across ", comma(n_listing_rows),
+        " cluster", if(n_listing_rows!=1) "s" else "", " still have no Household Listing on file - see the Missing HH Listings sheet for specifics."
+      )
+    } else {
+      paste0(
+        comma(n_listing_interviews), " interview", if(n_listing_interviews!=1) "s" else "", " across ", comma(n_listing_rows),
+        " cluster", if(n_listing_rows!=1) "s" else "", " still have no Household Listing submission on file, so they can't yet be verified against a real sampling frame. ",
+        "See the Missing HH Listings sheet for the specific clusters, target/population figures, and affected interview IDs - we need your team to submit (or locate) the listing for these and confirm back to us once done."
+      )
+    }
   } else NULL
 
   del_para <- if (n_del > 0) {
-    paste0(
-      comma(n_del), " interview", if(n_del!=1) "s" else "", " ", if(n_del!=1) "are" else "is",
-      " being removed regardless of the above - either the interview was too fast to have been genuinely completed, food-consumption answers were implausible, or consent wasn't given. No action needed unless your team believes a specific case is misclassified, in which case there's a column to flag that."
-    )
+    if (second_round) {
+      paste0(
+        comma(n_del), " interview", if(n_del!=1) "s" else "", " ", if(n_del!=1) "are" else "is",
+        " confirmed for removal (fast completion, implausible food-consumption answers, or no consent). Informational only - flag a specific row in the workbook if your team believes it's misclassified."
+      )
+    } else {
+      paste0(
+        comma(n_del), " interview", if(n_del!=1) "s" else "", " ", if(n_del!=1) "are" else "is",
+        " being removed regardless of the above - either the interview was too fast to have been genuinely completed, food-consumption answers were implausible, or consent wasn't given. No action needed unless your team believes a specific case is misclassified, in which case there's a column to flag that."
+      )
+    }
   } else {
     "No confirmed deletions recorded for your team at this time."
   }
@@ -137,27 +189,42 @@ build_partner_email <- function(pkg, precautionary = FALSE, deadline = "4 Septem
   n_oversampled <- nrow(pkg$oversampled_clusters)
   oversampled_para <- if (n_oversampled > 0) {
     total_surplus <- sum(pkg$oversampled_clusters$surplus)
-    paste0(
-      comma(n_oversampled), " cluster", if(n_oversampled!=1) "s have" else " has",
-      " already received more Achieved interviews than target - ", comma(total_surplus),
-      " interview", if(total_surplus!=1) "s" else "", " over, in total, which is why the Achieved total above is lower than your team's own count of good interviews. ",
-      "We haven't yet decided which specific interviews within a cluster this would affect if it comes to resampling, so no action is needed from your side for now - this is just visibility ahead of that decision, and so your team can prioritise other clusters for any further effort. See the Oversampled Clusters sheet for the specific clusters."
-    )
+    if (second_round) {
+      paste0(
+        comma(n_oversampled), " cluster", if(n_oversampled!=1) "s have" else " has",
+        " already received more Achieved interviews than target (", comma(total_surplus), " over, in total). No action needed - see the Oversampled Clusters sheet."
+      )
+    } else {
+      paste0(
+        comma(n_oversampled), " cluster", if(n_oversampled!=1) "s have" else " has",
+        " already received more Achieved interviews than target - ", comma(total_surplus),
+        " interview", if(total_surplus!=1) "s" else "", " over, in total, which is why the Achieved total above is lower than your team's own count of good interviews. ",
+        "We haven't yet decided which specific interviews within a cluster this would affect if it comes to resampling, so no action is needed from your side for now - this is just visibility ahead of that decision, and so your team can prioritise other clusters for any further effort. See the Oversampled Clusters sheet for the specific clusters."
+      )
+    }
   } else NULL
 
   n_dur20 <- pkg$n_duration_under_20_total
   n_dur2030 <- pkg$n_duration_20_30_total
-  duration_note <- paste0(
-    "A note on the duration cutoff specifically: we're currently treating anything under 20 minutes as confirmed for deletion -- ",
-    comma(n_dur20), " of your team's interviews fall under this (already reflected in the Confirmed Deletions above). ",
-    "From our testing, we think it is highly implausible to collect accurate data under 30 minutes. We will continue to verify this but until then we are confident in dropping all surveys under 20 minutes, and we remain concerned about interviews in the 20-30 minute range too -- a further ", comma(n_dur2030), " of your team's interviews fall in that band. ",
-    "These aren't being deleted at this stage, but we're flagging them now, ahead of time, so it isn't a surprise if some end up affected in a future round, and so your team can look at them now rather than after the fact."
-  )
+  duration_note <- if (second_round) {
+    paste0(
+      "Duration note: ", comma(n_dur20), " interview", if(n_dur20!=1) "s" else "", " under 20 minutes confirmed for deletion (already reflected above); a further ",
+      comma(n_dur2030), " in the 20-30 minute band remain flagged for a possible future round, not yet actioned."
+    )
+  } else {
+    paste0(
+      "A note on the duration cutoff specifically: we're currently treating anything under 20 minutes as confirmed for deletion -- ",
+      comma(n_dur20), " of your team's interviews fall under this (already reflected in the Confirmed Deletions above). ",
+      "From our testing, we think it is highly implausible to collect accurate data under 30 minutes. We will continue to verify this but until then we are confident in dropping all surveys under 20 minutes, and we remain concerned about interviews in the 20-30 minute range too -- a further ", comma(n_dur2030), " of your team's interviews fall in that band. ",
+      "These aren't being deleted at this stage, but we're flagging them now, ahead of time, so it isn't a surprise if some end up affected in a future round, and so your team can look at them now rather than after the fact."
+    )
+  }
 
   body <- paste0(
     "Subject: ", subject, "\n\n",
     "Dear ", toupper(pkg$org), " team,\n\n",
     "I hope this finds you well.\n\n",
+    followup_note,
     overall_para, "\n\n",
     if (!is.null(input_para)) paste0(if(precautionary) "ONE PATTERN WORTH CATCHING NOW\n" else "WHAT NEEDS YOUR INPUT (see attached workbook)\n", input_para, "\n\n") else "",
     if (!is.null(other_para)) paste0("OTHER ISSUES (see attached workbook)\n", other_para, "\n\n") else "",
@@ -167,7 +234,8 @@ build_partner_email <- function(pkg, precautionary = FALSE, deadline = "4 Septem
     if (!is.null(oversampled_para)) paste0("OVERSAMPLED CLUSTERS (informational)\n", oversampled_para, "\n\n") else "",
     if (!precautionary) paste0("ENUMERATOR PERFORMANCE\n", enum_para, "\n\n") else paste0("ENUMERATOR PERFORMANCE\n", "A full breakdown by enumerator is included so your team has a baseline to track against as collection continues. ", enum_para, "\n\n"),
     "HOW TO USE THE WORKBOOK\n",
-    "Full instructions are in the \"READ ME\" tab of the attached file. Yellow columns are for your team to complete - the \"Confirmed\" columns are dropdowns limited to the households/listing numbers still genuinely available in that cluster, so you shouldn't need to type anything freehand.\n\n",
+    if (second_round) "Same format as before - yellow columns for your team, \"Confirmed\" dropdowns limited to what's genuinely still available. Full instructions in the \"READ ME\" tab.\n\n"
+    else "Full instructions are in the \"READ ME\" tab of the attached file. Yellow columns are for your team to complete - the \"Confirmed\" columns are dropdowns limited to the households/listing numbers still genuinely available in that cluster, so you shouldn't need to type anything freehand.\n\n",
     "DEADLINE\n",
     "Please return the completed workbook by ", deadline, ". We'd genuinely appreciate this sooner if possible, as the resampling plan is being finalised around this data.\n\n",
     "Please let us know if anything here is unclear, and/or further support is required. Happy to jump on a call if useful - just let us know.\n\n",
@@ -203,8 +271,9 @@ EMAIL_SECTION_HEADERS <- c(
   "DEADLINE"
 )
 
-build_partner_email_html <- function(pkg, precautionary = FALSE, deadline = "4 September 2026") {
-  body_text <- build_partner_email(pkg, precautionary, deadline)
+build_partner_email_html <- function(pkg, precautionary = FALSE, deadline = "28 September 2026",
+                                      second_round = FALSE, first_email_date = "30 August 2026") {
+  body_text <- build_partner_email(pkg, precautionary, deadline, second_round, first_email_date)
   lines <- strsplit(body_text, "\n", fixed = TRUE)[[1]]
   subject_line <- sub("^Subject: ", "", lines[1])
   rest <- lines[-(1:2)] # drop "Subject: ..." and the blank line after it

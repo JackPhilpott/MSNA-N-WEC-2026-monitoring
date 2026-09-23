@@ -5,7 +5,13 @@ reason_text_map <- c(
   duration_under_30 = "Interview duration was under 20 minutes, also flagged by the officer's own duration check.",
   fcs_zero = "All 8 food-consumption categories recorded as zero days - not a plausible response.",
   no_consent = "Consent was not given for this interview.",
-  duplicate_point = "Caught incidentally via duration overlap -- see the Non-IDP Duplicates sheet for the broader duplicate-point picture.",
+  # FIX 2026-09-21: this reason used to reach this sheet for BOTH population
+  # types with a text pointing at "the Non-IDP Duplicates sheet" regardless -
+  # wrong for an IDP row, since that sheet never actually covered them (see
+  # full_batch_pipeline.R's del_pop_type fix, same date). Non-IDP duplicate_
+  # point rows are now exclusively routed to their own sheet before reaching
+  # here, so anything under this reason in Confirmed Deletions is always IDP.
+  duplicate_point = "This interview's listing/point details matched another submission already on file for the same IDP site -- flagged as a duplicate interview.",
   pct_missing_flagged = "Flagged as a statistical outlier for missingness -- an unusually high proportion of applicable questions were left unanswered relative to the rest of the sample.",
   # ADDED 2026-09-11, for the new Other Issues sheet below.
   date_outlier = "This interview's recorded submission date looks wrong (before fielding started, or in the future) -- almost always a device clock that was set incorrectly, not a real problem with the interview itself.",
@@ -74,7 +80,12 @@ build_partner_workbook <- function(pkg, out_path, deadline = "4 September 2026")
   for (r in seq_along(readme)) addStyle(wb, "READ ME", note_style, rows = r, cols = 1, stack = TRUE)
 
   # ---------------- Lookup sheets (only if needed) ----------------
-  if (n_gps > 0) {
+  # 2026-09-21: also gated on n_nonidp_dup now - full_batch_pipeline.R
+  # extends pkg$cluster_lookup_nonidp with any Non-IDP Duplicates cluster
+  # not already covered by a GPS Duplicate, for that sheet's own "CONFIRMED
+  # Point ID" dropdown below. A partner with Non-IDP Duplicates but zero
+  # GPS Duplicates would otherwise get no Lookup_NonIDP sheet at all.
+  if (n_gps > 0 || n_nonidp_dup > 0) {
     addWorksheet(wb, "Lookup_NonIDP", visible = FALSE)
     cl <- pkg$cluster_lookup_nonidp
     for (i in seq_len(nrow(cl))) {
@@ -212,6 +223,12 @@ build_partner_workbook <- function(pkg, out_path, deadline = "4 September 2026")
   }
 
   # ---------------- IDP Listing Duplicates ----------------
+  # EXTENDED 2026-09-21: pkg$idp_sheet now also includes duplicate_point
+  # tracker rows for IDP interviews (previously mislabelled into Non-IDP
+  # Duplicates, briefly routed to Confirmed Deletions, now merged into this
+  # sheet's own recovery mechanism instead - see full_batch_pipeline.R's
+  # idp_dup_raw for the full history). No column changes needed here - both
+  # sources already produce the same shape.
   if (n_idp > 0) {
     s3 <- "IDP Listing Duplicates"
     addWorksheet(wb, s3)
@@ -231,32 +248,46 @@ build_partner_workbook <- function(pkg, out_path, deadline = "4 September 2026")
   }
 
   # ---------------- Non-IDP Duplicates (added 2026-09-14) ----------------
-  # Jack's request: real non-IDP point duplicates were being detected
-  # (dup_key logic in prep_real_submissions.R, same mechanism as IDP
-  # Listing Duplicates) but only ever surfaced as a flat one-line
-  # boilerplate reason inside Confirmed Deletions - no comparison detail
-  # like GPS Duplicates/IDP Listing Duplicates give. full_batch_pipeline.R
-  # now splits duplicate_point rows out of del_sheet into pkg$nonidp_dup_
-  # sheet and enriches each with exactly which OTHER submission(s) -
-  # including cross-partner, deliberately not scoped to this org only -
-  # currently claim the same point, so the partner has something concrete
-  # to compare against. Always-present (Missing HH Listings/Other Issues/
-  # Confirmed Deletions convention), since this is expected to recur every
-  # round, not a rare one-off like GPS/IDP Duplicates.
+  # RE-SCOPED 2026-09-21 (Jack, explicit correction): the point of this
+  # sheet is recovery, not adjudication - the partner fills in a corrected
+  # (still-available) point ID for every row via the dropdown below, so we
+  # keep as much real data as possible rather than deleting it. Two columns
+  # from the original 2026-09-14 design REMOVED same date, per Jack: "Other
+  # Submission(s) Claiming Same Point" showed a raw uuid partners have no
+  # way to cross-reference on their own side (useless to them), and
+  # "CONFIRMED Genuine Interview ID" is redundant now that the "CONFIRMED
+  # Point ID" dropdown below does the actual resolving - picking a real
+  # available point for THIS interview already says everything needed
+  # about which submission is genuine and where it now belongs. "Nearest
+  # Unclaimed Numbers"/"Total Numbers Available in Cluster"/"CONFIRMED
+  # Point ID" (added same day) mirror IDP Listing Duplicates' own recovery
+  # mechanism exactly - survey_id carries a sequential HH/R number the same
+  # way a listing number does (see full_batch_pipeline.R). Always-present
+  # (Missing HH Listings/Other Issues/Confirmed Deletions convention),
+  # since this is expected to recur every round, not a rare one-off like
+  # GPS/IDP Duplicates.
   s3b <- "Non-IDP Duplicates"
   addWorksheet(wb, s3b)
   if (n_nonidp_dup > 0) {
+    # "Claimed By" added 2026-09-21 (Jack, explicit): short, human-readable
+    # reason the point isn't available - who genuinely holds it and when,
+    # not a uuid the partner can't do anything with (full_batch_pipeline.R's
+    # claimed_by_note - names the canonical, not-itself-flagged claimant).
     out3b <- pkg$nonidp_dup_sheet %>% transmute(
       `Interview ID` = uuid, `Enumerator ID` = enum_id, `State` = del_state, `LGA` = del_lga, `Ward` = del_ward,
       `Date of Submission` = as.character(del_submission_date), `Point ID Claimed` = del_non_idp_point_id,
-      `Other Submission(s) Claiming Same Point` = other_claims,
-      `CONFIRMED Genuine Interview ID` = NA_character_, `Notes / Explanation` = NA_character_
+      `Claimed By` = claimed_by_note,
+      `Cluster ID` = del_cluster_id,
+      `Nearest Unclaimed Numbers` = nearby_unclaimed, `Total Numbers Available in Cluster` = n_available,
+      `CONFIRMED Point ID` = NA_character_,
+      `Notes / Explanation` = NA_character_
     )
     writeData(wb, s3b, out3b, headerStyle = hdr_ref, withFilter = TRUE)
-    write_headers(s3b, 1, 9:10, hdr_fill)
-    for (r in 1:(nrow(out3b)+1)) { addStyle(wb, s3b, note_style, rows = r, cols = 8, stack = TRUE); addStyle(wb, s3b, note_style, rows = r, cols = 10, stack = TRUE) }
+    write_headers(s3b, 1, c(12, 13), hdr_fill)
+    dataValidation(wb, s3b, cols = 12, rows = 2:(nrow(out3b)+1), type = "list", value = paste0("INDIRECT($", int2col(9), "2)"))
+    for (r in 1:(nrow(out3b)+1)) { addStyle(wb, s3b, note_style, rows = r, cols = 8, stack = TRUE); addStyle(wb, s3b, note_style, rows = r, cols = 13, stack = TRUE) }
     freezePane(wb, s3b, firstActiveRow = 2, firstActiveCol = 2)
-    setColWidths(wb, s3b, cols = 1:10, widths = c(20,16,10,14,14,12,20,55,26,40))
+    setColWidths(wb, s3b, cols = 1:13, widths = c(20,16,10,14,14,12,20,32,18,20,20,16,40))
   } else {
     writeData(wb, s3b, tibble::tibble(`Note` = "No non-IDP point duplicates recorded for your team at this time."), headerStyle = hdr_ref)
     setColWidths(wb, s3b, cols = 1, widths = 90)

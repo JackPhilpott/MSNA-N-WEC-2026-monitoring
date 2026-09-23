@@ -133,8 +133,13 @@ confirmed_deletion_all <- tracker %>%
                                  del_pop_type = pop_type, del_enum_id = enum_id,
                                  # ADDED 2026-09-14 (Jack's request): a date column on every
                                  # survey-specific recovery sheet, and the raw claimed point
-                                 # ID for the new Non-IDP Duplicates sheet below.
-                                 del_submission_date = submission_date, del_non_idp_point_id = non_idp_point_id),
+                                 # ID for the Non-IDP Duplicates sheet below.
+                                 del_submission_date = submission_date, del_non_idp_point_id = non_idp_point_id,
+                                 # ADDED 2026-09-21: the claimed IDP listing number, so a
+                                 # duplicate_point row on the IDP side can get the same
+                                 # nearby-unclaimed-number recovery treatment IDP Listing
+                                 # Duplicates already gives its own n_claims>1 rows.
+                                 del_idp_hh_number = idp_hh_number_from_listing),
             by = "uuid")
 
 # Jack's refinement (2026-09-06): a submission already confirmed-deleted
@@ -172,18 +177,24 @@ build_partner_package <- function(org) {
       enum_id = del_enum_id, reason = deletion_reason,
       is_appealable = !deletion_reason %in% NO_APPEAL_DELETION_REASONS
     ) %>%
-    # FYI (no-appeal) rows: only ones newly confirmed as of this batch, not
-    # every no-appeal confirmation ever made - avoids an ever-growing
-    # informational list on every future round (2026-09-06 scoping decision,
-    # flagged to Jack - not otherwise specified). Appealable rows: any not
-    # yet resolved, same as before.
-    filter(is_appealable | resolution_date == as.character(Sys.Date())) %>%
+    # RESOLVED 2026-09-21 (Jack, explicit): Confirmed Deletions is one of
+    # three sheets (with Oversampled Clusters and Enumerator Performance)
+    # he wants permanently historic, unlike the duplicates-type sheets
+    # (GPS/IDP Listing/Non-IDP Duplicates), which deliberately stay
+    # recent/outstanding-only since they're real per-round action items.
+    # This answers the 2026-09-06 open question the comment here used to
+    # carry ("flagged to Jack - not otherwise specified", defaulted to
+    # same-day-only for no-appeal rows to avoid an ever-growing list) - an
+    # ever-growing list is now exactly what's wanted, same as appealable
+    # rows already behave. No date filter left here at all.
     arrange(desc(is_appealable), uuid)
 
-  # excluded_uuids (2026-09-06, Jack's refinement): del_sheet_all$uuid alone
-  # misses a no-appeal confirmation from a past batch (see note above
-  # no_appeal_confirmed_uuids's definition) - union with the all-time,
-  # global no-appeal set closes that gap for every sheet below.
+  # excluded_uuids: union with the global, all-time no-appeal set
+  # (no_appeal_confirmed_uuids) is now redundant for del_sheet_all's OWN
+  # no-appeal rows specifically (those no longer drop off after their own
+  # batch, see the RESOLVED note above - del_sheet_all$uuid already covers
+  # every no-appeal confirmation, past or present), but kept anyway as a
+  # harmless belt-and-braces backup rather than removed.
   #
   # Correctly used below for gps_o/idp_o candidate filtering (don't re-flag
   # something already under review as a fresh recovery candidate - being
@@ -199,9 +210,36 @@ build_partner_package <- function(org) {
   # instead. del_sheet_all (unsplit) stays the source for excluded_uuids
   # above, so this split is presentation-only - it changes nothing about
   # what counts as excluded from Achieved anywhere in this file.
+  # BUG FIX 2026-09-21 (Jack, found while testing the recovery columns
+  # below, confirmed against the live tracker: 980 of 1,832 duplicate_point
+  # rows nationally are del_pop_type=="idp", 852 are "non_idp", 0 missing -
+  # every workbook generated since this split shipped 2026-09-14 has been
+  # mislabelling IDP duplicate-point rows into the Non-IDP Duplicates sheet
+  # (blank Point ID Claimed, since del_non_idp_point_id is naturally NA for
+  # an IDP row). duplicate_point is a dup_key-based check that fires for
+  # EITHER population type (see this file's own top-of-file note on
+  # "duplicate_point ... KEY-BASED only") - the 2026-09-14 split assumed
+  # non-IDP-only and never actually checked.
+  #
+  # CORRECTED AGAIN same day (Jack, explicit): a first pass routed the idp
+  # rows into del_sheet/Confirmed Deletions - technically not mislabelled
+  # any more, but wrong in spirit. The whole point of a *_dup_raw sheet is
+  # recovery (fill in a corrected, still-available ID, keep as much real
+  # data as possible), not deletion - Confirmed Deletions is exactly the
+  # outcome this design exists to avoid. idp_dup_raw below instead gets
+  # merged into idp_sheet's own existing nearby-unclaimed-number recovery
+  # mechanism (idp_hh_number_from_listing/claimed_by_cluster_all, same as
+  # its n_claims>1 rows already use) - see that block further down.
+  # duplicate_point (either pop_type) now NEVER reaches del_sheet.
   del_sheet <- del_sheet_all %>% filter(reason != "duplicate_point")
-  nonidp_dup_raw <- del_sheet_all %>% filter(reason == "duplicate_point")
-  nonidp_dup_sheet <- if (nrow(nonidp_dup_raw) > 0) {
+  nonidp_dup_raw <- del_sheet_all %>% filter(reason == "duplicate_point", del_pop_type == "non_idp")
+  idp_dup_raw <- del_sheet_all %>% filter(reason == "duplicate_point", del_pop_type == "idp")
+  # nonidp_dup_sheet's final assignment is DEFERRED past gps_o/
+  # cluster_lookup_nonidp below (2026-09-21) - the nearby-unclaimed-number
+  # recovery columns added there need frame_nonidp's per-cluster available
+  # pool, which that block already computes; see the comment down there for
+  # the full reasoning.
+  nonidp_dup_enriched <- if (nrow(nonidp_dup_raw) > 0) {
     # Sibling comparison, same purpose as GPS Duplicates/IDP Listing
     # Duplicates' own candidate columns - which OTHER real submission (any
     # partner - a genuine cross-partner clash on the same point is worth
@@ -212,13 +250,29 @@ build_partner_package <- function(org) {
       filter(pop_type == "non_idp", !is.na(non_idp_point_id),
              non_idp_point_id %in% nonidp_dup_raw$del_non_idp_point_id) %>%
       select(uuid, enum_id, org_id, submission_date, non_idp_point_id)
-    other_claims <- map_chr(seq_len(nrow(nonidp_dup_raw)), function(i) {
+    # REWRITTEN 2026-09-21 (Jack, explicit): the raw uuid-listing version of
+    # this note is gone (partners have no way to cross-reference a uuid on
+    # their own side - see build_workbook_fn.R's own removal of the old
+    # "Other Submission(s) Claiming Same Point" column). This is a short,
+    # human-readable "why is this point unavailable" note instead: names
+    # the CANONICAL claimant specifically (the one NOT itself flagged as a
+    # duplicate here - i.e. not in nonidp_dup_raw$uuid - since that's the
+    # one actually keeping the point; falls back to the earliest "other" if
+    # every other claimant happens to also be flagged, a rare 3+-way
+    # collision edge case), by date + enumerator, not uuid. Org only named
+    # when it differs from this row's own partner, since the sibling search
+    # is deliberately cross-partner (a genuine cross-partner clash on the
+    # same point is worth surfacing, not hiding).
+    claimed_by_note <- map_chr(seq_len(nrow(nonidp_dup_raw)), function(i) {
       pid <- nonidp_dup_raw$del_non_idp_point_id[i]; me <- nonidp_dup_raw$uuid[i]
       others <- siblings_all %>% filter(non_idp_point_id == pid, uuid != me)
-      if (nrow(others) == 0) return("(no other current submission found claiming this point)")
-      paste(sprintf("%s (enum %s, %s, %s)", others$uuid, others$enum_id, others$org_id, as.character(others$submission_date)), collapse = "; ")
+      if (nrow(others) == 0) return("No other current submission found claiming this point - please check manually.")
+      canonical <- others %>% filter(!uuid %in% nonidp_dup_raw$uuid)
+      target <- (if (nrow(canonical) > 0) canonical else others) %>% arrange(submission_date) %>% slice(1)
+      org_suffix <- if (target$org_id != nonidp_dup_raw$org_id[i]) paste0(" (", target$org_id, ")") else ""
+      paste0("Already claimed ", format(target$submission_date, "%d %b"), " by ", target$enum_id, org_suffix)
     })
-    nonidp_dup_raw %>% mutate(other_claims = other_claims)
+    nonidp_dup_raw %>% mutate(claimed_by_note = claimed_by_note)
   } else nonidp_dup_raw
 
   # FIX 2026-09-14 (found tracing this further after the del_sheet$uuid/
@@ -269,6 +323,55 @@ build_partner_package <- function(org) {
     gps_sheet <- tibble(); cluster_lookup_nonidp <- tibble(cluster_id = character(), avail = list())
   }
 
+  # ---- Non-IDP Duplicates: nearby-unclaimed-number recovery (added
+  # 2026-09-21, Jack's explicit request - same dropdown/suggestion method
+  # as IDP Listing Duplicates below, not GPS Duplicates' distance-ranked
+  # candidates above, even though this reuses that block's available-point
+  # pool). Works because survey_id already carries a sequential number the
+  # same way an IDP listing number does - "non_idp_<cluster>_<psu>_HH03" or
+  # "..._R02" (HH = primary draw, R = reserve) - just with an extra PSU
+  # segment IDP listing's cluster-only ids don't have. "Nearby" is scoped to
+  # the SAME psu-group AND same HH/R draw tier (not just same cluster) so
+  # the suggestion is actually physically close, not just anywhere in a
+  # potentially multi-PSU cluster - a plain cluster-wide number gap, unlike
+  # GPS Duplicates' real haversine distance above, has no other way to stay
+  # physically meaningful. "Total ... Available in Cluster" stays cluster-
+  # wide though, matching IDP Listing's own column name/scope exactly.
+  nonidp_point_groups <- str_extract(nonidp_dup_enriched$del_non_idp_point_id, "^.*(?=_(HH|R)\\d+$)")
+  nonidp_point_tier <- str_extract(nonidp_dup_enriched$del_non_idp_point_id, "(HH|R)(?=\\d+$)")
+  nonidp_point_num <- as.integer(str_extract(nonidp_dup_enriched$del_non_idp_point_id, "\\d+$"))
+  missing_nonidp_clusters <- setdiff(unique(nonidp_dup_enriched$del_cluster_id), cluster_lookup_nonidp$cluster_id)
+  if (length(missing_nonidp_clusters) > 0) {
+    cluster_lookup_nonidp <- bind_rows(
+      cluster_lookup_nonidp,
+      tibble(
+        cluster_id = missing_nonidp_clusters,
+        avail = map(missing_nonidp_clusters, function(cl) {
+          frame_nonidp %>% filter(cluster_id == cl, !(survey_id %in% claimed_ids_national)) %>% pull(survey_id)
+        })
+      )
+    )
+  }
+  nonidp_dup_enriched$n_available <- map_int(nonidp_dup_enriched$del_cluster_id, function(cl) {
+    avail <- cluster_lookup_nonidp$avail[cluster_lookup_nonidp$cluster_id == cl]
+    if (length(avail) == 0) return(0L)
+    length(avail[[1]])
+  })
+  nonidp_dup_enriched$nearby_unclaimed <- pmap_chr(
+    list(nonidp_dup_enriched$del_cluster_id, nonidp_point_groups, nonidp_point_tier, nonidp_point_num),
+    function(cl, grp, tier, num) {
+      avail <- cluster_lookup_nonidp$avail[cluster_lookup_nonidp$cluster_id == cl]
+      if (length(avail) == 0 || is.na(grp)) return(NA_character_)
+      avail <- avail[[1]]
+      same_group <- avail[startsWith(avail, paste0(grp, "_", tier))]
+      nums <- as.integer(str_extract(same_group, "\\d+$"))
+      near <- same_group[!is.na(nums) & abs(nums - num) <= 3]
+      if (length(near) == 0) return(NA_character_)
+      paste(near, collapse = ", ")
+    }
+  )
+  nonidp_dup_sheet <- nonidp_dup_enriched
+
   idp_o <- t1_all %>% filter(org_id == org, n_claims > 1, !uuid %in% excluded_uuids)
   if (nrow(idp_o) > 0) {
     idp_o$avail_list <- map2(idp_o$idp_cluster_id, idp_o$idp_hh_number_from_listing, function(cl, num) {
@@ -280,13 +383,73 @@ build_partner_package <- function(org) {
     idp_o$nearby_unclaimed <- map2_chr(idp_o$avail_list, idp_o$idp_hh_number_from_listing, function(av, num) {
       near <- av[abs(av - num) <= 3]; if (length(near) == 0) return(NA_character_); paste(near, collapse = ",")
     })
-    idp_sheet <- idp_o %>%
+    idp_sheet_from_claims <- idp_o %>%
       select(uuid, enum_id, idp_cluster_id, ward_name = admin3_submitted, state_name = admin1, lga_name = admin2_submitted,
-             submission_date, idp_hh_number_from_listing, nearby_unclaimed, n_available) %>%
-      arrange(idp_cluster_id, idp_hh_number_from_listing)
-    cluster_lookup_idp <- idp_o %>% distinct(idp_cluster_id, .keep_all = TRUE) %>% select(idp_cluster_id, avail_list)
+             submission_date, idp_hh_number_from_listing, nearby_unclaimed, n_available)
   } else {
-    idp_sheet <- tibble(); cluster_lookup_idp <- tibble(idp_cluster_id = character(), avail_list = list())
+    # BUG FIX 2026-09-21 (found live on lhi - a small partner with zero
+    # rows in BOTH this branch and idp_dup_raw below): a bare tibble() has
+    # NO columns at all, not just zero rows, and bind_rows() of two such
+    # columnless tibbles below still has no idp_cluster_id column to
+    # arrange() by - "object 'idp_cluster_id' not found". Explicitly typed,
+    # zero-row (not zero-column) fallback instead, matching idp_o's own
+    # real column shape exactly.
+    idp_sheet_from_claims <- tibble(
+      uuid = character(), enum_id = character(), idp_cluster_id = character(),
+      ward_name = character(), state_name = character(), lga_name = character(),
+      submission_date = as.Date(character()), idp_hh_number_from_listing = numeric(),
+      nearby_unclaimed = character(), n_available = integer()
+    )
+  }
+
+  # idp_dup_raw (2026-09-21, see del_sheet's own comment above for why these
+  # were moved out of Confirmed Deletions): same nearby-unclaimed-number
+  # recovery as idp_o's own n_claims>1 rows just above, reusing the exact
+  # same claimed_by_cluster_all pool - the two candidate sets are already
+  # mutually exclusive with idp_o (excluded_uuids, built from del_sheet_all,
+  # already removes anything under review via the tracker from t1_all's own
+  # candidate pool), so no double-counting risk merging them. ~13% of these
+  # rows (123 of 980 nationally) have no idp_hh_number_from_listing at all -
+  # shown with nearby_unclaimed/n_available NA/0 rather than dropped, since
+  # the whole point is keeping as much real data visible as possible; the
+  # dropdown in build_workbook_fn.R still lets a partner manually pick a
+  # real available number for one of these even without an automatic
+  # suggestion to start from.
+  if (nrow(idp_dup_raw) > 0) {
+    idp_dup_raw$avail_list <- map2(idp_dup_raw$del_cluster_id, idp_dup_raw$del_idp_hh_number, function(cl, num) {
+      row <- claimed_by_cluster_all %>% filter(idp_cluster_id == cl)
+      if (nrow(row) == 0) return(integer(0))
+      row$real_avail[[1]]
+    })
+    idp_dup_raw$n_available <- lengths(idp_dup_raw$avail_list)
+    idp_dup_raw$nearby_unclaimed <- map2_chr(idp_dup_raw$avail_list, idp_dup_raw$del_idp_hh_number, function(av, num) {
+      if (is.na(num)) return(NA_character_)
+      near <- av[abs(av - num) <= 3]; if (length(near) == 0) return(NA_character_); paste(near, collapse = ",")
+    })
+    idp_sheet_from_dup <- idp_dup_raw %>%
+      select(uuid, enum_id, idp_cluster_id = del_cluster_id, ward_name = del_ward, state_name = del_state, lga_name = del_lga,
+             submission_date = del_submission_date, idp_hh_number_from_listing = del_idp_hh_number, nearby_unclaimed, n_available)
+  } else {
+    # Same fix as idp_sheet_from_claims's empty branch above - explicitly
+    # typed, zero-row fallback, not a bare columnless tibble().
+    idp_sheet_from_dup <- tibble(
+      uuid = character(), enum_id = character(), idp_cluster_id = character(),
+      ward_name = character(), state_name = character(), lga_name = character(),
+      submission_date = as.Date(character()), idp_hh_number_from_listing = numeric(),
+      nearby_unclaimed = character(), n_available = integer()
+    )
+  }
+
+  idp_sheet <- bind_rows(idp_sheet_from_claims, idp_sheet_from_dup) %>%
+    arrange(idp_cluster_id, idp_hh_number_from_listing)
+
+  idp_all_clusters <- union(idp_o$idp_cluster_id, idp_dup_raw$del_cluster_id)
+  if (length(idp_all_clusters) > 0) {
+    cluster_lookup_idp <- claimed_by_cluster_all %>%
+      filter(idp_cluster_id %in% idp_all_clusters) %>%
+      select(idp_cluster_id, avail_list = real_avail)
+  } else {
+    cluster_lookup_idp <- tibble(idp_cluster_id = character(), avail_list = list())
   }
 
   nonidp_clusters <- unique(gps_o$cluster_id)
