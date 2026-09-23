@@ -151,6 +151,23 @@ run_independent_listing_missing_check()
 run_independent_percentage_missing_check()
 source("cleaning/real/build_confirmed_deletions_overlay.R")
 
+# ADDED 2026-09-22 (Jack, after the cross-format sweep found it): the three
+# deletion columns on real_submissions.csv were copied from the overlays by
+# prep_real_submissions.R ABOVE - i.e. before the independent checks just
+# ran and before the overlays were rebuilt on the line above this one. So
+# each run's own new confirmations reached the overlays (which the partner
+# workbooks and 1_sampling read directly) but not the copy the dashboard's
+# is_achieved() reads, leaving the dashboard a full pipeline run behind the
+# tracker every run - 110 interviews on the 2026-09-21 run. The circular
+# dependency is genuine (the independent checks read today's
+# real_submissions.csv, so they can't run before prep), so this re-joins
+# those three columns from the just-rebuilt overlays instead of reordering.
+# Must stay AFTER build_confirmed_deletions_overlay.R and BEFORE
+# generate_partner_digest.R/bundle_dashboard_mirrors() below, both of which
+# read the refreshed figures.
+source("cleaning/real/refresh_deletion_columns.R")
+refresh_deletion_columns()
+
 source("cleaning/real/sanity_checks.R")
 print_sanity_banner_if_present() # most important checkpoint: right before this goes live and public
 

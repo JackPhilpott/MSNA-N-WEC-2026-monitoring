@@ -133,11 +133,14 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
           oversampling_surplus_n = sum(oversampling_surplus_n, na.rm = TRUE),
           n_strata = n(),
           n_dropped_strata = sum(status == "Dropped"),
+          # 2026-09-22: MSNA Light tag, from the frame's own sampling_method.
+          msna_light = any(!is.na(sampling_method) & sampling_method == "MSNA Light"),
           .groups = "drop"
         ) %>%
         mutate(
           pct_achieved = ifelse(target_active > 0, credited_achieved_n / target_active, NA_real_),
-          pct_achieved_raw = ifelse(target_active > 0, achieved_n / target_active, NA_real_),
+          # pct_achieved_raw removed 2026-09-22 (Jack: drop the raw % everywhere) -
+          # the popup still shows the raw achieved COUNT, just not as a second %.
           all_dropped = n_strata > 0 & n_dropped_strata == n_strata
         )
     })
@@ -151,7 +154,7 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
     scope_admin2_sf <- reactive({
       lga <- filtered_lga() %>%
         select(adm2_pcode, target_sample, target_sample_current, target_active, achieved_n, credited_achieved_n, remaining_n,
-               collected_n, confirmed_deletion_n, pending_deletion_n, oversampling_surplus_n, pct_achieved, pct_achieved_raw, all_dropped)
+               collected_n, confirmed_deletion_n, pending_deletion_n, oversampling_surplus_n, pct_achieved, all_dropped, msna_light)
       admin2_sf %>% inner_join(lga, by = "adm2_pcode")
     })
 
@@ -588,11 +591,16 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
               # all-interviews count kept alongside ("show both").
               "Credited toward target: <span style='color:", fill_color, ";font-weight:bold;'>", coalesce(credited_achieved_n, 0), " (", label_pct, " of ", target_basis_label(target_basis()), ")</span>",
               " | Still needed: ", coalesce(remaining_n, 0), "<br>",
-              "Achieved (all interviews incl. surplus): ", coalesce(achieved_n, 0), " (", fmt_pct(pct_achieved_raw), " raw)<br>",
+              "Achieved (all interviews incl. surplus): ", coalesce(achieved_n, 0), "<br>",
               # 2026-09-20 (Jack: extend Inaccessible styling to LGA grain) -
               # same inline-warning treatment as the cluster view's own
               # stranded_inaccessible badge, using the same grey.
               ifelse(all_dropped, paste0("<b style='color:#9AA3AF;'>&#9888; Every stratum here is currently Inaccessible (dropped from the sampling frame)</b><br>"), ""),
+              # 2026-09-22 (Jack): MSNA Light LGAs are collected LGA-level by
+              # government enumerators with no georeferencing - counted the
+              # same as any other interview, but flagged so the difference is
+              # never invisible on a map of GPS points.
+              ifelse(coalesce(msna_light, FALSE), "<b style='color:#5C7A99;'>MSNA Light — LGA-level collection, government enumerators</b><br>", ""),
               "<span style='", original_style, "'>Original Target: ", coalesce(target_sample, 0), "</span><br>",
               ifelse(target_diverges, "<b style='color:#C1443C;'>", paste0("<span style='", revised_active_style, "'>")),
               "Revised Target: ", coalesce(target_sample_current, 0), " (", target_delta, ")",

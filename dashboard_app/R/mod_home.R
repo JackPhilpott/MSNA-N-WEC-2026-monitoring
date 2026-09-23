@@ -186,7 +186,19 @@ mod_home_server <- function(id, target_basis) {
       # Achieved/Confirmed/Pending - breaking the very identity this row
       # claims to hold exactly. Now sourced from the same roster-scoped
       # place as the other three, so the identity can't drift.
-      total_collected <- sum(national_agg$collected_n)
+      # CHANGED 2026-09-22 (Jack: the summary numbers don't align): this
+      # was sum(national_agg$collected_n), i.e. completed interviews in
+      # NON-DROPPED strata only (23,771 the day this changed), while
+      # "Today's snapshot" right below it and the Progress Overview tile
+      # both showed every completed interview (23,979). Two different
+      # "Collected" figures on one page, neither labelled as a subset. Now
+      # the same one figure everywhere, split through the shared
+      # collected_breakdown() (global.R) that the Progress Overview tile
+      # also uses - see its header for why both pages share one formula.
+      cb <- collected_breakdown(progress_active(), submissions_raw)
+      total_collected <- cb$collected
+      total_collected_in_dropped <- cb$dropped_collected
+      total_unmatched_collected <- cb$unmatched
       total_confirmed_deletion <- sum(national_agg$confirmed_deletion_n)
       total_pending_deletion <- sum(national_agg$pending_deletion_n)
       total_oversampling_surplus <- sum(national_agg$oversampling_surplus_n)
@@ -228,8 +240,12 @@ mod_home_server <- function(id, target_basis) {
           )
         ),
         tags$tr(
-          tags$td("Achieved so far", info_icon("Every completed interview that counts — excludes confirmed deletions, includes oversampled interviews in full (2026-09-20). The bracketed % is the raw share of target; see the next row for progress that can't be inflated by surplus.")),
-          tags$td(strong(comma(total_achieved), " (raw ", fmt_pct(total_achieved / active_planned_interviews(target_basis())), " of ", target_basis_label(target_basis()), ")"))
+          tags$td("Achieved so far", info_icon(paste0(
+            "Every completed interview that counts — excludes confirmed deletions, includes in full any collected past a stratum's own target. ",
+            "Of these, ", comma(total_credited), " count toward the target of ", comma(active_planned_interviews(target_basis())),
+            " and ", comma(total_achieved - total_credited), " are extra interviews in strata already at target, which is why target minus achieved is NOT what's still needed — see the next row. ",
+            "The raw % that used to sit in brackets here was removed 2026-09-22 (Jack)."))),
+          tags$td(strong(comma(total_achieved)))
         ),
         tags$tr(
           tags$td("Credited toward target / Still needed", info_icon("Achieved capped at each stratum's own target BEFORE summing nationally - an oversampled stratum's surplus never offsets another stratum's shortfall, so this % can't read 100% while any stratum is still short. Still needed = the sum of every stratum's own remaining gap. Fixed 2026-09-21.")),
@@ -240,15 +256,20 @@ mod_home_server <- function(id, target_basis) {
           tags$td(strong(comma(total_collected)))
         ),
         tags$tr(
-          tags$td("Confirmed Deleted / Oversampling Surplus", info_icon("Confirmed Deleted = removed for good reason. Oversampling Surplus (usually near zero) is a leftover match-quality residual, not real oversampling — see Oversampled clusters below for that. Collected = Achieved + Confirmed Deleted + Oversampling Surplus, always.")),
-          tags$td(strong(comma(total_confirmed_deletion), " / ", comma(total_oversampling_surplus)))
+          tags$td("Confirmed Deleted", info_icon(paste0(
+            "Interviews removed for good reason, settled. Within the active strata, Collected = Achieved + Confirmed Deleted + Oversampling Surplus, always (the surplus here is a leftover match-quality residual, currently ",
+            comma(total_oversampling_surplus), ", not real oversampling — see Oversampled clusters below for that). ",
+            "The rest of the Collected figure above sits outside those strata: ", comma(total_collected_in_dropped),
+            " in strata dropped from the design and ", comma(total_unmatched_collected), " not matched to a sampled cluster. ",
+            "2026-09-22: the near-zero surplus figure moved off the card face into this note."))),
+          tags$td(strong(comma(total_confirmed_deletion)))
         ),
         tags$tr(
           tags$td("Pending Deletion", info_icon("How many Achieved interviews still have an open quality flag that could later become a confirmed deletion. Still counted in Achieved for now.")),
           tags$td(strong(comma(total_pending_deletion)))
         ),
         tags$tr(
-          tags$td("Oversampled clusters", info_icon("Clusters that collected more interviews than their own target. Counts toward Achieved in full, but worth reviewing for representativity.")),
+          tags$td("Clusters collected past their own target", info_icon("Clusters that collected more interviews than that CLUSTER's own target - a different, larger figure from the stratum-level surplus in 'Achieved so far' above (a cluster can overshoot while its stratum is still short). Counts toward Achieved in full, but worth reviewing for representativity.")),
           tags$td(strong(comma(nrow(oversampled_clusters)), " (", comma(sum(oversampled_clusters$surplus)), " surplus interviews)"))
         ),
         tags$tr(tags$td("Target by population group"), tags$td(strong("Non-IDP: ", comma(target_non_idp), " / IDP: ", comma(target_idp)))),

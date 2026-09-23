@@ -15,7 +15,9 @@ testServer(mod_progress_server, args = list(
   cat("kpi_achieved:", output$kpi_achieved, "\n")
   cat("kpi_pct:", output$kpi_pct, "\n")
   cat("kpi_collected:", output$kpi_collected, "\n")
-  cat("kpi_followup:", output$kpi_followup, "\n")
+  # kpi_followup ("Collected - Achieved") was replaced by kpi_still_needed
+  # on 2026-09-22 - see mod_progress.R's own note on the tile rebuild.
+  cat("kpi_still_needed:", output$kpi_still_needed, "\n")
   cat("kpi_days_remaining:", output$kpi_days_remaining, "\n")
   cat("kpi_days_required:", output$kpi_days_required, "\n")
   cat("trend_plot class ok:", !is.null(output$trend_plot), "\n")

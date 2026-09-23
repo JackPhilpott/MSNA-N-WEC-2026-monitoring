@@ -42,7 +42,13 @@ REQUIRED_MAIN_COLUMNS <- c(
   "idp_walk_position", "dist_btn_sample_collected", "instance_name"
 )
 
-run_sanity_checks <- function(out, main, roster, prev_meta, known_org_ids, household_frame) {
+run_sanity_checks <- function(out, main, roster, prev_meta, known_org_ids, household_frame, frame_full = NULL) {
+  # frame_full (2026-09-23): the FULL frame's id columns, used ONLY by the
+  # three FRAME DRIFT existence checks near the bottom. See their own note
+  # for why WORKING is the wrong universe for an "does this id point at
+  # anything real" test. Optional/NULL-defaulted so any other caller keeps
+  # the previous behaviour rather than erroring.
+  existence_frame <- if (is.null(frame_full)) household_frame else frame_full
   issues <- character(0)
   add <- function(...) issues <<- c(issues, paste0(...))
 
@@ -190,16 +196,33 @@ run_sanity_checks <- function(out, main, roster, prev_meta, known_org_ids, house
   # single IDP row as "unknown", a false positive caught before it shipped.
   # IDP's frame membership is still covered: matched_cluster_id below
   # checks the cluster part for both pop_types.)
-  n_survey_unknown <- sum(out$pop_type == "non_idp" & !is.na(out$matched_survey_id) & !(out$matched_survey_id %in% household_frame$survey_id))
+  # CHANGED 2026-09-23: these three compare against FULL (via
+  # existence_frame), not WORKING. WORKING is a deliberately SHRINKING
+  # candidate pool - a point leaves it the moment it is collected or its
+  # ward turns inaccessible - so checking "does this matched id still exist
+  # in WORKING" flagged every successfully collected interview as drift.
+  # Measured the night this was changed: 12,000 of 12,811 Non-IDP
+  # matched_survey_ids and 3,589 of 24,612 matched_cluster_ids were being
+  # reported, against a TRUE count of 0 and 0 respectively when checked
+  # against FULL; matched_strata_id read 128 against a true 27 (all one
+  # malformed "NA_NG032002" value from CRS/Plateau/Bassa rows that are
+  # already flagged unmatched_no_point_id and already in the deletion
+  # tracker). So ~15,600 rows of pure noise per run, in a warnings file
+  # that is supposed to make real problems loud - the same WORKING-vs-FULL
+  # confusion that produced a 1,364-row false positive in the accessibility
+  # report build on 2026-09-21. FULL keeps every point ever drawn except
+  # genuinely retired ones, which is exactly the "points at nothing real"
+  # universe this check was written for (see its 2026-08-21 header note).
+  n_survey_unknown <- sum(out$pop_type == "non_idp" & !is.na(out$matched_survey_id) & !(out$matched_survey_id %in% existence_frame$survey_id))
   if (n_survey_unknown > 0) {
     add(
       "FRAME DRIFT: ", n_survey_unknown, " row(s) have a non-missing matched_survey_id that doesn't exist in the ",
-      "current sampling frame — either a broken match, or the frame has changed since these were matched. ",
+      "current sampling frame (FULL) — either a broken match, or the point was genuinely retired from the frame. ",
       "Achieved/oversampled figures built from matched_survey_id will silently undercount these rows."
     )
   }
-  id_exists_check(out$matched_cluster_id, household_frame$cluster_id, "matched_cluster_id")
-  id_exists_check(out$matched_strata_id, household_frame$strata_id, "matched_strata_id")
+  id_exists_check(out$matched_cluster_id, existence_frame$cluster_id, "matched_cluster_id")
+  id_exists_check(out$matched_strata_id, existence_frame$strata_id, "matched_strata_id")
 
   issues
 }

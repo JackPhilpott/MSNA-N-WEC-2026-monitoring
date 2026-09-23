@@ -351,6 +351,20 @@ UNMATCHED_COLOR <- "#9AA3AF"
 # vocabulary/colour set dashboard-wide instead of a different scheme per tab.
 STATUS_COLORS <- c("Complete" = "#1E7B4D", "In progress" = "#D99A2B", "Not started" = "#C1443C")
 
+# STRATUM/LGA-grain statuses: the three above plus "Dropped", which
+# compute_progress_by_stratum() has emitted since 2026-09-11 for an excluded
+# or not-computable stratum. ADDED 2026-09-22, fixing a real display bug
+# found while reviewing the LGA table: mod_table.R built its Status column
+# as factor(status, levels = names(STATUS_COLORS)), so all 18 Dropped strata
+# fell outside the levels and rendered as an EMPTY cell - the one status a
+# reader most needs explained showed as nothing at all. Kept separate from
+# STATUS_COLORS rather than appended to it for the same reason
+# CLUSTER_STATUS_COLORS is separate (see its note below): STATUS_COLORS also
+# feeds cluster-grain legends on the Coverage Map, where "Dropped" is not a
+# possible value and would show as a dead legend entry. Grey matches
+# CLUSTER_STATUS_COLORS["Inaccessible"] - both mean "not collectable here".
+STRATUM_STATUS_COLORS <- c(STATUS_COLORS, "Dropped" = "#7D8791")
+
 # Coverage Map's per-cluster view: border colour for clusters that have
 # received MORE completed interviews than target_households (see
 # mod_map.R's cluster_status()/OVERSAMPLED_BORDER usage, and
@@ -1226,7 +1240,6 @@ compute_progress_by_stratum <- function(subs, target_basis = c("original", "revi
       # downstream that reads them) switches.
       target_active = if (target_basis == "revised") target_sample_current else target_sample,
       target_active_label = if (target_basis == "revised") "Revised Target" else "Original Target",
-      pct_achieved = ifelse(target_active > 0, achieved_n / target_active, NA_real_),
       # FIX 2026-09-21 (Jack, found recurring from a known weekend pattern -
       # the accessibility-reports-returned gap was the same shape a few
       # hours earlier): achieved_n going uncapped on 2026-09-20 was correct
@@ -1248,6 +1261,19 @@ compute_progress_by_stratum <- function(subs, target_basis = c("original", "revi
       # replaced by them - Jack's explicit "show both" decision).
       credited_achieved_n = pmin(achieved_n, pmax(target_active, 0)),
       remaining_n = pmax(target_active - achieved_n, 0),
+      # CHANGED 2026-09-22 (Jack: remove the raw %): was achieved_n /
+      # target_active, the uncapped ratio, which read over 100% on 68 strata
+      # (max 191%) while every rollup-grain "% achieved" in the app was
+      # already credited-based - the same column name meaning two different
+      # things depending on the grain you looked at. Now credited
+      # everywhere. At stratum grain credited_achieved_n is just
+      # min(achieved_n, target_active), so this only ever caps the >100%
+      # cases; a stratum that is genuinely short is unaffected, which is why
+      # the Home "furthest behind" list and the map's LGA shading don't move.
+      # The raw interview count is still carried, unchanged, in achieved_n.
+      # Must stay AFTER credited_achieved_n - mutate() evaluates in order,
+      # and referencing it from the old position errored outright.
+      pct_achieved = ifelse(target_active > 0, credited_achieved_n / target_active, NA_real_),
       # DROPPED status (2026-09-11): a stratum currently excluded for
       # accessibility_loss_below_population_threshold - see strata_frame's
       # own header above. Checked FIRST: such a stratum's target_sample_
@@ -1444,10 +1470,22 @@ build_partner_progress_summary <- function(target_basis = c("original", "revised
     # deliberately recomputed AFTER that zeroing (not zeroed directly itself)
     # so it inherits the correct zero-or-not treatment from whichever of
     # target_sample/target_sample_current it currently stands for.
+    # CHANGED 2026-09-22 (Jack, explicit): target_sample is now zeroed for a
+    # Dropped stratum too, so a Dropped stratum contributes NOTHING to a
+    # partner total - not its target, not its achieved. Until today its
+    # frozen target_sample was deliberately kept (2026-09-14b, so this table
+    # and the Partner Report agreed on "Original Target"), which left FACT
+    # (+186) and IRC (+96) as the only rows in the app where
+    # credited + still needed != target. Jack's call when that was put to
+    # him: "let's remove them from the partner targets". This also matches
+    # the national headline, which has always counted covered strata only,
+    # and settles the long-open FACT "-31 excluded-LGA credit" question the
+    # same way. The Dropped stratum is still fully visible at its own
+    # stratum/LGA row (Progress by LGA), per the 2026-09-14 rule.
     totals <- progress %>%
       filter(adm2_pcode %in% my_adm2) %>%
       mutate(across(
-        c(target_sample_current, achieved_n, collected_n, confirmed_deletion_n,
+        c(target_sample, target_sample_current, achieved_n, collected_n, confirmed_deletion_n,
           pending_deletion_n, oversampling_surplus_n, credited_achieved_n, remaining_n),
         ~ ifelse(status == "Dropped", 0, .)
       )) %>%
@@ -1528,18 +1566,18 @@ build_partner_progress_summary <- function(target_basis = c("original", "revised
       achieved_n = totals$achieved_n, collected_n = totals$collected_n,
       confirmed_deletion_n = totals$confirmed_deletion_n, pending_deletion_n = totals$pending_deletion_n,
       oversampling_surplus_n = totals$oversampling_surplus_n,
-      # FIX 2026-09-21: pct_achieved here now means "progress toward target,
-      # capped per stratum before summing" - can never exceed 100% at this
-      # rollup grain by construction (credited_achieved_n <= target_active
-      # always). pct_achieved_raw is the OLD, uncapped ratio (achieved_n/
-      # target_active), kept alongside per Jack's "show both" decision - a
-      # partner's true "total real interviews vs target" figure, which CAN
-      # legitimately read >100% and is a genuinely different, still useful
-      # question ("how much real fieldwork happened") from "how much of the
-      # true remaining need is closed" (what pct_achieved now answers).
+      # pct_achieved means "progress toward target, capped per stratum
+      # before summing" - can never exceed 100% at this rollup grain by
+      # construction (credited_achieved_n <= target_active always).
+      # REMOVED 2026-09-22 (Jack): pct_achieved_raw, the uncapped
+      # achieved_n/target_active twin added on 2026-09-21 under "show both".
+      # Seeing two different percentages for the same partner read as the
+      # dashboard contradicting itself, which is the opposite of what "show
+      # both" was for. The raw interview count is still shown in full as
+      # Achieved, so no information is lost - it just isn't re-expressed as
+      # a competing percentage. Any consumer wanting it can divide.
       credited_achieved_n = totals$credited_achieved_n, remaining_n = totals$remaining_n,
       pct_achieved = ifelse(totals$target_active > 0, totals$credited_achieved_n / totals$target_active, NA_real_),
-      pct_achieved_raw = ifelse(totals$target_active > 0, totals$achieved_n / totals$target_active, NA_real_),
       shared_with = shared_with,
       start_date = if (has_started) start_date else as.Date(NA),
       days_active = days_active, current_daily_pace = current_pace, required_daily_pace = required_pace,
@@ -1635,8 +1673,15 @@ partner_progress_by_lga <- function(org_id_val, target_basis = c("original", "re
   # summary() above.
   progress %>%
     filter(adm2_pcode %in% my_adm2) %>%
+    # 2026-09-22: target_sample zeroed for Dropped too - see the matching
+    # note in build_partner_progress_summary() above (Jack: "let's remove
+    # them from the partner targets"). Keeping the row but zeroing every
+    # column means an all-Dropped LGA still appears in the partner's own
+    # coverage list (the 2026-09-14 reason for zeroing rather than
+    # filtering) AND the rows now sum exactly to the partner total.
+    mutate(all_dropped_lga = status == "Dropped") %>%
     mutate(across(
-      c(target_sample_current, achieved_n, collected_n, confirmed_deletion_n,
+      c(target_sample, target_sample_current, achieved_n, collected_n, confirmed_deletion_n,
         pending_deletion_n, oversampling_surplus_n, credited_achieved_n, remaining_n),
       ~ ifelse(status == "Dropped", 0, .)
     )) %>%
@@ -1662,14 +1707,26 @@ partner_progress_by_lga <- function(org_id_val, target_basis = c("original", "re
       collected_n = sum(collected_n, na.rm = TRUE),
       confirmed_deletion_n = sum(confirmed_deletion_n, na.rm = TRUE),
       pending_deletion_n = sum(pending_deletion_n, na.rm = TRUE),
-      oversampling_surplus_n = sum(oversampling_surplus_n, na.rm = TRUE), .groups = "drop"
+      oversampling_surplus_n = sum(oversampling_surplus_n, na.rm = TRUE),
+      all_dropped_lga = all(all_dropped_lga),
+      # 2026-09-22: MSNA Light was invisible everywhere on the dashboard.
+      # Read from the frame's own sampling_method rather than an LGA list,
+      # so it follows the frame if Light ever covers a different LGA.
+      msna_light = any(!is.na(sampling_method) & sampling_method == "MSNA Light"), .groups = "drop"
     ) %>%
     mutate(
-      # pct_achieved = capped progress toward target (never >100% here);
-      # pct_achieved_raw = the old uncapped ratio, kept per "show both".
+      # pct_achieved = capped progress toward target (never >100% here).
+      # pct_achieved_raw (the uncapped ratio) was REMOVED 2026-09-22 per
+      # Jack - two percentages side by side for the same row read as
+      # contradictory, and the capped one is the figure every status and
+      # headline keys off. The raw interview count itself is still shown as
+      # Achieved, so nothing is hidden, just not re-expressed as a second %.
       pct_achieved = ifelse(target_active > 0, credited_achieved_n / target_active, NA_real_),
-      pct_achieved_raw = ifelse(target_active > 0, achieved_n / target_active, NA_real_),
       status = case_when(
+        # an LGA whose every stratum is Dropped used to read "Complete"
+        # here (zeroed live columns -> remaining_n == 0), which is the
+        # opposite of what happened to it. 2026-09-22: labelled honestly.
+        all_dropped_lga ~ "Dropped",
         target_active <= 0 | remaining_n <= 0 ~ "Complete",
         achieved_n > 0 ~ "In progress",
         TRUE ~ "Not started"
@@ -1863,6 +1920,52 @@ target_basis_label <- function(target_basis) {
 # compute_progress_by_stratum() — used by mod_home.R's national KPIs, which
 # read these two file-level constants directly rather than a per-stratum
 # column.
+# ---- Collected, split into what does and doesn't count toward target ------
+# ONE definition, shared by the Home page's "At a glance" and the Progress
+# Overview's Collected tile (2026-09-22). Both pages grew their own formula
+# for the same split during the same evening's work - Home subtracted the
+# roster-matched collected totals, Progress subtracted achieved + confirmed +
+# dropped. They agreed exactly on the day (27 unmatched either way, checked),
+# but only because oversampling_surplus_n happened to be 0 nationally: the
+# Progress form silently assumes collected-within-a-stratum == achieved +
+# confirmed, so a nonzero surplus would have made the two pages disagree
+# about a number they both label "not matched to a sampled cluster". Caught
+# by Dashboard's review of this same change set, and fixed by deleting the
+# second formula rather than reconciling it - the exact duplicated-logic-
+# drifts shape this project keeps re-finding.
+#
+# `unmatched` is derived positionally (what's left after every stratum in the
+# roster, Dropped included, has claimed its own collected rows), not from the
+# achieved/confirmed identity, so it stays correct whatever the surplus does.
+#
+# The 5-way split is FORCED, not merely true on the day (Dashboard's review,
+# 2026-09-22, worth writing down so nobody later "simplifies" it back):
+#   achieved + confirmed + surplus + dropped_collected + unmatched == collected
+# holds by construction, because oversampling_surplus_n is itself defined per
+# stratum as collected_n - achieved_n - confirmed_deletion_n, so summing it
+# across in-roster strata IS in_roster_collected - achieved - confirmed; add
+# unmatched's positional definition and the identity is algebraic. That is
+# why this returns surplus as its own component rather than folding it into
+# any of the others - doing so would break the arithmetic the moment a
+# stratum carries a nonzero residual.
+collected_breakdown <- function(progress_df, subs) {
+  in_roster <- progress_df %>% filter(status != "Dropped")
+  collected <- sum(is_collected(subs))
+  dropped_collected <- sum(progress_df$collected_n[progress_df$status == "Dropped"], na.rm = TRUE)
+  in_roster_collected <- sum(in_roster$collected_n, na.rm = TRUE)
+  achieved <- sum(in_roster$achieved_n, na.rm = TRUE)
+  list(
+    collected = collected,
+    achieved = achieved,
+    confirmed = sum(in_roster$confirmed_deletion_n, na.rm = TRUE),
+    surplus = sum(in_roster$oversampling_surplus_n, na.rm = TRUE),
+    dropped_collected = dropped_collected,
+    unmatched = max(collected - in_roster_collected - dropped_collected, 0),
+    # everything in Collected that does NOT count toward target
+    gap = max(collected - achieved, 0)
+  )
+}
+
 active_planned_interviews <- function(target_basis) {
   if (identical(target_basis, "revised")) TOTAL_PLANNED_INTERVIEWS_CURRENT else TOTAL_PLANNED_INTERVIEWS
 }

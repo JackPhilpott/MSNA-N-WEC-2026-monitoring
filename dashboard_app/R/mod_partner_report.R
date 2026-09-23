@@ -156,8 +156,16 @@ mod_partner_report_server <- function(id, selected_partners, target_basis) {
           # FIX 2026-09-21 ("show both"): credited/still-needed are the
           # per-stratum capped/floored rollups; % achieved is credited-based.
           `Credited toward target` = credited_achieved_n, `Still needed` = remaining_n,
-          `% achieved` = pct_achieved, `% achieved (raw)` = pct_achieved_raw,
-          Status = factor(status, levels = names(STATUS_COLORS)),
+          # "% achieved (raw)" removed 2026-09-22 (Jack) - Achieved above
+          # is still the full interview count. STRATUM_STATUS_COLORS, not
+          # STATUS_COLORS: partner_progress_by_lga() now labels an all-
+          # Dropped LGA "Dropped" instead of the misleading "Complete" it
+          # produced before, and that level has to exist here or the cell
+          # renders empty.
+          `% achieved` = pct_achieved,
+          # 2026-09-22: MSNA Light tag (see global.R's partner_progress_by_lga()).
+          Sampling = ifelse(msna_light, "MSNA Light", "MSNA Full Design"),
+          Status = factor(status, levels = names(STRATUM_STATUS_COLORS)),
           `Shared with` = shared_with
         )
       datatable(df, rownames = FALSE, filter = "top", options = list(pageLength = 20)) %>%
@@ -165,7 +173,7 @@ mod_partner_report_server <- function(id, selected_partners, target_basis) {
         # tables - target_sample_current is now sourced from 1_sampling's
         # representativity calc and is genuinely fractional. Display-only.
         formatRound(c("Original Target", "Revised Target"), 0) %>%
-        formatPercentage(c("% achieved", "% achieved (raw)"), 1) %>%
+        formatPercentage("% achieved", 1) %>%
         formatPercentage("Δ vs Original", 1) %>%
         # ADDED 2026-09-16 (Jack): same 25% divergence highlight as
         # mod_table.R's own "Delta vs Original" column - see that file's
@@ -178,7 +186,7 @@ mod_partner_report_server <- function(id, selected_partners, target_basis) {
             c("#FCE8CF", "#FFFFFF", "#FCE8CF")
           )
         ) %>%
-        formatStyle("Status", backgroundColor = styleEqual(names(STATUS_COLORS), unname(STATUS_COLORS)))
+        formatStyle("Status", backgroundColor = styleEqual(names(STRATUM_STATUS_COLORS), unname(STRATUM_STATUS_COLORS)))
     })
 
     output$download_xlsx <- downloadHandler(
@@ -222,7 +230,7 @@ build_partner_excel <- function(org_id_val, file, target_basis = "original") {
   # partner workbooks). total_target/total_target_current stay the fixed
   # Original/Revised reference figures shown above regardless.
   pct_achieved_summary <- if (total_active > 0) total_credited / total_active else NA_real_
-  pct_achieved_raw_summary <- if (total_active > 0) total_achieved / total_active else NA_real_
+  # pct_achieved_raw_summary removed 2026-09-22 (Jack: drop the raw % everywhere)
 
   wb <- createWorkbook()
   addWorksheet(wb, "Summary")
@@ -232,12 +240,12 @@ build_partner_excel <- function(org_id_val, file, target_basis = "original") {
       Field = c("Partner", "Report generated", "Original Target interviews (their LGAs)", "Revised Target interviews (their LGAs)",
                 "Achieved interviews (all, incl. surplus)", "Credited toward target (capped per stratum)", "Still needed (sum of each stratum's own gap)",
                 "Collected interviews", "Confirmed Deleted", "Oversampling Surplus", "Pending Deletion (informational, included in Achieved)",
-                "% achieved (credited)", "% achieved (raw)", "Submissions logged", "Flagged for review", "Flag rate", "Consent refusals"),
+                "% achieved (credited)", "Submissions logged", "Flagged for review", "Flag rate", "Consent refusals"),
       Value = c(
         label, format(Sys.time(), "%d %b %Y %H:%M"), comma(total_target), comma(total_target_current),
         comma(total_achieved), comma(total_credited), comma(total_remaining),
         comma(total_collected), comma(total_confirmed_deletion), comma(total_oversampling_surplus), comma(total_pending_deletion),
-        fmt_pct(pct_achieved_summary), fmt_pct(pct_achieved_raw_summary), comma(qual$submissions), comma(qual$flagged),
+        fmt_pct(pct_achieved_summary), comma(qual$submissions), comma(qual$flagged),
         fmt_pct(qual$flag_rate), comma(qual$consent_refused)
       )
     ),
@@ -270,16 +278,22 @@ build_partner_excel <- function(org_id_val, file, target_basis = "original") {
               `Original Target` = round(target_sample), `Revised Target` = round(target_sample_current),
               Collected = collected_n, `Confirmed Deleted` = confirmed_deletion_n, `Pending Deletion` = pending_deletion_n,
               Achieved = achieved_n, `Credited toward target` = credited_achieved_n, `Still needed` = remaining_n,
-              `% achieved` = pct_achieved, `% achieved (raw)` = pct_achieved_raw, Status = status,
+              `% achieved` = pct_achieved,
+              # 2026-09-22: same MSNA Light tag the on-screen table carries -
+              # the export was missed in the first pass (caught by
+              # Dashboard's review), which would have left a partner's
+              # downloaded copy unable to tell Light strata apart.
+              Sampling = ifelse(msna_light, "MSNA Light", "MSNA Full Design"),
+              Status = status,
               `Shared with` = shared_with)
   writeDataTable(wb, sheet2, export_df, tableStyle = "TableStyleLight9")
-  pct_col <- which(names(export_df) %in% c("% achieved", "% achieved (raw)"))
+  pct_col <- which(names(export_df) == "% achieved")
   status_col <- which(names(export_df) == "Status")
   addStyle(wb, sheet2, createStyle(numFmt = "0%"), rows = 2:(nrow(export_df) + 1), cols = pct_col, gridExpand = TRUE, stack = TRUE)
-  for (s in names(STATUS_COLORS)) {
+  for (s in names(STRATUM_STATUS_COLORS)) {
     rows <- which(export_df$Status == s) + 1
     if (length(rows) > 0) {
-      addStyle(wb, sheet2, createStyle(fgFill = STATUS_COLORS[[s]]), rows = rows, cols = status_col, gridExpand = TRUE, stack = TRUE)
+      addStyle(wb, sheet2, createStyle(fgFill = STRATUM_STATUS_COLORS[[s]]), rows = rows, cols = status_col, gridExpand = TRUE, stack = TRUE)
     }
   }
   setColWidths(wb, sheet2, cols = 1:ncol(export_df), widths = "auto")
@@ -329,7 +343,7 @@ build_partner_pdf <- function(org_id_val, file, target_basis = "original") {
     geom_col() +
     coord_flip() +
     scale_y_continuous(labels = percent, limits = c(0, max(1, max(lga_df$pct_achieved, na.rm = TRUE), na.rm = TRUE))) +
-    scale_fill_manual(values = STATUS_COLORS, drop = FALSE) +
+    scale_fill_manual(values = STRATUM_STATUS_COLORS, drop = FALSE) +
     labs(x = NULL, y = "% of target achieved", fill = "Status", title = "Progress by LGA") +
     theme_minimal(base_size = 10) +
     theme(legend.position = "bottom")

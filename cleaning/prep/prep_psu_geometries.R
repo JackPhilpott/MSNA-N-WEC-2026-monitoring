@@ -88,7 +88,26 @@ household_frame <- read_csv(
   show_col_types = FALSE, col_types = cols(.default = "c")
 ) %>%
   filter(coverage_status == "covered", exclusion_reason == "none")
-working_cluster_ids <- unique(household_frame$cluster_id)
+
+# MSNA Light clusters carry NO cluster-level geometry, by decision (Jack,
+# 2026-09-22: "the three MSNA Light LGAs should not have any geometry at a
+# cluster level, only at a LGA level"). That collection is negotiated
+# LGA-level enumeration by government staff with no georeferencing, so a
+# hexagon for a Light cluster implies a precision that doesn't exist.
+#
+# Found because the state was INCONSISTENT rather than absent: Guzamala's 13
+# Light clusters carried hexagons while Abadam's 17 and Nganzai's 17 carried
+# none (all genuine Light-only ids, no collision with a Full Design cluster),
+# so the Coverage Map drew a third of the Light clusters and silently omitted
+# the rest with no rule behind which. Excluded here, at the single point
+# where the geometry universe is defined, rather than filtered downstream in
+# each map layer - and keyed on sampling_method, so it follows the frame
+# wherever Light is used rather than naming the three LGAs.
+light_cluster_ids <- unique(household_frame$cluster_id[
+  !is.na(household_frame$sampling_method) & household_frame$sampling_method == "MSNA Light"])
+working_cluster_ids <- setdiff(unique(household_frame$cluster_id), light_cluster_ids)
+cat("MSNA Light clusters excluded from PSU geometry (LGA-level collection, no GPS):",
+    length(light_cluster_ids), "\n")
 
 cluster_target_lookup <- household_frame %>%
   distinct(cluster_id, .keep_all = TRUE) %>%

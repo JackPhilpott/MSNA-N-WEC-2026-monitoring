@@ -21,48 +21,52 @@ mod_progress_ui <- function(id) {
     if (!is.na(FRAME_AS_OF_LABEL)) {
       div(class = "text-muted", style = "font-size: 0.8em; margin-bottom: 8px;", FRAME_AS_OF_LABEL)
     },
-    # Ordered per Jack (2026-09-04): Achieved > follow-up gap > Collected >
-    # % of target > Planned days remaining > Est. days required. Six tiles
-    # at col_widths 4 wraps cleanly into two rows of three (4+4+4=12 per
-    # row) rather than squeezing six into one row.
+    # Six tiles at col_widths 4, two rows of three. Order was Achieved >
+    # follow-up gap > Collected > % of target > days remaining > days
+    # required (Jack, 2026-09-04); re-ordered 2026-09-22 so the top row is
+    # the three figures that reconcile with each other - Achieved, Still
+    # needed, % of target - and the bottom row is effort and time.
+    # REBUILT 2026-09-22 (Jack: "the dashboard summary page is generally a
+    # bit confusing now the numbers don't align fully"). Three changes:
+    # (1) a "Still needed" tile - the post-cap figure was nowhere on this
+    #     page, so a reader subtracted Achieved from planned and got the
+    #     wrong number whenever any stratum had over-collected (1,293
+    #     nationally the day this was built: planned - achieved read 7,746
+    #     against a real 9,039 still needed);
+    # (2) the "Collected - Achieved" tile is gone, replaced by plain
+    #     "Collected" - its value silently mixed confirmed deletions,
+    #     interviews in Dropped strata and unmatched submissions, and its
+    #     own tooltip still said "duplicates", which have counted toward
+    #     Achieved since 2026-09-11. The split now lives in the (i);
+    # (3) every supporting number moved INTO the (i) tooltips rather than
+    #     onto the card faces (Jack, explicit: "not to confuse/clutter the
+    #     space"), which is why these four titles are rendered server-side -
+    #     the tooltips carry live figures, not static prose.
     layout_columns(
       col_widths = c(4, 4, 4, 4, 4, 4),
       value_box(
-        title = info_title(
-          "Interviews achieved / planned",
-          "Interviews that count toward target — excludes confirmed deletions. Includes oversampled interviews in full as of 2026-09-20.",
-          icon_color = "white"
-        ),
+        title = uiOutput(ns("kpi_achieved_title")),
         value = textOutput(ns("kpi_achieved")),
         showcase = icon("clipboard-check"),
         theme = "primary"
       ),
       value_box(
-        title = info_title(
-          "Collected − Achieved",
-          "Completed interviews that don't currently count toward target — quality exclusions, duplicates, or unmatched."
-        ),
-        value = textOutput(ns("kpi_followup")),
-        showcase = icon("flag"),
+        title = uiOutput(ns("kpi_still_needed_title")),
+        value = textOutput(ns("kpi_still_needed")),
+        showcase = icon("list-check"),
         theme = "danger"
       ),
       value_box(
-        title = info_title(
-          "Collected",
-          "Every completed interview done — total field effort, not what counts toward the sample."
-        ),
-        value = textOutput(ns("kpi_collected")),
-        showcase = icon("layer-group"),
-        theme = "warning"
-      ),
-      value_box(
-        title = info_title(
-          "% of target",
-          "Progress toward target, capped per stratum before summing - an oversampled stratum's surplus never offsets another stratum's shortfall, so this can never read 100% while any stratum is still short. The raw share (all interviews incl. surplus / target) is shown in brackets for reference. Fixed 2026-09-21."
-        ),
+        title = uiOutput(ns("kpi_pct_title")),
         value = textOutput(ns("kpi_pct")),
         showcase = icon("percent"),
         theme = "success"
+      ),
+      value_box(
+        title = uiOutput(ns("kpi_collected_title")),
+        value = textOutput(ns("kpi_collected")),
+        showcase = icon("layer-group"),
+        theme = "warning"
       ),
       value_box(
         title = info_title(
@@ -76,7 +80,7 @@ mod_progress_ui <- function(id) {
       value_box(
         title = info_title(
           "Est. days required",
-          "Days still needed to reach target at the current pace of progress. Compare to Planned days remaining to see if you're on track.",
+          "Days still needed to close what's outstanding, at the pace of the LAST 7 DAYS. Changed 2026-09-22 (Jack): this used to divide by the average pace since fielding began, which included every early-surge day and read faster than the teams are currently working. Compare to Planned days remaining to see if you're on track.",
           icon_color = "white"
         ),
         value = textOutput(ns("kpi_days_required")),
@@ -115,7 +119,7 @@ mod_progress_ui <- function(id) {
       card_header(
         "Progress by partner",
         info_icon("Shows every assigned partner nationally, regardless of sidebar filters. Target includes every LGA assigned to them, even ones not yet started. Achieved reflects the whole LGA's progress, including any partner sharing it (see 'Shared with')."),
-        span(class = "text-muted", style = "font-size: 0.8em; font-weight: normal; margin-left: 8px;", "Sorted by % of target achieved (lowest first)")
+        span(class = "text-muted", style = "font-size: 0.8em; font-weight: normal; margin-left: 8px;", "Charts sorted by % of target achieved (lowest first); the table below opens sorted by Still needed, largest first")
       ),
       # REDESIGNED 2026-09-16 (Jack, first draft/proof-of-concept for the
       # new tab specifically - not final, don't over-polish before he sees
@@ -138,6 +142,83 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum, target_basi
       filtered_subs() %>% filter(interview_outcome == "completed", !is_duplicate)
     })
 
+    # ---- headline figures, computed once per (filter, basis) and shared by
+    # every tile + its tooltip below, so a tile face and its own (i) can
+    # never disagree (2026-09-22).
+    headline <- reactive({
+      s <- filtered_stratum() %>% filter(status != "Dropped")
+      ach <- sum(s$achieved_n, na.rm = TRUE)
+      cred <- sum(s$credited_achieved_n, na.rm = TRUE)
+      list(
+        target = sum(s$target_active, na.rm = TRUE),
+        achieved = ach,
+        credited = cred,
+        # interviews sitting above their own stratum's target: the exact
+        # amount by which "planned - achieved" understates Still needed
+        surplus = ach - cred,
+        remaining = sum(s$remaining_n, na.rm = TRUE),
+        # shared with the Home page's own split - see collected_breakdown()
+        # in global.R (2026-09-22) for why this isn't computed locally.
+        cb = collected_breakdown(filtered_stratum(), filtered_subs())
+      )
+    })
+
+    output$kpi_achieved_title <- renderUI({
+      h <- headline()
+      info_title(
+        "Interviews achieved",
+        paste0(
+          "Every completed interview that counts - excludes confirmed deletions, and includes in full any collected past a stratum's own target. ",
+          "Of these, ", comma(h$credited), " count toward the target of ", comma(h$target),
+          if (h$surplus > 0) paste0(", and ", comma(h$surplus), " are extra interviews in strata already at target - which is why planned minus achieved is NOT what's still needed. ") else ". ",
+          "See the Still needed tile for the real remaining figure."
+        ),
+        icon_color = "white"
+      )
+    })
+
+    output$kpi_still_needed_title <- renderUI({
+      h <- headline()
+      info_title(
+        "Still needed",
+        paste0(
+          "What is actually still required: every stratum's own remaining gap, floored at zero and then summed, so surplus in one place never cancels a shortfall in another. ",
+          comma(h$credited), " counted toward target + ", comma(h$remaining), " still needed = ", comma(h$target), " target. ",
+          "Added 2026-09-22 - this figure drives the partner workbooks' 'Still Needed' too, and the two now always agree."
+        )
+      )
+    })
+
+    output$kpi_pct_title <- renderUI({
+      h <- headline()
+      info_title(
+        "% of target",
+        paste0(
+          "Progress toward target, capped per stratum before summing - an oversampled stratum's surplus never offsets another's shortfall, so this can't read 100% while any stratum is still short. ",
+          comma(h$credited), " of ", comma(h$target), ". ",
+          "The raw share (all interviews incl. surplus / target) was removed 2026-09-22 per Jack - two competing percentages for the same thing read as the dashboard contradicting itself."
+        )
+      )
+    })
+
+    output$kpi_collected_title <- renderUI({
+      cb <- headline()$cb
+      gap <- cb$gap
+      unmatched <- cb$unmatched
+      info_title(
+        "Collected",
+        paste0(
+          "Every completed interview done - total field effort, not what counts toward the sample. ",
+          comma(gap), " of these don't count toward target: ", comma(cb$confirmed), " confirmed deletions, ",
+          comma(cb$dropped_collected), " in strata dropped from the design, ", comma(unmatched), " not matched to a sampled cluster",
+          if (cb$surplus > 0) paste0(", ", comma(cb$surplus), " match-quality residual. ") else ". ",
+          "Replaced the old 'Collected - Achieved' tile on 2026-09-22, which showed only that total with no split and still described it as duplicates (duplicates have counted toward Achieved since 2026-09-11)."
+        )
+      )
+    })
+
+    output$kpi_still_needed <- renderText(comma(headline()$remaining))
+
     output$kpi_achieved <- renderText({
       # 2026-09-14 (Jack, explicit general rule): a Dropped stratum's real
       # data must never enter a national/regional sum, only shown at its
@@ -152,48 +233,39 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum, target_basi
       # the % implies whenever any submission fails to match.
       # FIX 2026-09-16 (Decision A), extended 2026-09-19 (global toggle):
       # target_active - see global.R's compute_progress_by_stratum().
-      paste0(comma(sum(s$achieved_n, na.rm = TRUE)), " / ", comma(sum(s$target_active, na.rm = TRUE)))
+      # 2026-09-22: the planned total moved off this card face into the
+      # (i) and the "% of target" tile. Showing "achieved / planned" here
+      # invited the subtraction that this page kept getting wrong - see the
+      # Still needed tile.
+      comma(sum(s$achieved_n, na.rm = TRUE))
     })
 
     output$kpi_pct <- renderText({
-      # FIX 2026-09-21 (Jack): summed across many strata, raw achieved_n
-      # lets one oversampled stratum's surplus cancel another's shortfall
-      # (a real interview in A can't substitute for one still needed in
-      # B). credited_achieved_n is capped at each stratum's own target
-      # BEFORE the sum (compute_progress_by_stratum(), global.R), so this
-      # tile can't read "done" while any stratum is still short. Raw ratio
-      # kept in brackets per Jack's "show both" - it's a real, different
-      # question (total field effort vs target), not a wrong number.
-      s <- filtered_stratum() %>% filter(status != "Dropped")
-      tgt <- sum(s$target_active, na.rm = TRUE)
-      credited <- sum(s$credited_achieved_n, na.rm = TRUE)
-      raw <- sum(s$achieved_n, na.rm = TRUE)
-      if (tgt <= 0) return(fmt_pct(NA_real_))
-      paste0(fmt_pct(credited / tgt), " (raw ", fmt_pct(raw / tgt), ")")
+      # credited_achieved_n is capped at each stratum's own target BEFORE
+      # the sum (compute_progress_by_stratum(), global.R), so this tile
+      # can't read "done" while any stratum is still short. The raw ratio
+      # that used to sit beside it in brackets was removed 2026-09-22 per
+      # Jack - see this tile's own tooltip.
+      h <- headline()
+      if (h$target <= 0) return(fmt_pct(NA_real_))
+      fmt_pct(h$credited / h$target)
     })
 
     output$kpi_collected <- renderText({
       # Total field effort — every completed interview, unconditional (see
-      # is_collected() in global.R). Computed directly from filtered_subs()
-      # rather than summed from filtered_stratum()$collected_n, since the
-      # stratum-level figure can only include rows that resolved to a real
-      # stratum_id — this total should never undercount just because a
-      # handful of submissions couldn't be attributed to one.
-      comma(sum(is_collected(filtered_subs())))
+      # is_collected() in global.R). Deliberately NOT summed from
+      # filtered_stratum()$collected_n, which only counts rows that resolved
+      # to a real stratum_id — this total should never undercount just
+      # because a handful of submissions couldn't be attributed to one.
+      # Taken from the shared collected_breakdown() (2026-09-22) so the tile
+      # face and its own tooltip can't come from two different sums.
+      comma(headline()$cb$collected)
     })
 
-    output$kpi_followup <- renderText({
-      # Collected - Achieved, from the exact same two figures the tiles
-      # either side of it show (kpi_achieved's s$achieved_n, kpi_collected's
-      # is_collected(filtered_subs())) - so a user can literally check
-      # Achieved + this = Collected. Floored at 0 defensively; Achieved's
-      # conditions are a strict subset of Collected's (plus cluster-capping,
-      # which only ever removes further), so it should never go negative.
-      s <- filtered_stratum() %>% filter(status != "Dropped")
-      ach <- sum(s$achieved_n, na.rm = TRUE)
-      col <- sum(is_collected(filtered_subs()))
-      comma(max(col - ach, 0))
-    })
+    # kpi_followup ("Collected - Achieved") REMOVED 2026-09-22 - replaced by
+    # the plain Collected tile, whose tooltip now splits that same gap into
+    # confirmed deletions / dropped strata / unmatched instead of showing
+    # one unexplained total.
 
     output$kpi_days_remaining <- renderText({
       paste0(days_remaining, " / ", days_total, " days")
@@ -209,25 +281,27 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum, target_basi
       # of now" anchor global.R's partner pace table uses, not this filtered
       # set's own last submission - otherwise a filter with a recent lull
       # would look faster than it really is.
-      s <- filtered_stratum() %>% filter(status != "Dropped")
       subs <- filtered_subs()
-      # FIX 2026-09-16 (Decision A), extended 2026-09-19 (global toggle):
-      # target_active - "Still Needed" follows the sidebar toggle now.
-      achieved <- sum(s$achieved_n, na.rm = TRUE)
       # FIX 2026-09-21: remaining_n is floored per stratum then summed
       # (global.R) - was max(sum(target) - sum(achieved), 0), one
       # subtraction after summing raw achieved across every stratum in
       # scope, which let surplus in one stratum hide a shortfall in
-      # another. Pace itself (achieved / days) stays raw - that's real
-      # collection speed, not a target-tracking figure.
-      remaining <- sum(s$remaining_n, na.rm = TRUE)
+      # another.
+      remaining <- headline()$remaining
       if (remaining <= 0) return("Target met")
-      start_date <- suppressWarnings(min(subs$submission_date, na.rm = TRUE))
-      if (!is.finite(start_date)) return("N/A")
-      days_active <- as.numeric(today_for_pace - start_date) + 1
-      if (days_active <= 0) return("N/A")
-      rate <- achieved / days_active
-      if (rate <= 0) return("N/A")
+      # CHANGED 2026-09-22 (Jack: "let's do 7 day pace"): the rate is now
+      # the last 7 days of achieved interviews, not the average since this
+      # scope's first submission. The lifetime average included the early
+      # ramp-up and every since-completed stratum's peak - nationally it
+      # read 502/day against 414/day over the last week, i.e. 19 days to
+      # finish where the teams' current speed implies 22. PACE_WINDOW_DAYS
+      # is the whole mechanism, so widening/narrowing the window is a
+      # one-line change rather than a rewrite.
+      PACE_WINDOW_DAYS <- 7
+      window_start <- today_for_pace - (PACE_WINDOW_DAYS - 1)
+      recent <- sum(is_achieved(subs) & !is.na(subs$submission_date) & subs$submission_date >= window_start, na.rm = TRUE)
+      rate <- recent / PACE_WINDOW_DAYS
+      if (!is.finite(rate) || rate <= 0) return("N/A")
       paste(comma(ceiling(remaining / rate)), "days")
     })
 
@@ -622,7 +696,9 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum, target_basi
           `Credited toward target` = credited_achieved_n,
           `Still needed` = remaining_n,
           `% achieved` = pct_achieved,
-          `% achieved (raw)` = pct_achieved_raw,
+          # "% achieved (raw)" REMOVED 2026-09-22 (Jack) - Achieved above is
+          # still the full raw interview count, so nothing is hidden; it
+          # just isn't shown as a second, competing percentage.
           `Shared with` = shared_with,
           `Start date` = start_date,
           `Current daily pace` = round(current_daily_pace, 1),
@@ -631,14 +707,15 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum, target_basi
           Status = factor(status, levels = c("Behind pace", "On pace", "Complete", "Not started"))
         )
 
-      # 0-based: 0 Partner, 1 Original Target, 2 Revised Target, 3 Collected,
-      # 4 Confirmed Deleted, 5 Oversampling Surplus, 6 Pending Deletion,
-      # 7 Achieved, 8 Credited toward target, 9 Still needed, 10 % achieved,
-      # 11 % achieved (raw), 12 Shared with, 13 Start date, 14 Current pace,
-      # 15 Required pace, 16 Projected finish, 17 Status.
+      # 0-based (2026-09-22: "% achieved (raw)" removed): 0 Partner,
+      # 1 Original Target, 2 Revised Target, 3 Collected, 4 Confirmed
+      # Deleted, 5 Oversampling Surplus, 6 Pending Deletion, 7 Achieved,
+      # 8 Credited toward target, 9 Still needed, 10 % achieved,
+      # 11 Shared with, 12 Start date, 13 Current pace, 14 Required pace,
+      # 15 Projected finish, 16 Status.
       datatable(
         df, rownames = FALSE, filter = "top",
-        options = list(pageLength = 20, order = list(list(10, "asc")), columnDefs = list(list(className = "dt-right", targets = c(1:11, 14, 15))))
+        options = list(pageLength = 20, order = list(list(9, "desc")), columnDefs = list(list(className = "dt-right", targets = c(1:10, 13, 14))))
       ) %>%
         # 2026-09-14 (Jack): Original/Revised Target were showing raw
         # unrounded decimals here - target_sample_current (global.R) is now
@@ -652,7 +729,7 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum, target_basi
         # one page. Display-only rounding (sorting/filtering still use the
         # exact value) - restores the match the cards already implied.
         formatRound(c("Original Target", "Revised Target"), 0) %>%
-        formatPercentage(c("% achieved", "% achieved (raw)"), 1) %>%
+        formatPercentage("% achieved", 1) %>%
         formatStyle(
           "Status",
           color = styleEqual(names(partner_pace_colors), unname(partner_pace_colors))

@@ -113,6 +113,43 @@ frame_lga <- read_csv(
 
 norm <- function(x) str_squish(str_to_lower(x))
 
+# MOVED HERE 2026-09-22 (was read below, next to the excluded-LGA lookups;
+# before that it sat after still_unmatched - see those blocks' own notes):
+# the fuzzy fallback has to be able to recognise a real-but-inactive LGA
+# BEFORE it starts guessing, and full_frame is the only source that still
+# carries LGAs the design has excluded. frame_lga above is deliberately
+# still WORKING-based - that is the ACTIVE-coverage universe that
+# partner_lga_assignment.csv is supposed to describe, and widening it would
+# make an excluded LGA look actively covered dashboard-wide (see the
+# excluded-LGA block's own warning about exactly that).
+full_frame <- read_csv(
+  latest_frame_file("NGA_MSNA_2026_stage2_sampling_frame", "FULL"),
+  show_col_types = FALSE, col_types = cols(.default = "c")
+)
+
+# Every (state, LGA) the frame knows AT ALL, active or excluded. A partner
+# row naming one of these is a real LGA that simply isn't in the active
+# WORKING universe - it must never be fuzzy-matched onto a DIFFERENT,
+# active LGA.
+#
+# FIX 2026-09-22 (Jack, found via the INTERSOS/FACT reconciliation): FACT's
+# "Kankara" row (Katsina, excluded from the design) could not exact-match,
+# because frame_lga is WORKING-based and WORKING omits excluded LGAs
+# entirely. The Jaro-Winkler fallback then found "Kankia" - a different,
+# real, ACTIVE Katsina LGA that belongs to IMC - at distance 0.1508, under
+# the 0.25 threshold, and silently assigned FACT to it. That credited FACT
+# with Kankia's entire 198-interview target plus its achieved interviews on
+# the dashboard, and made FACT's dashboard total disagree with their own
+# workbook. Kukawa sat at exactly 0.250 and escaped only because the
+# threshold test is a strict `<` - i.e. the class of bug was one rounding
+# step away from firing twice. Keyed on "the frame knows this name" rather
+# than a Kankara/Kankia special case, so every current and future
+# excluded-LGA row is protected by the same rule.
+frame_known_lga_keys <- full_frame %>%
+  distinct(adm1_name, adm2_name) %>%
+  mutate(norm_key = paste0(str_to_lower(adm1_name), "|", str_squish(str_to_lower(adm2_name)))) %>%
+  pull(norm_key)
+
 read_region_sheet <- function(sheet) {
   raw <- read_excel("input_data/partner_coverage/Partnerscoverage.xlsx", sheet = sheet)
   names(raw) <- str_squish(names(raw))
@@ -186,7 +223,13 @@ fuzzy_matched <- unmatched %>%
   do({
     row <- .
     candidates <- frame_lga %>% filter(str_to_lower(adm1_name) == norm(row$state))
-    if (nrow(candidates) == 0) {
+    # see frame_known_lga_keys above (2026-09-22 Kankara->Kankia fix): a row
+    # naming an LGA the frame genuinely has, just not in the active WORKING
+    # universe, is NOT a naming mismatch and must not be guessed at. It
+    # falls through to still_unmatched, where the severity split already
+    # classifies it as expected/by-design. Tested here rather than with an
+    # early return(), which isn't reliable inside do()'s evaluation.
+    if (nrow(candidates) == 0 || row$norm_key %in% frame_known_lga_keys) {
       tibble()
     } else {
       norm_row <- norm(row$lga)
@@ -230,10 +273,9 @@ fuzzy_matched <- unmatched %>%
 # fires its warning, not just after, so the severity-split below can check
 # each still-unmatched row against them. See that block's own comment for
 # the full reasoning.
-full_frame <- read_csv(
-  latest_frame_file("NGA_MSNA_2026_stage2_sampling_frame", "FULL"),
-  show_col_types = FALSE, col_types = cols(.default = "c")
-)
+# full_frame itself is read further up now (2026-09-22) - the fuzzy
+# fallback needs it before it guesses. FRAME_PARTNER_NAME_MAP and the
+# excluded-LGA lookups below are unchanged and still use it here.
 
 # Name -> org_id, reusing ORG_COL_MAP (the same spreadsheet-column vocabulary,
 # now that its "Solidarités" key matches the frame's own spelling directly -
