@@ -37,6 +37,23 @@ cleaning/_archive/
 cleaning/real/*.csv
 cleaning/real/handoff_for_resampling/
 reports/partner_digests/
+# 2026-09-28 pre-push audit: cleaning/UNHCR_MSNA_Data_Cleaning/ is the same
+# kind of data officer's own, read-only pipeline as cleaning/MSNA_Data_Cleaning/
+# above, carries real raw survey data + a confirmed respondent PII string in
+# resources/pii_redactions.csv - excluded the same way, not evaluated further.
+# The two partner_status_emails_2026-09-21* folders are real, partner-facing
+# HTML content (per-LGA/pop-type tables addressed to each partner) - out of
+# git per standing convention, same as every other partner-communications
+# draft in this project.
+cleaning/UNHCR_MSNA_Data_Cleaning/
+reports/partner_status_emails_2026-09-21/
+reports/partner_status_emails_2026-09-21_corrected/
+# config/ itself IS tracked (coverage_decisions.csv, partner_registry.csv are
+# real config, not data dumps) - but config/_archive/ holds pre-change backup
+# snapshots of those files, same convention as data/_archive/ (excluded via
+# the blanket data/ rule above) - a snapshot's history is already in git once
+# the file it copies is tracked, so it doesn't need its own copy versioned too.
+config/_archive/
 reports/partner_data_recovery/inputs/
 reports/partner_data_recovery/outputs/
 reports/accessibility_review/

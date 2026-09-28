@@ -23,12 +23,26 @@
 SCRIPTS_DIR <- "c:/Users/JackPHILPOTT/ACTED/IMPACT NGA - 02. MSNA/4. Data/MSNA N-WEC 2026/2_monitoring/reports/partner_data_recovery/scripts"
 source(file.path(SCRIPTS_DIR, "full_batch_pipeline.R"))
 source(file.path(SCRIPTS_DIR, "build_workbook_fn.R"))
+# 2026-09-25 (Jack, decision Q): the workbook's READ ME "return by" date is the SAME constant the
+# email uses (recovery_deadline.R). This call used to pass no deadline, so every workbook printed
+# build_partner_workbook()'s stale "4 September 2026" default.
+source(file.path(SCRIPTS_DIR, "recovery_deadline.R"))   # EMAIL_DEADLINE
 
 out_root <- "c:/Users/JackPHILPOTT/ACTED/IMPACT NGA - 02. MSNA/4. Data/MSNA N-WEC 2026/2_monitoring/reports/partner_data_recovery/outputs"
 state_dir <- file.path(out_root, "_batch_state")
 dir.create(state_dir, showWarnings = FALSE, recursive = TRUE)
 
-all_partners <- setdiff(names(partner_adm2)[lengths(partner_adm2) > 0], c("other"))
+# 2026-09-25 (partner registry): every REGISTERED partner, not only those holding an LGA. A partner
+# whose LGAs were all reassigned (ACF -> ZOA) still has its own collector-routed follow-up items
+# (GPS/IDP duplicates, deletions, listings) and would otherwise get no workbook and no email at all.
+# A registered partner with nothing at all to send (no LGA, no interviews, no tracker rows) is
+# skipped, and said so. See scripts/shared/partner_registry.R.
+source(file.path(mon_dir, "scripts/shared/partner_registry.R"))
+registry <- read_partner_registry(mon_dir)
+partner_has_work <- function(o) registry$n_lgas[registry$org_id == o] > 0 || any(full_all$org_id == o, na.rm = TRUE) || any(tracker$org_id == o, na.rm = TRUE)
+all_partners <- registry$org_id[vapply(registry$org_id, partner_has_work, logical(1))]
+if (length(setdiff(registry$org_id, all_partners)) > 0) cat("Registered but skipped (no LGA, no interviews, no tracker rows):", paste(setdiff(registry$org_id, all_partners), collapse = ", "), "\n")
+if (any(registry$n_lgas[registry$org_id %in% all_partners] == 0)) cat("No LGAs assigned (workbook + email still built, headline carries no target/percent):", paste(registry$org_id[registry$n_lgas == 0 & registry$org_id %in% all_partners], collapse = ", "), "\n")
 precautionary_partners <- c("street_child", "care", "plan")
 cat("Total partners:", length(all_partners), "\n")
 cat("Precautionary:", paste(intersect(all_partners, precautionary_partners), collapse=", "), "\n\n")
@@ -49,7 +63,7 @@ for (org in all_partners) {
   wb_path <- file.path(folder, paste0(toupper(org), "_data_recovery_workbook_", batch_date, ".xlsx"))
 
   tryCatch({
-    build_partner_workbook(pkg, wb_path)
+    build_partner_workbook(pkg, wb_path, deadline = EMAIL_DEADLINE)
     packages[[org]] <- pkg
     precautionary_flags[[org]] <- is_precautionary
     cat("  OK: collected=", pkg$n_collected_total, " achieved=", pkg$n_achieved_total, "/", pkg$target_sample,

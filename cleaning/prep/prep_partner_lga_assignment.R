@@ -318,12 +318,27 @@ FRAME_PARTNER_NAME_MAP <- c(ORG_COL_MAP, "LHI" = "lhi")
 # need the same re-matching machinery that's structurally guaranteed to
 # fail here. Consumed by dashboard_app/global.R's partner_coverage_label()
 # fallback, AND (2026-09-20) by the still_unmatched severity-split below.
+# CHANGED 2026-09-25 (Coordinator/Jack): an LGA is excluded only when NONE of its
+# strata is covered - as this comment's own header always said ("zero covered
+# rows"). The code used to list an LGA as soon as ANY stratum was excluded, so
+# an LGA that lost one stratum but kept another (Mai'adua: IDP stratum
+# excluded 'idp_population_no_longer_present_partner_reported', non-IDP still
+# covered by Save the Children) landed in excluded_lgas.csv despite active
+# coverage. Harmless on the dashboard only because partner_coverage_label()
+# checks the active assignment first; wrong as a file, and wrong for anything
+# that must never show an actively covered LGA as excluded/unassigned.
+lgas_with_covered_stratum <- full_frame %>%
+  filter(coverage_status == "covered") %>%
+  distinct(adm2_pcode)
+
 excluded_lgas <- full_frame %>%
   filter(coverage_status == "excluded") %>%
-  distinct(adm1_pcode, adm1_name, adm2_pcode, adm2_name)
+  distinct(adm1_pcode, adm1_name, adm2_pcode, adm2_name) %>%
+  anti_join(lgas_with_covered_stratum, by = "adm2_pcode")
 
 excluded_long <- full_frame %>%
-  filter(coverage_status == "excluded", !is.na(partners_covering), partners_covering != "") %>%
+  filter(coverage_status == "excluded", adm2_pcode %in% excluded_lgas$adm2_pcode,
+         !is.na(partners_covering), partners_covering != "") %>%
   distinct(adm1_pcode, adm1_name, adm2_pcode, adm2_name, partners_covering) %>%
   separate_rows(partners_covering, sep = ",\\s*") %>%
   mutate(partner_name = str_squish(partners_covering))
@@ -461,3 +476,18 @@ cat("\nWrote", nrow(out), "partner-LGA assignment rows,",
     length(unique(out$adm2_pcode)), "distinct LGAs,",
     length(unique(out$org_id)), "distinct partners.\n")
 print(out %>% count(org_id, sort = TRUE))
+
+# 2026-09-25 (Jack via Coordinator): flag ANY LGA with no partner and no documented
+# reason. Recomputed from the assignment just written + the CURRENT frame + the
+# hand-kept decision record config/coverage_decisions.csv, so a covered LGA that
+# fell out of this file (UNASSIGNED) or a not-covered one nobody ever decided about
+# (UNRESOLVED, e.g. Marte) can no longer pass as a neutral label. Never stops the
+# run unless STRICT_UNASSIGNED=1; deploy_dashboard.R recomputes it again at deploy
+# time so a frame change after this script last ran is caught too. See
+# scripts/shared/coverage_state.R for the full definition.
+source("scripts/shared/coverage_state.R")
+refresh_coverage_state(".")
+# ...and the partner registry (assignment + config/partner_registry.csv): a partner left with no
+# LGA by this run (ACF, once its LGAs move to ZOA) must stay a known partner everywhere.
+source("scripts/shared/partner_registry.R")
+refresh_partner_registry(".")

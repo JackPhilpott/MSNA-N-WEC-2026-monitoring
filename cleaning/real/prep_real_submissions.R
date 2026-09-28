@@ -145,12 +145,180 @@ read_excel_robust <- function(path, ...) {
 anon_files <- list.files(file.path(CLEANING_OUTPUT_DIR, "anonymised_data"), pattern = "\\.xlsx$", full.names = TRUE)
 stopifnot(length(anon_files) > 0)
 anon_dates <- as.Date(str_extract(basename(anon_files), "\\d{4}-\\d{2}-\\d{2}"))
-same_day_candidates <- anon_files[anon_dates == max(anon_dates)]
-latest_file <- same_day_candidates[which.max(file.info(same_day_candidates)$mtime)]
+
+# GUARD ADDED 2026-09-25 (Jack: "yes, add the guard"). The data officer's
+# 2026-09-24 export was overwritten at 22:24 on 09-23/24 with start, end,
+# today AND _submission_time completely BLANK for all 26,222 rows (every
+# other column intact - checked column by column against the previous
+# day's file). Nothing errored: this script wrote real_submissions.csv with
+# submission_date/start_datetime/end_datetime/uploaded_at all NA, which
+# would have shipped a dashboard where every partner reads "Not started" and
+# no pace/trend/date figure works. A refresh must never accept an export
+# like that over good data. Candidates are tried newest-first (same date/
+# mtime ordering as before); the first whose start/end/today columns are
+# actually populated wins, and a skipped export is announced loudly here AND
+# in the sanity-warnings banner further down (bad_export_notice). If NO
+# export passes, this stops rather than writing undated data. Only the first
+# three columns are read for the probe (start, end, today are columns 1-3 of
+# the export); if that layout ever changes the probe steps aside with a
+# warning instead of blocking a refresh.
+EXPORT_MIN_DATE_SHARE <- 0.5
+# ADDED 2026-09-25 (Coordinator/Jack): scripts/shared/date_reconstruction.R can
+# fill blank dates from the previous build + the KoBo audit logs instead of
+# falling back to an older, staler export. ALLOW_DATE_RECONSTRUCTION switches
+# that capability on (it is a no-op on a valid export). What a wholly-blank
+# NEWEST export triggers is a POLICY choice that is Jack's to make:
+# "fallback"    = skip it and use the newest valid export (exact, but staler);
+# "reconstruct" = use the newest export and reconstruct its dates (fresher, part
+#                 approximate, loudly flagged on every run).
+# DECIDED 2026-09-25 (Jack, decision I, "option 2", relayed verbatim by
+# Coordinator): the standing rule is "reconstruct". "fallback" stays as the LAST
+# RESORT only: the reconstruct branch below needs the KoBo audit logs
+# (DATE_RECON_AUDIT_ZIP), and with none present a blank newest export is still
+# skipped in favour of the newest valid one, exactly as before. Nothing changes on
+# a valid export. A run that reconstructs says so loudly (console, sanity-warnings
+# banner, real_meta$dates, dates_source in real_submissions.csv). Code default only:
+# this was set, not run, and the 25 Sep export it was written after was valid.
+ALLOW_DATE_RECONSTRUCTION <- TRUE
+BLANK_DATE_EXPORT_POLICY <- "reconstruct" # "fallback" | "reconstruct"
+source("scripts/shared/date_reconstruction.R")
+export_date_share <- function(path) {
+  probe <- tryCatch(
+    read_excel_robust(path, sheet = "main", range = readxl::cell_cols(1:3), col_types = "text"),
+    error = function(e) NULL
+  )
+  if (is.null(probe) || !all(c("start", "end", "today") %in% names(probe))) return(NA_real_)
+  # readxl drops trailing all-blank rows, so a file whose start/end/today are
+  # blank in EVERY row (the actual 2026-09-24 failure) reads as 0 rows here -
+  # that is share 0, not "couldn't probe".
+  if (nrow(probe) == 0) return(0)
+  mean(!is.na(probe$start) & nzchar(probe$start) & !is.na(probe$end) & nzchar(probe$end) & !is.na(probe$today) & nzchar(probe$today))
+}
+candidate_order <- order(anon_dates, file.info(anon_files)$mtime, decreasing = TRUE)
+latest_file <- NULL
+skipped_exports <- character(0)
+for (cand in anon_files[candidate_order]) {
+  share <- export_date_share(cand)
+  if (is.na(share)) {
+    cat("WARNING: couldn't probe the date columns of", basename(cand), "- accepting it unchecked.\n")
+    latest_file <- cand
+    break
+  }
+  if (share >= EXPORT_MIN_DATE_SHARE) {
+    latest_file <- cand
+    break
+  }
+  if (BLANK_DATE_EXPORT_POLICY == "reconstruct" && ALLOW_DATE_RECONSTRUCTION && file.exists(DATE_RECON_AUDIT_ZIP)) {
+    cat("!!! ACCEPTING EXPORT with blank date columns (BLANK_DATE_EXPORT_POLICY = 'reconstruct'):", basename(cand),
+        "- dates will be carried forward / reconstructed from the audit logs and flagged.\n")
+    latest_file <- cand
+    break
+  }
+  msg <- paste0(basename(cand), " (start/end/today populated in only ", round(100 * share), "% of rows)")
+  cat("!!! SKIPPING EXPORT with blank date columns:", msg, "\n")
+  skipped_exports <- c(skipped_exports, msg)
+}
+if (is.null(latest_file)) stop("prep_real_submissions.R: every anonymised export has blank start/end/today columns - refusing to write undated data. Ask the data officer for a corrected export.")
+bad_export_notice <- if (length(skipped_exports) > 0) {
+  paste0("DATA OFFICER EXPORT SKIPPED (blank start/end/today columns, so no submission dates): ", paste(skipped_exports, collapse = "; "),
+         " - this run used the older ", basename(latest_file), " instead, so figures are STALER than the newest export. Ask the data officer to reissue.")
+} else NULL
 cat("Using anonymised export:", basename(latest_file), "\n")
 
-main <- read_excel_robust(latest_file, sheet = "main", guess_max = 5000)
-roster <- read_excel_robust(latest_file, sheet = "roster", guess_max = 5000)
+# FIX 2026-09-25 (Coordinator-approved, "Finding A"): readxl types each column from its first
+# `guess_max` rows. A column with NO value in the first 5,000 rows is typed LOGICAL, and every
+# value that arrives later is silently dropped (one "Expecting logical" warning per cell, 22,635 of
+# them on the 09-25 export, seven columns: sample_point_NG026_non_idp, idp_cluster_NG026,
+# admin3_true, special_zone, gps_hard_limit_base, gps_relaxation_used,
+# other_wash_soap_observed_type). The first two are this script's per-state ID-repair columns
+# (see ni_cols/idp_cols below) - harmless today because the combined id was populated on every
+# one of those rows, but a late-starting state whose combined id ever came through blank would
+# have lost its repair with no trace.
+# read_sheet_guarded() keeps the SAME first read (guess_max = 5000, so every column that was
+# typed before is typed exactly as before) and captures readxl's coercion warnings instead of
+# printing 22k console lines. It then finds the trap by CONTENT, not by warnings (readxl converts
+# a numeric cell in a logical-typed column to TRUE with NO warning, so a warning-only guard would
+# miss a late-starting numeric column): every column typed logical is re-read as text in ONE extra
+# pass that skips all other columns (~20 s; measured 2026-09-25), and any of them holding a
+# non-boolean value is replaced by its text version. On the 09-25 export the only columns whose
+# content or type change are the seven above. Coercions of any OTHER kind (a numeric/date column
+# meeting stray text) are NOT auto-healed - forcing such a column to text would change a typed
+# column downstream code relies on - they raise a sanity warning instead. Result carries attr
+# "readxl_guard" (columns re-read as text, values recovered, anything unhealed).
+read_sheet_guarded <- function(path, sheet, guess_max = 5000) {
+  idx <- integer(0); cls <- character(0)
+  df <- withCallingHandlers(
+    read_excel_robust(path, sheet = sheet, guess_max = guess_max),
+    warning = function(w) {
+      m <- conditionMessage(w)
+      if (grepl("^Expecting [a-z]+ in ", m) && grepl("R[0-9]+C[0-9]+", m)) {
+        idx <<- c(idx, as.integer(sub(".*R[0-9]+C([0-9]+).*", "\\1", m)))
+        cls <<- c(cls, sub("^Expecting ([a-z]+) in .*", "\\1", m))
+        invokeRestart("muffleWarning")
+      }
+    }
+  )
+  is_pop <- function(x) !is.na(x) & nzchar(trimws(x))
+  forced <- character(0); n_recovered <- 0L
+  lg <- which(vapply(df, is.logical, logical(1)))
+  if (length(lg) > 0) {
+    ct <- rep("skip", ncol(df)); ct[lg] <- "text"
+    txt <- read_excel_robust(path, sheet = sheet, col_types = ct)
+    names(txt) <- names(df)[lg]
+    for (k in seq_along(lg)) {
+      v <- as.character(txt[[k]]); length(v) <- nrow(df) # readxl trims trailing blank rows; those cells are blank
+      real <- is_pop(v) & !(toupper(v) %in% c("TRUE", "FALSE"))
+      if (any(real)) { df[[lg[k]]] <- v; forced <- c(forced, names(df)[lg[k]]); n_recovered <- n_recovered + sum(is_pop(v)) }
+    }
+    if (length(forced) > 0) {
+      cat(sprintf("NOTE: '%s' sheet - %d column(s) blank in the first %d rows (typed logical by readxl, which drops or mangles every later value) re-read as text, recovering %d value(s): %s\n",
+                  sheet, length(forced), guess_max, n_recovered, paste(forced, collapse = ", ")))
+    }
+  }
+  # coercions readxl reported that are NOT in a healed column (i.e. a typed numeric/date column that
+  # met a value of another type): these values are gone, so they are reported, not healed
+  left <- data.frame(idx = idx, cls = cls, stringsAsFactors = FALSE)
+  left <- left[!(names(df)[left$idx] %in% forced), , drop = FALSE]
+  unhealed <- if (nrow(left) > 0) {
+    agg <- aggregate(list(n = rep(1L, nrow(left))), list(idx = left$idx, cls = left$cls), sum)
+    paste0(names(df)[agg$idx], " (", agg$n, " ", agg$cls, ")")
+  } else character(0)
+  attr(df, "readxl_guard") <- list(sheet = sheet, forced_text = forced, n_values_recovered = n_recovered, unhealed = unhealed)
+  df
+}
+main <- read_sheet_guarded(latest_file, "main")
+roster <- read_sheet_guarded(latest_file, "roster")
+readxl_guard <- list(main = attr(main, "readxl_guard"), roster = attr(roster, "readxl_guard"))
+# only what could NOT be healed is a warning; a healed column loses nothing and would only add a
+# persistent banner line on every run (the same seven columns turn up every day)
+readxl_guard_notice <- {
+  bad <- unlist(lapply(readxl_guard, function(g) if (length(g$unhealed) > 0) paste0("'", g$sheet, "' sheet: ", paste(g$unhealed, collapse = ", "))))
+  if (length(bad) > 0) paste0("READXL COERCION: values were dropped by readxl's column-type guess and NOT auto-healed (a typed numeric/date column met a value of another type) - ", paste(bad, collapse = "; "),
+                              ". Check the export for those columns; only columns blank in the first 5,000 rows are healed automatically.") else NULL
+}
+
+# Fill any blank start/end/today/_submission_time (none in a valid export -> no-op,
+# values untouched) from the PREVIOUS build (read here, before it is overwritten
+# at the end of this script) and the KoBo audit logs. Each row's dates_source
+# says which; a row carried forward keeps its original source, so a
+# reconstructed row can never turn into an "exact" one. See date_reconstruction.R.
+prev_real <- if (file.exists("data/real_submissions.csv")) {
+  suppressWarnings(read_csv("data/real_submissions.csv", show_col_types = FALSE, col_types = cols(.default = col_character()), na = character()))
+} else NULL
+date_recon <- reconstruct_missing_dates(main, prev_real, allow = ALLOW_DATE_RECONSTRUCTION)
+main <- date_recon$main
+rm(prev_real)
+date_recon_notice <- if (date_recon$summary$n_blank_rows > 0) {
+  s <- date_recon$summary
+  msg <- paste0(
+    "DATES RECONSTRUCTED: ", s$n_blank_rows, " of ", s$n_rows, " rows had blank start/end/today/_submission_time in ", basename(latest_file),
+    " - ", s$n_carried_forward, " carried forward exact from the previous build, ", s$n_audit_reconstructed,
+    " derived from the KoBo audit logs (start ~1s and date exact, end approximate; uploaded_at/sync lag unavailable; ", s$n_kept_reconstructed,
+    " of them already reconstructed in an earlier run and kept marked as such), ", s$n_missing, " still without dates. See dates_source in real_submissions.csv."
+  )
+  cat("WARNING: ", msg, "\n", sep = "")
+  msg
+} else NULL
 
 # 2026-09-09: version-agnostic frame lookup, same fix/reasoning as global.R's
 # latest_frame_file() (2026-09-08 rebuild) - this script had the identical
@@ -182,9 +350,23 @@ frame_full_ids <- read_csv(
   show_col_types = FALSE, col_types = cols(.default = "c"),
   col_select = c(survey_id, cluster_id, strata_id)
 )
-adm1_lookup <- household_frame %>% distinct(adm1_pcode, adm1_name)
-adm2_lookup <- household_frame %>% distinct(adm2_pcode, adm2_name)
-idp_cat_lookup <- household_frame %>%
+# 2026-09-27: the state / LGA names and idp_population_category are looked up in FULL, not WORKING.
+# WORKING is the SHRINKING candidate pool - an LGA or cluster leaves it once fully achieved
+# or when its area goes inaccessible - so translating an interview that is ALREADY collected
+# through it blanked that interview's LGA name / IDP category the moment its area left
+# WORKING (27 Sep: 31 CRS Shagari rows and 62 FACT IDP rows after an accessibility change;
+# ~1,090 older IDP rows and Gubio's 31 rows were already blank the same way). FULL never
+# drops a row, and pcode -> name / cluster -> category are one-to-one in it (checked), so the
+# joins below cannot multiply rows. Same reasoning as point_coords further down. adm1 moved
+# too although nothing is blank yet (14 states in FULL, 11 in WORKING): the same defect, waiting.
+frame_full_labels <- read_csv(
+  latest_frame_file("NGA_MSNA_2026_stage2_sampling_frame", "FULL"),
+  show_col_types = FALSE, col_types = cols(.default = "c"),
+  col_select = c(adm1_pcode, adm1_name, adm2_pcode, adm2_name, pop_type, cluster_id, idp_population_category)
+)
+adm1_lookup <- frame_full_labels %>% distinct(adm1_pcode, adm1_name)
+adm2_lookup <- frame_full_labels %>% distinct(adm2_pcode, adm2_name)
+idp_cat_lookup <- frame_full_labels %>%
   filter(pop_type == "idp") %>%
   distinct(cluster_id, idp_population_category)
 
@@ -360,8 +542,21 @@ main <- main %>%
   )
 
 # ---- 4. real duplicate detection (methodology-aware, not distance-based) ---
+# Claimant order = exact upload time, as it always was. ADDED 2026-09-25: a row
+# with NO upload time (dates reconstructed from audit logs - see
+# date_reconstruction.R) sorts AFTER every exact one - it is newer than the last
+# good build by construction - and among such rows by start. On a valid export
+# every row has an upload time, so the first key is constant, the third is all
+# NA and this is exactly the previous arrange(`_submission_time`) (arrange is
+# stable). Same key as scripts/shared/live_claims.R. Do NOT order by the audit
+# form-start for rows that HAVE an upload time: that would change the canonical
+# claimant in ~16% of existing claim groups.
 main <- main %>%
-  arrange(`_submission_time`) %>%
+  mutate(.up_missing = is.na(`_submission_time`) | as.character(`_submission_time`) %in% c("", "NA")) %>%
+  arrange(.up_missing,
+          if_else(.up_missing, NA_character_, as.character(`_submission_time`)),
+          if_else(.up_missing, as.character(start), NA_character_)) %>%
+  select(-.up_missing) %>%
   mutate(
     dup_key = case_when(
       sample_pop_type_filter == "idp" & !is.na(idp_hh_number_from_listing) ~
@@ -384,6 +579,19 @@ roster_counts <- roster %>%
 main <- main %>% left_join(roster_counts, by = c("instance_name" = "parent_instance_name"))
 
 # ---- 6. optional GPS enrichment from the spatial-duplicate audit -----------
+# 2026-09-27 (Jack, "GPS duplicate submissions" KPI fix, option 1): each row now carries ONLY its
+# own submitted coordinate - the coordinate recorded on the audit row where THIS uuid is the
+# `uuid` column (the flagged submission itself), never copied from the `matched_uuid` column's
+# counterpart. Before this, both members of a flagged pair were assigned the SAME single lat/lon
+# (whichever the audit row carried, which is the `uuid` member's own reading - verified 2026-09-27,
+# see _working_files/gps_audit_pair_assignment_2026-09-27.md), which meant the dashboard's exact-
+# GPS-reuse KPI (find_gps_duplicate_groups(), global.R) was counting audit PAIRS by construction:
+# 100% of its groups (60/60 on the 27 Sep data) came from this assignment, not genuine reuse. The
+# `matched_uuid` half of the old bind_rows() is simply dropped; dist_to_claimed_device_m (6b below)
+# already only ever used whatever lat/lon landed here, so restricting the source is the whole fix.
+# A same-day update to just these 3 columns without a full prep re-run: cleaning/real/refresh_gps_
+# columns.R (built the same night - see its own header for why a bare prep re-run isn't safe on
+# data that already has confirmed deletions, and this file's own section 4 is unaffected either way).
 spatial_audit_files <- list.files(
   file.path(CLEANING_OUTPUT_DIR, "checking/internal_audit"),
   pattern = "^spatial_duplicate_audit_\\d{4}-\\d{2}-\\d{2}\\.xlsx$", full.names = TRUE
@@ -393,11 +601,8 @@ if (length(spatial_audit_files) > 0) {
   audit_dates <- as.Date(str_extract(basename(spatial_audit_files), "\\d{4}-\\d{2}-\\d{2}"))
   latest_audit <- spatial_audit_files[which.max(audit_dates)]
   audit <- read_excel(latest_audit, guess_max = 2000)
-  gps_lookup <- bind_rows(
-    audit %>% transmute(uuid, lat, lon),
-    audit %>% transmute(uuid = matched_uuid, lat, lon)
-  ) %>% distinct(uuid, .keep_all = TRUE)
-  cat("GPS coordinates recovered for", nrow(gps_lookup), "submissions via spatial-duplicate audit (", basename(latest_audit), ")\n")
+  gps_lookup <- audit %>% transmute(uuid, lat, lon) %>% distinct(uuid, .keep_all = TRUE)
+  cat("GPS coordinates recovered for", nrow(gps_lookup), "submissions via spatial-duplicate audit (", basename(latest_audit), ") - own coordinate only, no longer borrowed from a flagged pair's counterpart\n")
 }
 main <- main %>% left_join(gps_lookup, by = "uuid")
 
@@ -511,12 +716,28 @@ out <- main %>%
     idp_hh_number_from_listing,
     idp_walk_position,
     claim_group_size = dup_n, # how many submissions share this exact claimed identity (point, or IDP listing/walk position) — dup_n from the duplicate-detection step above, reused rather than recomputed
-    dist_to_claimed_device_m
+    dist_to_claimed_device_m,
+    # ADDED 2026-09-25: where this row's dates came from - "export" (always,
+    # on a valid export), "carried_forward" (exact, from the previous build),
+    # "audit_reconstructed" (approximate: start ~1s, end ~90% within 60s, no
+    # uploaded_at), or "missing". See scripts/shared/date_reconstruction.R.
+    dates_source,
+    dates_reconstructed = dates_source == "audit_reconstructed"
   ) %>%
   mutate(
     any_quality_flag = flag_gps_outlier | flag_duration_outlier | flag_hh_size_mismatch | flag_lga_mismatch | is_duplicate
   ) %>%
   arrange(start_datetime)
+
+# ADDED 2026-09-25 (Coordinator/Jack, 4a): the first LIVE claimant of a point/
+# listing slot is not a duplicate even when an earlier submission (since
+# confirmed-deleted, or never a completed interview) came before it - see
+# scripts/shared/live_claims.R for the rule, the ordering key and why it must
+# not switch to the audit form-start. Uses the deletion status joined above
+# (the overlays as of the previous run); refresh_deletion_columns.R re-applies
+# it with this run's freshly rebuilt overlays. Adds n_live_claims.
+source("scripts/shared/live_claims.R")
+out <- apply_live_claim_rule(out, settled_uuid = out$submission_uuid[out$deletion_status %in% c("confirmed", "contested")])
 
 # ---- 7b. date-outlier submissions (2026-08-27, REPURPOSED 2026-09-11) — a
 # device's clock can be wrong at the START of an interview even when
@@ -571,8 +792,16 @@ cat("Ward names translated:", sum(!is.na(out$admin3_submitted)), "of", nrow(out)
 # rationale (added 2026-08-21). Runs before the write below so a check
 # could in principle inspect the file about to be replaced; doesn't block
 # the write either way — warn-and-continue, confirmed with Jack.
-known_org_ids <- unique(read_csv("input_data/partner_coverage/partner_lga_assignment.csv", show_col_types = FALSE)$org_id)
+# 2026-09-25: the partner REGISTRY (assignment orgs + config/partner_registry.csv), not the
+# assignment alone - a partner whose LGAs were all reallocated (ACF -> ZOA) holds no assignment
+# row but is still a valid collector; deriving this from the assignment made every one of its
+# interviews an "UNKNOWN ORG_ID". See scripts/shared/partner_registry.R.
+source("scripts/shared/partner_registry.R")
+known_org_ids <- read_partner_registry()$org_id
 sanity_issues <- c(
+  if (!is.null(bad_export_notice)) bad_export_notice, # see the export-selection guard near the top of this file
+  if (!is.null(date_recon_notice)) date_recon_notice, # every run that reconstructs any dates says so, here and in real_meta$dates
+  if (!is.null(readxl_guard_notice)) readxl_guard_notice, # values readxl dropped that read_sheet_guarded() could not heal (normally none)
   run_sanity_checks(out, main, roster, prev_meta, known_org_ids, household_frame, frame_full = frame_full_ids),
   check_frame_freshness(),
   check_accessibility_freshness(),
@@ -599,6 +828,9 @@ retry_file_write(function(p) write_csv(out, p), "data/real_submissions.csv")
 meta <- list(
   generated_at = Sys.time(),
   source_file = basename(latest_file),
+  skipped_exports = skipped_exports, # newer exports the date guard rejected this run (character(0) normally)
+  dates = date_recon$summary,        # rows with blank export dates and how each was filled (all zero on a valid export)
+  readxl_forced_text = readxl_guard, # per sheet: columns re-read as text so no late value is dropped, values recovered, anything unhealed
   n_rows = nrow(out),
   n_completed = sum(out$interview_outcome == "completed"),
   n_unmatched = sum(out$match_quality == "unmatched_no_point_id"),

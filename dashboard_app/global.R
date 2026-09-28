@@ -58,17 +58,34 @@ latest_frame_file <- function(prefix, suffix, dir = file.path(INPUT_DIR, "sampli
 # modules untouched, not deleted — flip back to TRUE to bring it back.
 SHOW_ANALYSIS_TAB <- FALSE
 
-# ---- fielding window --------------------------------------------------------
-# FIELDING_PLANNED_END: the realistic current end-of-collection estimate,
-# updated as the timeline shifts (was 2026-08-15's 2026-09-11 estimate;
-# moved to 2026-09-27 per Jack, 2026-09-20). Drives the "Fielding window"
-# row, the Planned/Est. days KPI tiles, and the trend chart's pace line
-# (days_total/days_remaining, global.R below; FIELDING_START to
-# FIELDING_PLANNED_END, mod_progress.R) — all computed from this constant,
-# nothing else to update when it moves. FIELDING_START is computed below,
-# once submissions_raw is loaded — the first date that actually appears in
-# the data, so the date filter/home page can't disagree with what's really
-# there.
+# 2026-09-25 (Jack, decision F, "option 2 as the dashboard is for internal + partners"): the
+# own-vs-others attribution split lives in the recovery EMAILS only. The dashboard shows whole-LGA
+# totals: Progress by partner hides "Of which collected by other partners", "Collected outside
+# assigned LGAs" and "In dropped strata (indicative only)" plus the matching hover line, and the
+# Partner Report (on screen and Excel) hides "Of which collected by other partners". The numbers are
+# still computed - pace is the partner's OWN collection (credited_own_n, internal) and the split
+# columns stay on the summary tibbles - so flipping this to TRUE brings every display back untouched.
+SHOW_ATTRIBUTION_SPLIT <- FALSE
+
+# ---- fielding window / Round 1 cut-off --------------------------------------
+# FIELDING_PLANNED_END: the END OF ROUND 1 of data collection, 2026-09-27 - the
+# cut-off for getting the data into the key decision-making forum in Nigeria
+# (IPC/CH). RELABELLED 2026-09-25 (Jack, decision Q: "officially our end of
+# collection date is the 27/09/2026 ... Round 1 is finishing on the 27/09/2026 in
+# order to clean and analyse our data in time for the IPC/CH. Round 2 is aimed to
+# be the comprehensive full collection that will be reported on later"). It is NOT
+# the end of all fielding. The constant keeps its name (it is read in several
+# places); every DISPLAYED label now says "Round 1" / "cut-off" instead of
+# "planned end" / "deadline". (History: was 2026-08-15's 2026-09-11 estimate;
+# moved to 2026-09-27 per Jack, 2026-09-20.) Drives the Home "Round 1 window"
+# row, the "Days to Round 1 cut-off" / Est. days KPI tiles, the trend chart's
+# needed-pace line (days_total/days_remaining, global.R below; FIELDING_START to
+# FIELDING_PLANNED_END, mod_progress.R) and the partner table's On pace / Behind
+# pace status and Required daily pace (build_partner_progress_summary()) - all
+# computed from this constant, nothing else to update when it moves.
+# FIELDING_START is computed below, once submissions_raw is loaded — the first
+# date that actually appears in the data, so the date filter/home page can't
+# disagree with what's really there.
 FIELDING_PLANNED_END <- as.Date("2026-09-27")
 
 # ---- load data -------------------------------------------------------------
@@ -258,8 +275,13 @@ admin1_sf <- st_read(file.path(INPUT_DIR, "boundaries/nga_admin1_em.shp"), quiet
   reduce_coord_precision() %>%
   mutate(in_assessment = adm1_pcode %in% unique(strata_frame$adm1_pcode))
 
-admin2_sf <- st_read(file.path(INPUT_DIR, "boundaries/nga_admin2_em.shp"), quiet = TRUE) %>%
-  reduce_coord_precision() %>%
+# admin2_all_sf keeps every LGA (2026-09-25): the coverage-gap overlay below has to be
+# able to draw an UNRESOLVED LGA (e.g. Marte), which by definition is NOT in
+# strata_frame and so is not in admin2_sf. Same single read + precision reduction as
+# before - only the filter moved after the assignment.
+admin2_all_sf <- st_read(file.path(INPUT_DIR, "boundaries/nga_admin2_em.shp"), quiet = TRUE) %>%
+  reduce_coord_precision()
+admin2_sf <- admin2_all_sf %>%
   filter(adm2_pcode %in% unique(strata_frame$adm2_pcode))
 
 # PSU geometries (cleaning/prep/prep_psu_geometries.R): Non-IDP PSU = hexagon
@@ -300,6 +322,71 @@ excluded_lga_prior_partners <- read_csv(
   file.path(INPUT_DIR, "partner_coverage/excluded_lga_prior_partners.csv"),
   show_col_types = FALSE
 )
+
+# 2026-09-25 (Jack via Coordinator): which LGAs have NO partner and NO documented
+# reason - UNASSIGNED (covered in the frame, no partner) / UNRESOLVED (not covered,
+# no recorded decision). Built by scripts/shared/coverage_state.R (called from
+# prep_partner_lga_assignment.R and deploy_dashboard.R); the definition, the
+# decision record (config/coverage_decisions.csv) and why this replaced the quiet
+# "other" fallback are all in that file's header. 323 rows, tiny - the read costs
+# nothing, and a missing file must never stop the app from starting, so it degrades
+# to a visible red note (coverage_alert_ui) rather than an error.
+COVERAGE_STATE_FILE <- file.path(INPUT_DIR, "partner_coverage/coverage_state_by_lga.csv")
+coverage_state <- if (file.exists(COVERAGE_STATE_FILE)) {
+  read_csv(COVERAGE_STATE_FILE, show_col_types = FALSE, col_types = cols(.default = "c")) %>%
+    mutate(covered_target = suppressWarnings(as.numeric(covered_target)),
+           n_active_clusters = suppressWarnings(as.integer(n_active_clusters)))
+} else NULL
+COVERAGE_STATE_MISSING <- is.null(coverage_state)
+# "Seeded" = at least one valid decision row exists. Until then nobody has recorded any
+# decision, so ALL not-covered LGAs (147 today) read as unresolved - which is true, but
+# painting every one red on the map would bury the one that matters. UNASSIGNED is
+# always drawn/listed; UNRESOLVED is itemised only once the record is seeded, and until
+# then the Home alert reports the count and says the record is empty.
+COVERAGE_DECISIONS_SEEDED <- !COVERAGE_STATE_MISSING && any(coverage_state$decisions_seeded %in% "TRUE")
+coverage_flag_by_adm2 <- if (COVERAGE_STATE_MISSING) character() else setNames(coverage_state$coverage_flag, coverage_state$adm2_pcode)
+COVERAGE_UNASSIGNED <- if (COVERAGE_STATE_MISSING) NULL else coverage_state[coverage_state$coverage_flag == "UNASSIGNED", ]
+COVERAGE_UNRESOLVED <- if (COVERAGE_STATE_MISSING) NULL else coverage_state[coverage_state$coverage_flag == "UNRESOLVED", ]
+
+# Polygons for the Coverage Map's red overlay: every UNASSIGNED LGA, plus every
+# UNRESOLVED one once the decision record is seeded (see COVERAGE_DECISIONS_SEEDED).
+# NULL when there is nothing to draw, which is the normal case.
+coverage_flag_sf <- {
+  to_draw <- if (COVERAGE_STATE_MISSING) NULL else coverage_state[
+    coverage_state$coverage_flag == "UNASSIGNED" | (coverage_state$coverage_flag == "UNRESOLVED" & COVERAGE_DECISIONS_SEEDED), ]
+  if (is.null(to_draw) || nrow(to_draw) == 0) NULL
+  else admin2_all_sf %>% inner_join(to_draw %>% select(adm2_pcode, coverage_flag, coverage_flag_detail), by = "adm2_pcode")
+}
+
+# The red block at the top of Home. NULL (renders nothing) when every LGA is either
+# partnered, excluded by design, or covered by a recorded decision.
+coverage_alert_ui <- function() {
+  lga_list <- function(df, with_target = FALSE, max_n = 15) {
+    lab <- paste0(df$adm1_name, " / ", df$adm2_name,
+                  if (with_target) paste0(" (", df$n_covered, " covered strata, target ", format(df$covered_target, big.mark = ","), ")") else "")
+    if (length(lab) > max_n) paste0(paste(lab[seq_len(max_n)], collapse = "; "), "; +", length(lab) - max_n, " more") else paste(lab, collapse = "; ")
+  }
+  items <- list()
+  if (COVERAGE_STATE_MISSING) {
+    items <- c(items, list(tags$li("The coverage-completeness check has not been run for this build (coverage_state_by_lga.csv is missing), so no LGA can be confirmed as having a partner.")))
+  } else {
+    if (nrow(COVERAGE_UNASSIGNED) > 0) {
+      items <- c(items, list(tags$li(strong(paste0(nrow(COVERAGE_UNASSIGNED), " covered LGA(s) have NO partner: ")), lga_list(COVERAGE_UNASSIGNED, with_target = TRUE), ".")))
+    }
+    if (nrow(COVERAGE_UNRESOLVED) > 0 && COVERAGE_DECISIONS_SEEDED) {
+      items <- c(items, list(tags$li(strong(paste0(nrow(COVERAGE_UNRESOLVED), " not-covered LGA(s) have no partner and no recorded decision: ")), lga_list(COVERAGE_UNRESOLVED), ".")))
+    } else if (nrow(COVERAGE_UNRESOLVED) > 0) {
+      items <- c(items, list(tags$li(strong(paste0(nrow(COVERAGE_UNRESOLVED), " not-covered LGAs have no recorded coverage decision")), " - the decision record (config/coverage_decisions.csv) is still empty, so none of them, including Borno / Marte, is documented as accepted.")))
+    }
+  }
+  if (length(items) == 0) return(NULL)
+  div(
+    class = "alert alert-danger", role = "alert", style = "margin-bottom: 12px;",
+    strong("Coverage gap - needs resolving: "), "every LGA should either have a partner or a recorded decision.",
+    tags$ul(style = "margin: 6px 0 0 0;", items),
+    tags$div(style = "margin-top: 6px; font-size: 0.9em;", "Resolve by assigning a partner, or by recording the decision in config/coverage_decisions.csv.")
+  )
+}
 
 # ---- respondent privacy: fields never shown/exported at the individual-
 # submission level ------------------------------------------------------------
@@ -482,8 +569,21 @@ ORG_LABELS <- c(
   mdm = "Médecins du Monde", nrc = "Norwegian Refugee Council",
   plan = "PLAN International", sci = "Save the Children",
   si = "Solidarités International", street_child = "Street Child of Nigeria",
-  zoa = "ZOA", other = "Other / unassigned"
+  zoa = "ZOA",
+  # 2026-09-25: the old catch-all `other = "Other / unassigned"` is gone. It quietly
+  # mixed two different things: the dropped strata of LGAs excluded from the design
+  # (a documented decision, 9 LGAs) and - had it ever happened - a covered LGA that
+  # lost its partner (an error nobody would have noticed). They are now two distinct,
+  # non-partner sentinels: see filter_base below.
+  unassigned = "UNASSIGNED (no partner)",
+  excluded = "No active partner (excluded LGAs)"
 )
+# Sentinel org_ids that stand in for "no partner" - never a real collector, never
+# a partner anyone can be followed up with. Everything that used to drop "other"
+# drops these instead.
+UNASSIGNED_ORG_ID <- "unassigned"
+EXCLUDED_ORG_ID <- "excluded"
+NON_PARTNER_ORG_IDS <- c(UNASSIGNED_ORG_ID, EXCLUDED_ORG_ID)
 
 # LGAs jointly covered by more than one org (currently: Isa, Sabon Birni,
 # Tangaza, Zuru — irc+lhi, Isa also drc), where neither org has claimed
@@ -516,6 +616,14 @@ prior_orgs_by_adm2 <- split(excluded_lga_prior_partners$org_id, excluded_lga_pri
 # never in scope — bare "Not partner-assigned" reads as ambiguous for the
 # former (see excluded_lgas read above for why this can't just be folded
 # into coverage_orgs_by_adm2 itself).
+#
+# CHANGED 2026-09-25 (Jack via Coordinator): the last line used to be a bare
+# "Not partner-assigned" for ANYTHING left over - a shrug for a covered LGA that lost
+# its partner (an error) and for a not-covered one nobody ever decided about, alike.
+# Now every case is named: an LGA with no partner and no documented reason reads
+# UNASSIGNED / UNRESOLVED (scripts/shared/coverage_state.R), one covered by a recorded
+# decision reads "Not covered (decision on record)", and an LGA the coverage state
+# doesn't know at all also reads UNASSIGNED - there is no quiet fallback left.
 partner_coverage_label <- function(pc) {
   orgs <- coverage_orgs_by_adm2[[pc]]
   if (!is.null(orgs)) return(paste(unname(ORG_LABELS[orgs]), collapse = ", "))
@@ -526,7 +634,10 @@ partner_coverage_label <- function(pc) {
     }
     return("Excluded (no prior assignment on record)")
   }
-  "Not partner-assigned"
+  flag <- unname(coverage_flag_by_adm2[pc])
+  if (length(flag) == 1 && !is.na(flag) && flag == "UNRESOLVED") return("UNRESOLVED (no partner, no recorded decision)")
+  if (length(flag) == 1 && !is.na(flag) && flag == "OK") return("Not covered (decision on record)")
+  "UNASSIGNED (no partner)"
 }
 
 # ---- accessibility layer (1_sampling/resampling/, copied in via cleaning/
@@ -695,7 +806,7 @@ accessibility_ward_df <- read_csv(
 # dashboard's own canonical list of actually-active partners
 # (partner_lga_assignment's distinct org_id, the same 19 used everywhere
 # else, e.g. partner_adm2 above) — NOT ORG_LABELS itself (which also lists
-# "jrs" and "other", neither an active assigned partner) and NOT derived
+# "jrs" and the "unassigned"/"excluded" sentinels, none an active assigned partner) and NOT derived
 # from accessibility_ward_df (that would silently shrink if a partner
 # simply has no ward portion in a given extract).
 TOTAL_ACCESSIBILITY_PARTNERS <- length(unique(partner_lga_assignment$org_id))
@@ -779,23 +890,52 @@ adm2_name_lookup <- household_frame %>%
 # see get_ward_choices/ward_to_lga above) — each filter's own choices are
 # computed by filtering this table by every *other* currently-selected
 # filter and reading off the distinct remaining values for its own column.
-# The one LGA with no confirmed partner match (see
-# cleaning/prep/prep_partner_lga_assignment.R) is coalesced to "other" here,
-# matching how the mock submissions themselves are tagged.
+# A stratum row with no partner in the assignment gets one of two explicit sentinels
+# (was one catch-all "other" until 2026-09-25, which hid the difference): a stratum
+# the frame still calls COVERED is a real error and reads "unassigned" (also flagged
+# by scripts/shared/coverage_state.R and the Home alert); a Dropped stratum
+# (accessibility-excluded, the only other kind strata_frame keeps) belongs to an LGA
+# already excluded from the design - a documented decision, not an error - and reads
+# "excluded". Today: 0 unassigned, 15 excluded (9 LGAs).
 filter_base <- strata_frame %>%
   left_join(
     partner_lga_assignment %>% select(adm2_pcode, org_id),
     by = "adm2_pcode",
     relationship = "many-to-many"
   ) %>%
-  mutate(org_id = coalesce(org_id, "other"))
+  mutate(org_id = coalesce(org_id, if_else(coverage_status == "covered", UNASSIGNED_ORG_ID, EXCLUDED_ORG_ID)))
 
 # LGAs (adm2_pcode) assigned to each partner — used to scope a partner's view
 # to "their" LGAs (not just LGAs where they happen to have a submission
 # yet). Derived from filter_base (not raw partner_lga_assignment directly)
-# so the one LGA with no confirmed partner match is consistently reachable
-# under "other" here too, not just in the filter choice lists above.
+# so an LGA with no partner is consistently reachable under its "unassigned" /
+# "excluded" sentinel here too, not just in the filter choice lists above.
 partner_adm2 <- split(filter_base$adm2_pcode, filter_base$org_id)
+
+# ---- partner registry (2026-09-25, Jack via Coordinator: prerequisite for the ACF -> ZOA
+# reallocation) --------------------------------------------------------------------------
+# Every partner list here used to be derived from the assignment alone, so a partner whose
+# LGAs are all moved to someone else vanished: no row in the partner table/charts, absent
+# from the sidebar partner filter (and its default "everything selected" then dropped its
+# submissions from every filtered view - including the LGAs' NEW owner's totals), no Partner
+# Report. PARTNERS_ASSIGNED = partners that hold at least one LGA (what a target, a pace
+# and a status make sense for); PARTNERS_NO_LGAS = registered partners that hold none.
+# The registry is the assignment's partners + partner_registry.csv (derived from
+# config/partner_registry.csv by scripts/shared/partner_registry.R, since the deployed app
+# cannot see config/) + any collector we can label that has submitted, so a labelled
+# collector can never silently drop out of a filtered view. Defined here, before
+# compute_filter_choices() is first called below, which reads PARTNERS_NO_LGAS.
+PARTNERS_ASSIGNED <- setdiff(names(partner_adm2)[lengths(partner_adm2) > 0], NON_PARTNER_ORG_IDS)
+PARTNER_REGISTRY_FILE <- file.path(INPUT_DIR, "partner_coverage/partner_registry.csv")
+PARTNER_REGISTRY_IDS <- intersect(
+  sort(unique(c(
+    PARTNERS_ASSIGNED,
+    if (file.exists(PARTNER_REGISTRY_FILE)) read_csv(PARTNER_REGISTRY_FILE, show_col_types = FALSE, col_types = cols(.default = "c"))$org_id,
+    unique(submissions_raw$org_id)
+  ))),
+  setdiff(names(ORG_LABELS), NON_PARTNER_ORG_IDS)
+)
+PARTNERS_NO_LGAS <- setdiff(PARTNER_REGISTRY_IDS, PARTNERS_ASSIGNED)
 
 # `current` is a named list with any of region/state/lga/poptype/partner ->
 # a character vector of that dimension's currently selected values (or NULL/
@@ -824,8 +964,10 @@ compute_filter_choices <- function(dimension, current) {
       setNames(codes, unname(POP_TYPE_LABELS[codes]))
     },
     partner = {
-      codes <- unique(df$org_id)
-      codes <- codes[order(codes == "other", unname(ORG_LABELS[codes]))]
+      # PARTNERS_NO_LGAS are always offered (2026-09-25): they have no rows in filter_base to
+      # narrow by, and dropping them under a region/state filter would hide their submissions.
+      codes <- unique(c(df$org_id, PARTNERS_NO_LGAS))
+      codes <- codes[order(codes %in% NON_PARTNER_ORG_IDS, unname(ORG_LABELS[codes]))]
       setNames(codes, unname(ORG_LABELS[codes]))
     }
   )
@@ -929,11 +1071,19 @@ is_collected <- function(df) {
 # duplicate but that have NOT yet been through the tracker/recovery
 # process at all - these now count as Achieved immediately, same as any
 # other not-yet-confirmed item, per the letter of Jack's decision. 19 are
-# currently-unmatched (matched_survey_id NA) rows - notable because
-# crs_unmatched has no independent check built yet (see CLAUDE.md), so
-# these currently have NO path to ever being registered/reviewed/
-# confirmed at all; they'll simply sit counted as Achieved indefinitely
-# until that check exists. Flagged to Jack; standing until told otherwise.
+# currently-unmatched (matched_survey_id NA) rows - notable because, as of
+# that morning, crs_unmatched had no independent check built yet, so
+# these had NO path to ever being registered/reviewed/confirmed at all;
+# they would simply sit counted as Achieved indefinitely until that check
+# existed. Flagged to Jack; standing until told otherwise.
+# UPDATE 2026-09-25: that check WAS built later the same day
+# (run_independent_unmatched_check(), cleaning/real/independent_deletion_
+# checks.R, commit 9996a4a) - the sentence above went stale within hours.
+# It was then only ever called from that file's own standalone block, never
+# from deploy_dashboard.R's chain (last manual run 2026-09-13), so a newer
+# unmatched interview (CARE/Lafia, uploaded 2026-09-23) was in no tracker
+# row; deploy_dashboard.R now calls it (and the date_outlier check) after
+# the original five.
 #
 # The old is_duplicate/matched_survey_id checks were REMOVED from this
 # function entirely (not just loosened) - keeping either would have meant
@@ -1401,11 +1551,31 @@ oversampled_clusters <- compute_oversampled_clusters(submissions_raw)
 
 # ---- partners with zero submissions so far (2026-08-27) — moved here from
 # reports_partner_digest.R (same reasoning as oversampled_clusters above).
-# "Assigned" means actually has an LGA in partner_lga_assignment (excludes
-# "other", the coalesce fallback for the one LGA with no confirmed match —
-# not a partner anyone can actually follow up with).
-PARTNERS_ASSIGNED <- setdiff(names(partner_adm2)[lengths(partner_adm2) > 0], "other")
+# "Assigned" means actually has an LGA in partner_lga_assignment (excludes the
+# "unassigned"/"excluded" sentinels from filter_base — not partners anyone can
+# actually follow up with). PARTNERS_ASSIGNED itself is defined next to partner_adm2 above
+# (2026-09-25 partner registry). A partner with NO LGA is not "not started": it isn't
+# expected to collect anything, so it stays out of this list.
 PARTNERS_NOT_STARTED <- setdiff(PARTNERS_ASSIGNED, submissions_raw$org_id)
+
+# 2026-09-25 (Jack, decisions F + L: "they should still be accountable for the data they have
+# collected"): a registered partner with NO LGA (ACF) has no strata of its own, so every figure built by
+# summing its LGA-grain rows reads 0 - its Progress-by-partner row, its Partner Report tiles and the
+# Excel/PDF headline alike. This is its OWN headline counts instead, one definition for all of them: every
+# completed interview it did (Collected), those that are not a settled deletion (Achieved), its own
+# Confirmed Deletion and still-flagged (Pending Deletion, inside Achieved) counts, by the same is_*()
+# rules as everywhere, so Collected = Achieved + Confirmed Deletion + Oversampling Surplus holds. Unlike an
+# ordinary row this counts EVERY interview it collected, matched to a stratum or not. Only used for a
+# partner in PARTNERS_NO_LGAS; nothing sums it across partners, so no double counting.
+partner_own_counts <- function(org_id_val) {
+  own_subs <- submissions_raw[submissions_raw$org_id == org_id_val, ]
+  collected <- sum(is_collected(own_subs))
+  achieved <- sum(is_achieved(own_subs))
+  confirmed <- sum(is_confirmed_deletion(own_subs))
+  list(collected_n = collected, achieved_n = achieved, confirmed_deletion_n = confirmed,
+       pending_deletion_n = sum(is_achieved(own_subs) & !is.na(own_subs$deletion_status)),
+       oversampling_surplus_n = max(collected - achieved - confirmed, 0L))
+}
 
 # ---- partner-vs-partner progress comparison (Progress Overview tab, added
 # 2026-08-30 at Jack's request) — one row per assigned partner: target vs
@@ -1413,7 +1583,8 @@ PARTNERS_NOT_STARTED <- setdiff(PARTNERS_ASSIGNED, submissions_raw$org_id)
 # the global FIELDING_START — a partner that started late shouldn't look
 # artificially behind just because the x-axis starts from day one of the
 # whole assessment), and a naive linear projection of their finish date
-# against the hard FIELDING_PLANNED_END deadline. v1 only: current pace is
+# against the Round 1 cut-off (FIELDING_PLANNED_END, 27 Sep - the IPC/CH data
+# cut-off, not the end of all fielding). v1 only: current pace is
 # a whole-period average since the partner's own start, not a trailing
 # window — Jack confirmed this is fine for now, a recent-pace variant can
 # follow later if the whole-period average proves too slow to react to a
@@ -1440,9 +1611,48 @@ build_partner_progress_summary <- function(target_basis = c("original", "revised
   target_basis <- match.arg(target_basis)
   progress <- compute_progress_by_stratum(submissions_raw, target_basis)
 
-  lapply(PARTNERS_ASSIGNED, function(org) {
+  # ADDED 2026-09-25 (Jack's "option C" for reallocated/shared LGAs): credit,
+  # target and Still Needed follow the CURRENT LGA owner and count every
+  # collector's interviews in that LGA (unchanged), but the partner's PACE must
+  # be its OWN collection. So keep a per-(collector, stratum) count of Achieved
+  # interviews - the same is_achieved() rule as everywhere - to split each
+  # stratum's credited figure into "collected by this partner" and "collected
+  # by other partners". Computed once here, not per partner.
+  own_achieved_by_stratum <- submissions_raw[is_achieved(submissions_raw), ] %>%
+    count(org_id, matched_strata_id, name = "own_achieved_n")
+
+  lapply(c(PARTNERS_ASSIGNED, PARTNERS_NO_LGAS), function(org) {
     my_adm2 <- partner_adm2[[org]]
     if (is.null(my_adm2)) my_adm2 <- character(0)
+    own_org <- own_achieved_by_stratum %>%
+      filter(org_id == org) %>%
+      select(matched_strata_id, own_achieved_n)
+    strata_mine <- progress %>%
+      filter(adm2_pcode %in% my_adm2) %>%
+      left_join(own_org, by = c("strata_id" = "matched_strata_id")) %>%
+      mutate(own_achieved_n = coalesce(as.numeric(own_achieved_n), 0))
+    # Where this partner's own Achieved interviews sit, by LGA OWNERSHIP
+    # (matched_strata_id is "<pop_type>_<adm2 pcode>"; a stratum id starting
+    # "NA_" is an interview never matched to a sampled stratum and belongs in
+    # neither bucket below):
+    #  - achieved_outside_assigned_n: in an LGA this partner does not currently
+    #    own - shown so a previous owner's collection (IMC's Chibok/Damboa)
+    #    stays visible on its own row.
+    #  - achieved_in_dropped_strata_n: in a stratum of one of ITS OWN LGAs that
+    #    is Dropped/excluded (e.g. FACT's Gubio) - real data kept for
+    #    indicative-only reporting, not an ownership question.
+    # An LGA excluded from the design outright (no active assignment row, e.g.
+    # FACT's Gubio) is still THIS partner's if it is on record as the LGA's
+    # prior partner (excluded_lga_prior_partners.csv) - its interviews there
+    # are dropped-strata data, not an ownership question.
+    my_prior_excluded_adm2 <- names(prior_orgs_by_adm2)[vapply(prior_orgs_by_adm2, function(o) org %in% o, logical(1))]
+    my_lgas_incl_dropped <- union(my_adm2, my_prior_excluded_adm2)
+    own_valid <- own_org %>%
+      filter(grepl("^(idp|non_idp)_NG[0-9]{6}$", matched_strata_id)) %>%
+      mutate(adm2 = sub("^.*_(NG[0-9]{6})$", "\\1", matched_strata_id))
+    achieved_outside_assigned_n <- sum(own_valid$own_achieved_n[!(own_valid$adm2 %in% my_lgas_incl_dropped)])
+    achieved_in_dropped_strata_n <- sum(own_valid$own_achieved_n[own_valid$adm2 %in% my_lgas_incl_dropped]) -
+      sum(strata_mine$own_achieved_n[strata_mine$status != "Dropped"])
     # 2026-09-08: now sums both target_sample (original) and
     # target_sample_current (live) from progress. FIX 2026-09-16 (Decision
     # A, see compute_progress_by_stratum()'s own comment above): remaining/
@@ -1482,15 +1692,18 @@ build_partner_progress_summary <- function(target_basis = c("original", "revised
     # and settles the long-open FACT "-31 excluded-LGA credit" question the
     # same way. The Dropped stratum is still fully visible at its own
     # stratum/LGA row (Progress by LGA), per the 2026-09-14 rule.
-    totals <- progress %>%
-      filter(adm2_pcode %in% my_adm2) %>%
+    totals <- strata_mine %>%
       mutate(across(
         c(target_sample, target_sample_current, achieved_n, collected_n, confirmed_deletion_n,
-          pending_deletion_n, oversampling_surplus_n, credited_achieved_n, remaining_n),
+          pending_deletion_n, oversampling_surplus_n, credited_achieved_n, remaining_n, own_achieved_n),
         ~ ifelse(status == "Dropped", 0, .)
       )) %>%
-      mutate(target_active = if (target_basis == "revised") target_sample_current else target_sample) %>%
+      mutate(target_active = if (target_basis == "revised") target_sample_current else target_sample,
+             # this partner's own share of the stratum's credited figure; can
+             # never exceed the stratum's credited (which is capped at target)
+             own_credited_n = pmin(own_achieved_n, credited_achieved_n)) %>%
       summarise(target_sample = sum(target_sample, na.rm = TRUE),
+                credited_own_n = sum(own_credited_n, na.rm = TRUE),
                 target_sample_current = sum(target_sample_current, na.rm = TRUE),
                 target_active = sum(target_active, na.rm = TRUE),
                 achieved_n = sum(achieved_n, na.rm = TRUE),
@@ -1511,11 +1724,38 @@ build_partner_progress_summary <- function(target_basis = c("original", "revised
                 pending_deletion_n = sum(pending_deletion_n, na.rm = TRUE),
                 oversampling_surplus_n = sum(oversampling_surplus_n, na.rm = TRUE))
 
+    # 2026-09-25 (Jack, decisions F + L): a partner with NO LGA (ACF) has no strata of its own, so
+    # `totals` above is all zero - and with the attribution columns hidden (SHOW_ATTRIBUTION_SPLIT) its row
+    # would read as if it had collected nothing. Its row shows its OWN counts (partner_own_counts() above).
+    # Target, credited and still-needed stay 0 (nothing was asked of it; credit for its interviews goes to
+    # the LGAs' current owners) and the Status is "No LGAs assigned".
+    if (length(my_adm2) == 0) {
+      oc <- partner_own_counts(org)
+      totals$collected_n <- oc$collected_n
+      totals$achieved_n <- oc$achieved_n
+      totals$confirmed_deletion_n <- oc$confirmed_deletion_n
+      totals$pending_deletion_n <- oc$pending_deletion_n
+      totals$oversampling_surplus_n <- oc$oversampling_surplus_n
+    }
+
     start_date <- suppressWarnings(min(submissions_raw$submission_date[submissions_raw$org_id == org], na.rm = TRUE))
     has_started <- is.finite(start_date)
     days_active <- if (has_started) as.numeric(today_for_pace - start_date) + 1 else NA_real_
-    current_pace <- if (has_started && days_active > 0) totals$achieved_n / days_active else NA_real_
+    # CHANGED 2026-09-24 (Jack): pace is now CREDITED interviews per day, not
+    # raw achieved_n. It is compared below against required_pace, which is
+    # remaining_n-based (credited) - a raw numerator counted surplus past a
+    # stratum's own target as progress, so a partner with oversampling could
+    # read "On pace" while strata were still short.
+    # CHANGED 2026-09-25 (Jack, option C): ...and it is the partner's OWN
+    # collection only (credited_own_n). credited_achieved_n counts every
+    # collector's interviews in the partner's LGAs, so in a shared or
+    # reallocated LGA it credited the partner with pace it never produced -
+    # 58% of LHI's numerator was IRC's Tangaza interviews. Credit, target and
+    # remaining stay whole-LGA; projected finish = remaining / own pace.
+    current_pace <- if (has_started && days_active > 0) totals$credited_own_n / days_active else NA_real_
     remaining <- totals$remaining_n
+    # "deadline" below = the Round 1 cut-off (FIELDING_PLANNED_END); the status text
+    # under the partner table says pace is measured against it (2026-09-25, decision Q).
     days_left_to_deadline <- as.numeric(FIELDING_PLANNED_END - today_for_pace) + 1
     required_pace <- if (days_left_to_deadline > 0) remaining / days_left_to_deadline else NA_real_
     projected_finish <- if (!is.na(current_pace) && current_pace > 0 && remaining > 0) {
@@ -1531,7 +1771,12 @@ build_partner_progress_summary <- function(target_basis = c("original", "revised
     # target_active directly - the raw comparison could read "Complete" from
     # cross-stratum masking even where a specific stratum genuinely still
     # needed households, same root cause as the remaining/pct fixes above.
+    # 2026-09-25: a registered partner with NO LGA (ACF once its LGAs move to ZOA) has a target
+    # of 0 by construction - that is not "Complete" (nothing was asked of it), so it gets its own
+    # status, checked FIRST. Its interviews still exist (achieved_outside_assigned_n) and credit
+    # the LGAs' current owners.
     status <- case_when(
+      length(my_adm2) == 0 ~ "No LGAs assigned",
       totals$target_active <= 0 ~ "Complete",
       remaining <= 0 ~ "Complete",
       !has_started ~ "Not started",
@@ -1577,10 +1822,22 @@ build_partner_progress_summary <- function(target_basis = c("original", "revised
       # Achieved, so no information is lost - it just isn't re-expressed as
       # a competing percentage. Any consumer wanting it can divide.
       credited_achieved_n = totals$credited_achieved_n, remaining_n = totals$remaining_n,
+      # option C (2026-09-25): the whole-LGA credited figure above split into
+      # what this partner collected itself and what other partners collected in
+      # its LGAs; credited_own_n + credited_by_others_n == credited_achieved_n.
+      credited_own_n = totals$credited_own_n,
+      credited_by_others_n = totals$credited_achieved_n - totals$credited_own_n,
+      achieved_outside_assigned_n = achieved_outside_assigned_n,
+      achieved_in_dropped_strata_n = achieved_in_dropped_strata_n,
       pct_achieved = ifelse(totals$target_active > 0, totals$credited_achieved_n / totals$target_active, NA_real_),
       shared_with = shared_with,
       start_date = if (has_started) start_date else as.Date(NA),
-      days_active = days_active, current_daily_pace = current_pace, required_daily_pace = required_pace,
+      # 2026-09-25 (Coordinator, under Jack's F/G answers): a partner with NO LGA has neither a pace to judge nor
+      # a required one - the 0.0 these computed to (own credited in its zero LGAs / days) read like a stalled
+      # team, so both are blank for it. Ordinary rows are unchanged (pace = the partner's OWN collection).
+      days_active = days_active,
+      current_daily_pace = if (length(my_adm2) == 0) NA_real_ else current_pace,
+      required_daily_pace = if (length(my_adm2) == 0) NA_real_ else required_pace,
       projected_finish_date = projected_finish, status = status
     )
   }) %>%
@@ -1640,6 +1897,25 @@ FRAME_AS_OF_LABEL <- if (!is.na(FRAME_AS_OF_DATE)) {
 
 # ---- per-partner progress (for the Partner Report tab) ----------------------
 
+# 2026-09-25: a partner's own Achieved interviews by the LGA they sit in and who owns that LGA
+# NOW. Built for a registered partner with no LGA (ACF after its LGAs move to ZOA), whose Partner
+# Report has no LGA table to show - this is what it did collect and where that credit went. Works
+# for any partner. An interview never matched to a sampled stratum ("NA_...") is in no LGA and is
+# left out, same rule as achieved_outside_assigned_n in build_partner_progress_summary().
+partner_collected_by_owner <- function(org_id_val) {
+  empty <- tibble(State = character(), LGA = character(), Interviews = integer(), `Now assigned to` = character())
+  own <- submissions_raw[is_achieved(submissions_raw) & submissions_raw$org_id == org_id_val, ]
+  own <- own[grepl("^(idp|non_idp)_NG[0-9]{6}$", own$matched_strata_id), ]
+  if (nrow(own) == 0) return(empty)
+  own %>%
+    mutate(adm2_pcode = sub("^.*_(NG[0-9]{6})$", "\\1", matched_strata_id)) %>%
+    count(adm2_pcode, name = "Interviews") %>%
+    left_join(adm2_name_lookup %>% distinct(adm2_pcode, adm1_name, adm2_name), by = "adm2_pcode") %>%
+    mutate(`Now assigned to` = vapply(adm2_pcode, partner_coverage_label, character(1))) %>%
+    transmute(State = adm1_name, LGA = coalesce(adm2_name, adm2_pcode), Interviews, `Now assigned to`) %>%
+    arrange(desc(Interviews))
+}
+
 # NB: a partner's "target" here is every stratum (both pop_types) in the
 # LGAs assigned to them in partner_lga_assignment — not just LGAs where a
 # submission with their org_id has shown up so far, so a partner with zero
@@ -1671,8 +1947,16 @@ partner_progress_by_lga <- function(org_id_val, target_basis = c("original", "re
   # correct treatment from whichever of target_sample/target_sample_current
   # it currently stands for — same pattern as build_partner_progress_
   # summary() above.
+  # 2026-09-25 (option C): per-LGA split of credited into "collected by this
+  # partner" vs "by other partners" - same rule as build_partner_progress_
+  # summary() (own share can never exceed the stratum's credited figure).
+  own_org <- submissions_raw[is_achieved(submissions_raw) & submissions_raw$org_id == org_id_val, ] %>%
+    count(matched_strata_id, name = "own_achieved_n")
+
   progress %>%
     filter(adm2_pcode %in% my_adm2) %>%
+    left_join(own_org, by = c("strata_id" = "matched_strata_id")) %>%
+    mutate(own_achieved_n = coalesce(as.numeric(own_achieved_n), 0)) %>%
     # 2026-09-22: target_sample zeroed for Dropped too - see the matching
     # note in build_partner_progress_summary() above (Jack: "let's remove
     # them from the partner targets"). Keeping the row but zeroing every
@@ -1682,12 +1966,14 @@ partner_progress_by_lga <- function(org_id_val, target_basis = c("original", "re
     mutate(all_dropped_lga = status == "Dropped") %>%
     mutate(across(
       c(target_sample, target_sample_current, achieved_n, collected_n, confirmed_deletion_n,
-        pending_deletion_n, oversampling_surplus_n, credited_achieved_n, remaining_n),
+        pending_deletion_n, oversampling_surplus_n, credited_achieved_n, remaining_n, own_achieved_n),
       ~ ifelse(status == "Dropped", 0, .)
     )) %>%
-    mutate(target_active = if (target_basis == "revised") target_sample_current else target_sample) %>%
+    mutate(target_active = if (target_basis == "revised") target_sample_current else target_sample,
+           own_credited_n = pmin(own_achieved_n, credited_achieved_n)) %>%
     group_by(region, adm1_name, adm2_pcode, adm2_name) %>%
     summarise(
+      credited_own_n = sum(own_credited_n, na.rm = TRUE),
       # 2026-09-08: target_sample = original (unchanged convention),
       # target_sample_current = live. FIX 2026-09-16 (Decision A), extended
       # 2026-09-19 (toggle): Complete/pct_achieved below now key off
@@ -1722,6 +2008,7 @@ partner_progress_by_lga <- function(org_id_val, target_basis = c("original", "re
       # headline keys off. The raw interview count itself is still shown as
       # Achieved, so nothing is hidden, just not re-expressed as a second %.
       pct_achieved = ifelse(target_active > 0, credited_achieved_n / target_active, NA_real_),
+      credited_by_others_n = credited_achieved_n - credited_own_n,
       status = case_when(
         # an LGA whose every stratum is Dropped used to read "Complete"
         # here (zeroed live columns -> remaining_n == 0), which is the
@@ -1771,7 +2058,8 @@ compute_enumerator_stats <- function(subs) {
       median_duration = median(duration_min, na.rm = TRUE),
       flag_rate = mean(any_quality_flag),
       flagged = sum(any_quality_flag),
-      avg_sync_lag_min = mean(sync_lag_min, na.rm = TRUE),
+      # NA (not NaN) when no row has a sync lag - e.g. dates reconstructed from audit logs carry no upload time
+      avg_sync_lag_min = if (all(is.na(sync_lag_min))) NA_real_ else mean(sync_lag_min, na.rm = TRUE),
       first_date = min(submission_date, na.rm = TRUE),
       last_date = max(submission_date, na.rm = TRUE),
       days_active = n_distinct(submission_date),
@@ -2056,10 +2344,11 @@ days_total <- as.numeric(FIELDING_PLANNED_END - FIELDING_START) + 1
 # reporting/pull lag between a real submission and today directly inflated
 # this figure (live data's own lag that day: max submission_date was
 # 2026-09-19, 2 days behind, producing 27-19=8 instead of the real 27-21=6).
-# The tooltip already promised "Calendar days left until the planned end
-# date" - a real calendar countdown from today, not from however current
-# the data happens to be - so this now reads Sys.Date() directly, matching
-# that promise exactly. days_elapsed itself had no other consumer, removed.
+# The tooltip already promised a real calendar countdown to the end date
+# (now worded "until Round 1 ends", 2026-09-25 decision Q) - from today, not from
+# however current the data happens to be - so this now reads Sys.Date() directly,
+# matching that promise exactly. days_elapsed itself had no other consumer, removed.
+# days_total / days_remaining count to the ROUND 1 cut-off, not to the end of Round 2.
 days_remaining <- max(0, as.numeric(FIELDING_PLANNED_END - Sys.Date()))
 
 # ---- modules -----------------------------------------------------------

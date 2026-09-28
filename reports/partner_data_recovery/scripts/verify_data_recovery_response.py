@@ -82,6 +82,10 @@ def load_idp_real_pools():
 # open to contest; a partner returning the workbook unchanged for these rows
 # would otherwise trip the "not Yes/No" warning below on every single one.
 NO_APPEAL_CONTEST_NOTE = "No action needed -- confirmed per validated assessment methodology, not open to contest."
+# Must match build_workbook_fn.R's CONTESTED_CLOSED_NOTE exactly (2026-09-25): a row the partner had ALREADY
+# contested (tracker status "contested") is written with this note instead of a second Yes/No dropdown, so a
+# returned workbook carries it unchanged and must not trip the "not Yes/No" warning either.
+CONTESTED_CLOSED_NOTE = "No action needed -- your team has already contested this interview, and the MSNA team has it on record."
 
 SURVEY_ID_RE = re.compile(r"^(non_idp|idp)_(NG\d{6})_(\d+)_(HH|R)\d+$")
 DATE_FORMATS = ("%Y-%m-%d", "%d/%m/%Y", "%Y-%m-%d %H:%M:%S")
@@ -455,6 +459,12 @@ def verify_confirmed_deletions(ws, findings, apply_writeback=True):
             # open to contest, already confirmed at registration. Nothing to
             # verify or write back regardless of what the partner did with it.
             findings.add(sheet, row_num, "INFO", "Not open to contest (validated methodology threshold) - no action taken")
+            continue
+
+        if contest_raw == CONTESTED_CLOSED_NOTE:
+            # Already contested by this partner in an earlier round (tracker status "contested"): the workbook
+            # gave it a closed-row note, not a dropdown. Nothing to verify or write back.
+            findings.add(sheet, row_num, "INFO", "Already contested in an earlier round - no action taken")
             continue
 
         contest = contest_raw

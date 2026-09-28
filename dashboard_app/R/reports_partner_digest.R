@@ -107,7 +107,7 @@
 # if a tiering ever looks wrong here.
 #
 # Regression-tested in tests/smoke_test.R — covers sheet structure, the
-# "other" catch-all exclusion (see note below), and PII exclusion.
+# "unassigned"/"excluded" sentinel exclusion (see note below), and PII exclusion.
 
 # ---- shared styling (navy/black, 2026-08-20 per Jack's request) -------------
 DIGEST_NAVY <- "#1F3864"
@@ -206,9 +206,9 @@ build_partner_quality_digest_excel <- function(file, cleaning_log) {
   # assigned-but-zero-submissions partners — PARTNERS_NOT_STARTED (global.R,
   # moved there 2026-08-27 so the dashboard's Home page can show the same
   # rollup) already excludes org codes with no LGA assignment at all (e.g.
-  # "jrs") and "other" (global.R's coalesce() fallback for the one LGA with
-  # no confirmed partner match — not a partner anyone can actually follow
-  # up with).
+  # "jrs") and the "unassigned"/"excluded" sentinels (global.R's filter_base
+  # fallbacks for an LGA with no partner — not partners anyone can actually
+  # follow up with).
   not_started <- PARTNERS_NOT_STARTED
 
   flagged_detail <- submissions_raw %>%

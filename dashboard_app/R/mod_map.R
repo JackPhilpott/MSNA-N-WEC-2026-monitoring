@@ -4,6 +4,33 @@
 # and pop-type colours (POP_TYPE_COLORS) come from global.R for consistency
 # with the rest of the dashboard.
 
+# 2026-09-25: red overlay for LGAs with no partner and no documented reason
+# (coverage_flag_sf, global.R - NULL, i.e. nothing drawn, in the normal case).
+# UNASSIGNED = a covered LGA that lost its partner: red outline only, non-interactive so
+# it never blocks hover on the cluster/LGA fills underneath it. UNRESOLVED = a
+# not-covered LGA nobody has decided about: red fill + hover label, since there is
+# nothing else drawn there. Always on - deliberately NOT a toggle in the layers control,
+# it is an error state and should not be hideable.
+add_coverage_flag_layer <- function(map) {
+  if (is.null(coverage_flag_sf)) return(map)
+  un <- coverage_flag_sf[coverage_flag_sf$coverage_flag == "UNASSIGNED", ]
+  ur <- coverage_flag_sf[coverage_flag_sf$coverage_flag == "UNRESOLVED", ]
+  if (nrow(un) > 0) {
+    map <- map %>% addPolygons(
+      data = un, fill = FALSE, color = "#C62828", weight = 3.5, opacity = 1, dashArray = "8 5",
+      options = pathOptions(pane = "coverageFlagPane", interactive = FALSE)
+    )
+  }
+  if (nrow(ur) > 0) {
+    map <- map %>% addPolygons(
+      data = ur, fillColor = "#C62828", fillOpacity = 0.4, color = "#C62828", weight = 2.5, opacity = 1,
+      options = pathOptions(pane = "coverageFlagPane"),
+      label = ~lapply(paste0("<b>", adm2_name, "</b>, ", adm1_name, "<br><b>UNRESOLVED</b> - no partner and no recorded decision"), htmltools::HTML)
+    )
+  }
+  map
+}
+
 mod_map_ui <- function(id) {
   ns <- NS(id)
   nav_panel(
@@ -43,7 +70,10 @@ mod_map_ui <- function(id) {
         span(
           class = "text-muted", style = "font-size: 0.8em; font-weight: normal;",
           "Toggle ward/state boundaries, PSU reference layers and satellite basemap via the layers control (top-right of the map). ",
-          "Grey states are outside this assessment. White areas are within the assessment but have been excluded and/or not selected for sampling."
+          "Grey states are outside this assessment. White areas are within the assessment but have been excluded and/or not selected for sampling.",
+          if (!is.null(coverage_flag_sf)) {
+            span(style = "color: #C62828; font-weight: 600;", " Red = an LGA with no partner and no recorded decision - needs resolving (see Home).")
+          }
         ),
         br(),
         span(
@@ -416,6 +446,7 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
         addMapPane("lgaProgressPane", zIndex = 401) %>%
         addMapPane("accessibilityPane", zIndex = 402) %>%
         addMapPane("clusterStatusPane", zIndex = 403) %>%
+        addMapPane("coverageFlagPane", zIndex = 404) %>%
         addMapPane("psuReferencePane", zIndex = 410) %>%
         addMapPane("wardBoundariesPane", zIndex = 420) %>%
         addMapPane("lgaBoundariesPane", zIndex = 421) %>%
@@ -439,6 +470,7 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
           data = admin0_sf, fill = FALSE, color = "#0D1526", weight = 2, opacity = 0.8,
           options = pathOptions(interactive = FALSE)
         ) %>%
+        add_coverage_flag_layer() %>%
         addLayersControl(
           baseGroups = c("Light (default)", "Satellite"),
           overlayGroups = c("State boundaries", "LGA boundaries", "Ward boundaries", "Accessibility", "PSU hexagons (reference)", "PSU sites (reference)"),

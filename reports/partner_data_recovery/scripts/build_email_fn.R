@@ -40,6 +40,31 @@ build_partner_email <- function(pkg, precautionary = FALSE, deadline = "28 Septe
   n_credited_headline <- if (!is.null(pkg$n_credited_total)) pkg$n_credited_total else n_achieved_headline
   n_remaining_headline <- if (!is.null(pkg$n_remaining_total)) pkg$n_remaining_total else max(pkg$target_sample - n_achieved_headline, 0)
   pct_achieved <- if (pkg$target_sample > 0) n_credited_headline / pkg$target_sample else NA_real_
+  # ADDED 2026-09-25 (option C, shared/reallocated LGAs): credited/still-needed
+  # count every collector's interviews in the partner's assigned LGAs. Two
+  # neutral, factual sentences appear only when they apply (a partner with no
+  # shared or reallocated LGA sees neither, so its email is unchanged); NULL-
+  # guarded so an older pkg still renders. Nothing here implies ranking/blame.
+  n_by_others_headline <- if (!is.null(pkg$n_credited_by_others_total)) pkg$n_credited_by_others_total else 0
+  n_outside_headline <- if (!is.null(pkg$n_outside_assigned_total)) pkg$n_outside_assigned_total else 0
+  n_credited_own_headline <- if (!is.null(pkg$n_credited_own_total) && !is.na(pkg$n_credited_own_total)) pkg$n_credited_own_total else n_credited_headline - n_by_others_headline
+  shared_note <- if (n_outside_headline > 0) paste0(" ", comma(n_outside_headline), " of your team's interviews are in LGAs now assigned to another partner; they count toward that LGA's totals rather than the credited figure above.") else ""
+  # With no other partner's interviews in the partner's LGAs this is EXACTLY the
+  # wording used before option C. Otherwise "credited" can exceed the partner's
+  # own Achieved count, so the sentence is restated to say who collected what
+  # (neutral, factual - no ranking or blame).
+  credit_clause <- function(target_word) {
+    if (n_by_others_headline > 0) {
+      paste0(comma(n_achieved_headline), " currently count toward your Achieved total. Credited toward the targets of your assigned LGAs: ",
+             comma(n_credited_headline), " (", comma(n_credited_own_headline), " collected by your team and ", comma(n_by_others_headline),
+             " by other partners working in those LGAs) - ", percent(pct_achieved, accuracy = 0.1), " of ", target_word, ", with ",
+             comma(n_remaining_headline), " still needed across your LGAs; surplus in one LGA or population group doesn't count against a gap in another")
+    } else {
+      paste0(comma(n_achieved_headline), " currently count toward your Achieved total (", comma(n_credited_headline), " credited toward target - ",
+             percent(pct_achieved, accuracy = 0.1), " of ", target_word, ", with ", comma(n_remaining_headline),
+             " still needed across your LGAs; surplus in one LGA or population group doesn't count against a gap in another)")
+    }
+  }
 
   # ---- pick one genuine positive, priority order ----
   positive <- if (n_gps == 0 && n_idp == 0) {
@@ -91,21 +116,45 @@ build_partner_email <- function(pkg, precautionary = FALSE, deadline = "28 Septe
       if (second_round) "Your team is still relatively early in MSNA N-WEC 2026 data collection, so this remains a lighter check-in rather than a full review - we'd rather flag something now, while it's easy to fix, than let it become a bigger issue later.\n\n"
       else "Your team is only a few days into MSNA N-WEC 2026 data collection, so this is a lighter early check-in rather than a full review - we'd rather flag something now, while it's easy to fix, than let it become a bigger issue later.\n\n",
       "Since starting on ", format(pkg$start_date, "%d %B"), ", your team has collected ", comma(pkg$n_collected_total),
-      " interviews, of which ", comma(n_achieved_headline), " currently count toward your Achieved total (",
-      comma(n_credited_headline), " credited toward target - ", percent(pct_achieved, accuracy=0.1),
-      " of your overall target, with ", comma(n_remaining_headline), " still needed across your LGAs; surplus in one LGA or population group doesn't count against a gap in another).",
+      " interviews, of which ", credit_clause("your overall target"), ".",
+      shared_note,
       if (!is.null(positive)) paste0(" ", positive) else ""
     )
   } else {
     paste0(
       "As part of ongoing monitoring of the MSNA N-WEC 2026 data collection, we've completed a detailed review of your team's submissions to date. This email summarises where things stand, and the attached workbook contains everything we need your team's help with.\n\n",
-      "Your team has collected ", comma(pkg$n_collected_total), " interviews so far, of which ", comma(n_achieved_headline),
-      " currently count toward your Achieved total (", comma(n_credited_headline), " credited toward target - ", percent(pct_achieved, accuracy=0.1),
-      " of your target, with ", comma(n_remaining_headline), " still needed across your LGAs; surplus in one LGA or population group doesn't count against a gap in another). Of the remainder, ",
+      "Your team has collected ", comma(pkg$n_collected_total), " interviews so far, of which ", credit_clause("your target"),
+      ". Of the remainder, ",
       comma(n_del), " interview", if(n_del!=1) "s" else "", " ", if(n_del!=1) "are" else "is", " confirmed for removal, and a further ",
       comma(total_needing_input), " need your team's input to confirm whether they can be recovered rather than deleted.",
+      shared_note,
       if (!is.null(positive)) paste0(" ", positive) else ""
     )
+  }
+
+  # ADDED 2026-09-25 (partner registry): a registered partner that holds NO LGA (ACF once its LGAs move
+  # to ZOA) has no target, so the headline must not carry a target, a percentage or a "still needed"
+  # figure - nothing about it may print NaN%, "0% of your target" or "0 still needed". Its interviews
+  # still count: each toward the LGA it was collected in, credited to that LGA's current owner. Only the
+  # headline changes; every follow-up section below is routed by collector and is untouched. NULL-guarded
+  # so an older pkg (built before the flag existed) renders exactly as before.
+  no_lgas <- isTRUE(pkg$no_lgas)
+  if (no_lgas) {
+    no_lga_headline <- paste0(
+      "Your team's LGAs have been reassigned to another partner, so there is no separate target or percentage for your team. ",
+      "Your team has collected ", comma(pkg$n_collected_total), " interviews so far, of which ", comma(n_achieved_headline),
+      " currently count as Achieved. Each one counts toward the LGA where it was collected, credited to that LGA's current owner, so none of your team's work is lost."
+    )
+    overall_para <- if (precautionary) {
+      paste0(no_lga_headline, if (second_round) "" else " This is a lighter early check-in rather than a full review.")
+    } else {
+      paste0(
+        "As part of ongoing monitoring of the MSNA N-WEC 2026 data collection, we've completed a detailed review of your team's submissions to date. This email summarises where things stand, and the attached workbook contains everything we need your team's help with.\n\n",
+        no_lga_headline, " Of the remainder, ",
+        comma(n_del), " interview", if(n_del!=1) "s" else "", " ", if(n_del!=1) "are" else "is", " confirmed for removal, and a further ",
+        comma(total_needing_input), " need your team's input to confirm whether they can be recovered rather than deleted."
+      )
+    }
   }
 
   input_para <- if (total_needing_input > 0) {

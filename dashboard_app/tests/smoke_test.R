@@ -193,8 +193,10 @@ stopifnot(length(still_present_digest) == 0)
 readme_sheet <- read.xlsx(digest_tmp, sheet = "Read me", colNames = FALSE)
 get_readme_field <- function(field) readme_sheet[which(readme_sheet$X1 == field), "X2"]
 not_started_cell <- get_readme_field("Partners with zero submissions so far")
-cat("Not-started list excludes the 'other' catch-all:", !grepl("Other / unassigned", not_started_cell), "\n")
-stopifnot(!grepl("Other / unassigned", not_started_cell))
+# 2026-09-25: the old "other" catch-all became two sentinels (global.R NON_PARTNER_ORG_IDS)
+sentinel_labels <- paste(unname(ORG_LABELS[NON_PARTNER_ORG_IDS]), collapse = "|")
+cat("Not-started list excludes the non-partner sentinels:", !grepl(sentinel_labels, not_started_cell), "\n")
+stopifnot(!grepl(sentinel_labels, not_started_cell))
 stopifnot(length(get_readme_field("Priority follow-up")) > 0) # nav guide row present
 
 # Regression test for a real bug caught 2026-08-18 reviewing the first run:

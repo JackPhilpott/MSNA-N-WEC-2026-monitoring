@@ -227,8 +227,28 @@ summarise_cleaning_logs <- function() {
   # admin2_name came back NA on every single row, on every digest, since
   # this sheet existed. Matched on the combined (state, LGA) pair, not LGA
   # name alone, since LGA names aren't guaranteed unique nationally.
-  admin_lookup <- adm2_name_lookup %>%
-    distinct(adm1_name, adm2_name) %>%
+  # CHANGED 2026-09-25: two gaps left 4 (state, LGA) pairs blank on every digest.
+  # (1) adm2_name_lookup comes from the WORKING household frame, so an LGA with
+  # no households in it (Borno/Gubio) can never match - now unioned with the
+  # FULL strata-level frame, which lists every LGA. (2) For Katsina's Dandume
+  # (NG021008), Faskari (NG021013) and Musawa (NG021029) the cleaning log holds
+  # the raw pcode in admin2 instead of a name (those three LGAs have no row in
+  # the KoBo tool's l_admin2 choice list, so the label never got translated) -
+  # a pcode-shaped admin2 is now resolved through the same lookup by pcode
+  # before the (state, LGA) name match.
+  strata_lga_names_full <- read_csv(
+    # explicit dir: global.R's latest_frame_file() defaults to INPUT_DIR
+    # ("../input_data", relative to dashboard_app/), but this runs from the
+    # project root (generate_partner_digest.R does setwd("..") first).
+    latest_frame_file("NGA_MSNA_2026_strata_level_sampling_frame", "FULL", dir = "input_data/sampling_frame"),
+    show_col_types = FALSE, col_types = cols(.default = "c"),
+    col_select = c(adm1_name, adm2_name, adm2_pcode)
+  )
+  admin_lookup <- bind_rows(
+    adm2_name_lookup %>% select(adm1_name, adm2_name, adm2_pcode),
+    strata_lga_names_full
+  ) %>%
+    distinct(adm1_name, adm2_name, adm2_pcode) %>%
     mutate(admin_key = paste0(stringr::str_to_lower(adm1_name), "|", stringr::str_to_lower(adm2_name)))
 
   # Ward isn't a raw column in the cleaning log, but cluster_id is — and
@@ -247,7 +267,12 @@ summarise_cleaning_logs <- function() {
       check_id = recover_check_id_from_issue(check_id, issue),
       tier = assign_tier(check_id),
       Partner = unname(ORG_LABELS[org_id]),
-      admin_key = paste0(stringr::str_to_lower(admin1), "|", stringr::str_to_lower(admin2)),
+      admin2_resolved = if_else(
+        dplyr::coalesce(stringr::str_detect(admin2, "^NG\\d{6}$"), FALSE) & admin2 %in% admin_lookup$adm2_pcode,
+        admin_lookup$adm2_name[match(admin2, admin_lookup$adm2_pcode)],
+        admin2
+      ),
+      admin_key = paste0(stringr::str_to_lower(admin1), "|", stringr::str_to_lower(admin2_resolved)),
       admin1_name = admin_lookup$adm1_name[match(admin_key, admin_lookup$admin_key)],
       admin2_name = admin_lookup$adm2_name[match(admin_key, admin_lookup$admin_key)],
       admin3_name = cluster_ward_lookup$adm3_name[match(cluster_id, cluster_ward_lookup$cluster_id)]

@@ -320,6 +320,20 @@ run_independent_duplicate_check <- function() {
   # covered by no_consent (higher priority, and registers first in the run
   # order below), and a non-completed row was never in Achieved to begin
   # with, so flagging it here would add tracker noise for nothing it changes.
+  #
+  # CHANGED 2026-09-25 (4a): a row is a duplicate only against LIVE claimants
+  # (completed and not settled-deleted). A first submission that was later
+  # confirmed-deleted (mostly duration_under_20, which the check above this
+  # one in the run order has just auto-confirmed) no longer makes the valid
+  # re-collection a duplicate. The settled set is read from the TRACKER (same
+  # definition as build_confirmed_deletions_overlay.R), not real_submissions'
+  # deletion column, which is a run behind for anything confirmed today. See
+  # scripts/shared/live_claims.R. Rows already pending in the tracker that this
+  # no longer flags are NOT resolved here - that is a separate, deliberate step.
+  source("scripts/shared/live_claims.R")
+  trk <- read_tracker()
+  settled_uuid <- trk$uuid[trk$issue_type == "confirmed_deletion" & trk$status %in% TERMINAL_STATUSES & is.na(trk$recovery_type) & !is.na(trk$uuid)]
+  subs <- apply_live_claim_rule(subs, settled_uuid)
   dup_rows <- subs %>% filter(interview_outcome == "completed", is_duplicate == TRUE)
 
   new_issues <- dup_rows %>%

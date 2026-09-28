@@ -15,7 +15,9 @@ mod_partner_report_ui <- function(id) {
       col_widths = c(4, 8),
       card(
         card_header("Select partner"),
-        selectInput(ns("report_partner"), NULL, choices = org_id_choices, selected = unname(org_id_choices[1])),
+        # The "unassigned"/"excluded" sentinels (2026-09-25) are LGA buckets, not partners - no report to run.
+        selectInput(ns("report_partner"), NULL, choices = org_id_choices[!(unname(org_id_choices) %in% NON_PARTNER_ORG_IDS)],
+                    selected = unname(org_id_choices[!(unname(org_id_choices) %in% NON_PARTNER_ORG_IDS)][1])),
         p(class = "text-muted", style = "font-size: 0.85em;",
           "Defaults to the first partner selected in the sidebar filter, if any. Otherwise pick one here — the download buttons always export the partner chosen above, independent of the sidebar."),
         downloadButton(ns("download_xlsx"), "Download Excel report", class = "btn-outline-primary w-100 mb-2"),
@@ -49,6 +51,9 @@ mod_partner_report_ui <- function(id) {
         )
       )
     ),
+    # 2026-09-25 (partner registry): a registered partner that holds no LGA has no LGA table to read -
+    # this says so and shows what it DID collect and who owns that LGA now. NULL for everyone else.
+    uiOutput(ns("no_lga_note")),
     card(
       card_header(
         "Progress by LGA (their assigned coverage area)",
@@ -87,6 +92,31 @@ mod_partner_report_server <- function(id, selected_partners, target_basis) {
       partner_quality_summary(input$report_partner)
     })
 
+    # 2026-09-25 (Coordinator, under Jack's F/G answers): a registered partner with NO LGA has no LGA-grain
+    # rows, so the Collected / Achieved / Confirmed / Pending tiles that sum lga_df() read 0. For it they show
+    # the partner's OWN totals (global.R's partner_own_counts(), the same numbers as its Progress-by-partner
+    # row). NULL for every partner that holds LGAs, whose tiles are unchanged.
+    own_counts <- reactive({
+      req(input$report_partner)
+      if (input$report_partner %in% PARTNERS_NO_LGAS) partner_own_counts(input$report_partner) else NULL
+    })
+
+    output$no_lga_note <- renderUI({
+      req(input$report_partner)
+      if (!(input$report_partner %in% PARTNERS_NO_LGAS)) return(NULL)
+      card(
+        card_header(paste0(ORG_LABELS[[input$report_partner]], " has no LGAs currently assigned")),
+        p("There is no target, percentage or 'still needed' figure for this partner. The tiles above show its own totals. ",
+          "Its interviews are still in the data: each one counts toward the LGA it was collected in, credited to that LGA's current owner (right-hand column). ",
+          "Its own follow-up items in the recovery workbook are unaffected."),
+        DTOutput(session$ns("no_lga_table"))
+      )
+    })
+    output$no_lga_table <- renderDT({
+      req(input$report_partner)
+      datatable(partner_collected_by_owner(input$report_partner), rownames = FALSE, options = list(pageLength = 10, dom = "tp"))
+    })
+
     output$kpi_target_original <- renderText({ comma(sum(lga_df()$target_sample)) })
     output$kpi_target <- renderText({
       # ADDED 2026-09-16 (Jack, visibility ask): fold the delta straight
@@ -119,11 +149,17 @@ mod_partner_report_server <- function(id, selected_partners, target_basis) {
       # as the headline number ("show both").
       denom <- sum(lga_df()$target_active)
       pct <- if (denom > 0) sum(lga_df()$credited_achieved_n) / denom else NA_real_
+      # 2026-09-25: no target at all (a registered partner with no LGA) - say so instead of "(- credited; 0 still needed)".
+      # Its Achieved is its OWN count (own_counts()), not the empty LGA-grain sum, which read 0.
+      if (denom <= 0) {
+        oc <- own_counts()
+        return(paste0(comma(if (is.null(oc)) sum(lga_df()$achieved_n) else oc$achieved_n), " (no target to measure against)"))
+      }
       paste0(comma(sum(lga_df()$achieved_n)), " (", fmt_pct(pct), " credited; ", comma(sum(lga_df()$remaining_n)), " still needed)")
     })
-    output$kpi_collected <- renderText({ comma(sum(lga_df()$collected_n)) })
-    output$kpi_confirmed_deletion <- renderText({ comma(sum(lga_df()$confirmed_deletion_n)) })
-    output$kpi_pending_deletion <- renderText({ comma(sum(lga_df()$pending_deletion_n)) })
+    output$kpi_collected <- renderText({ oc <- own_counts(); comma(if (is.null(oc)) sum(lga_df()$collected_n) else oc$collected_n) })
+    output$kpi_confirmed_deletion <- renderText({ oc <- own_counts(); comma(if (is.null(oc)) sum(lga_df()$confirmed_deletion_n) else oc$confirmed_deletion_n) })
+    output$kpi_pending_deletion <- renderText({ oc <- own_counts(); comma(if (is.null(oc)) sum(lga_df()$pending_deletion_n) else oc$pending_deletion_n) })
     output$kpi_flagged <- renderText({
       q <- qual()
       paste0(comma(q$flagged), " (", fmt_pct(q$flag_rate), ")")
@@ -155,7 +191,11 @@ mod_partner_report_server <- function(id, selected_partners, target_basis) {
           Achieved = achieved_n,
           # FIX 2026-09-21 ("show both"): credited/still-needed are the
           # per-stratum capped/floored rollups; % achieved is credited-based.
-          `Credited toward target` = credited_achieved_n, `Still needed` = remaining_n,
+          `Credited toward target` = credited_achieved_n,
+          # ADDED 2026-09-25 (option C): part of the credited figure that other
+          # partners collected in this LGA (see global.R's partner_progress_by_lga()).
+          `Of which collected by other partners` = credited_by_others_n,
+          `Still needed` = remaining_n,
           # "% achieved (raw)" removed 2026-09-22 (Jack) - Achieved above
           # is still the full interview count. STRATUM_STATUS_COLORS, not
           # STATUS_COLORS: partner_progress_by_lga() now labels an all-
@@ -168,6 +208,9 @@ mod_partner_report_server <- function(id, selected_partners, target_basis) {
           Status = factor(status, levels = names(STRATUM_STATUS_COLORS)),
           `Shared with` = shared_with
         )
+      # 2026-09-25 (Jack, decision F): the own-vs-others split is emails-only; whole-LGA totals here.
+      # Flip SHOW_ATTRIBUTION_SPLIT (global.R) to bring the column back.
+      if (!SHOW_ATTRIBUTION_SPLIT) df <- df %>% select(-any_of("Of which collected by other partners"))
       datatable(df, rownames = FALSE, filter = "top", options = list(pageLength = 20)) %>%
         # 2026-09-14: same fix as the Progress Overview/Progress by LGA
         # tables - target_sample_current is now sourced from 1_sampling's
@@ -222,6 +265,13 @@ build_partner_excel <- function(org_id_val, file, target_basis = "original") {
   total_confirmed_deletion <- sum(lga_df$confirmed_deletion_n)
   total_pending_deletion <- sum(lga_df$pending_deletion_n)
   total_oversampling_surplus <- sum(lga_df$oversampling_surplus_n)
+  # 2026-09-25: a partner with NO LGA has no LGA-grain rows to sum - its headline is its OWN counts, same as
+  # the on-screen tiles (global.R's partner_own_counts()). No effect on a partner that holds LGAs.
+  if (nrow(lga_df) == 0 && org_id_val %in% PARTNERS_NO_LGAS) {
+    oc <- partner_own_counts(org_id_val)
+    total_achieved <- oc$achieved_n; total_collected <- oc$collected_n; total_confirmed_deletion <- oc$confirmed_deletion_n
+    total_pending_deletion <- oc$pending_deletion_n; total_oversampling_surplus <- oc$oversampling_surplus_n
+  }
   # FIX 2026-09-11: same zero-denominator gap as the live Achieved tile's
   # merged percentage above (kpi_achieved) - see that guard's comment for
   # the failure case (achieved>0/target==0 -> Inf%).
@@ -277,7 +327,8 @@ build_partner_excel <- function(org_id_val, file, target_basis = "original") {
               # itself here rather than relying on a numFmt.
               `Original Target` = round(target_sample), `Revised Target` = round(target_sample_current),
               Collected = collected_n, `Confirmed Deleted` = confirmed_deletion_n, `Pending Deletion` = pending_deletion_n,
-              Achieved = achieved_n, `Credited toward target` = credited_achieved_n, `Still needed` = remaining_n,
+              Achieved = achieved_n, `Credited toward target` = credited_achieved_n,
+              `Of which collected by other partners` = credited_by_others_n, `Still needed` = remaining_n,
               `% achieved` = pct_achieved,
               # 2026-09-22: same MSNA Light tag the on-screen table carries -
               # the export was missed in the first pass (caught by
@@ -286,6 +337,8 @@ build_partner_excel <- function(org_id_val, file, target_basis = "original") {
               Sampling = ifelse(msna_light, "MSNA Light", "MSNA Full Design"),
               Status = status,
               `Shared with` = shared_with)
+  # 2026-09-25 (Jack, decision F): same as the on-screen table - the split column is emails-only.
+  if (!SHOW_ATTRIBUTION_SPLIT) export_df <- export_df %>% select(-any_of("Of which collected by other partners"))
   writeDataTable(wb, sheet2, export_df, tableStyle = "TableStyleLight9")
   pct_col <- which(names(export_df) == "% achieved")
   status_col <- which(names(export_df) == "Status")
@@ -298,6 +351,13 @@ build_partner_excel <- function(org_id_val, file, target_basis = "original") {
   }
   setColWidths(wb, sheet2, cols = 1:ncol(export_df), widths = "auto")
   freezePane(wb, sheet2, firstRow = TRUE)
+
+  # 2026-09-25: a registered partner with no LGA has an empty sheet above - give it what it did collect
+  if (nrow(lga_df) == 0) {
+    addWorksheet(wb, "Collected in other LGAs")
+    writeDataTable(wb, "Collected in other LGAs", partner_collected_by_owner(org_id_val), tableStyle = "TableStyleLight9")
+    setColWidths(wb, "Collected in other LGAs", cols = 1:4, widths = "auto")
+  }
 
   saveWorkbook(wb, file, overwrite = TRUE)
 }
@@ -318,6 +378,13 @@ build_partner_pdf <- function(org_id_val, file, target_basis = "original") {
   total_confirmed_deletion <- sum(lga_df$confirmed_deletion_n)
   total_pending_deletion <- sum(lga_df$pending_deletion_n)
   total_oversampling_surplus <- sum(lga_df$oversampling_surplus_n)
+  # 2026-09-25: a partner with NO LGA has no LGA-grain rows to sum - its headline is its OWN counts (see
+  # build_partner_excel() above and global.R's partner_own_counts()). No effect on a partner that holds LGAs.
+  if (nrow(lga_df) == 0 && org_id_val %in% PARTNERS_NO_LGAS) {
+    oc <- partner_own_counts(org_id_val)
+    total_achieved <- oc$achieved_n; total_collected <- oc$collected_n; total_confirmed_deletion <- oc$confirmed_deletion_n
+    total_pending_deletion <- oc$pending_deletion_n; total_oversampling_surplus <- oc$oversampling_surplus_n
+  }
   # FIX 2026-09-16 (Decision A), extended 2026-09-19 (global toggle): of
   # total_active, default Original. total_target/total_target_current stay
   # the fixed Original/Revised reference figures shown in the header below
@@ -338,6 +405,20 @@ build_partner_pdf <- function(org_id_val, file, target_basis = "original") {
   )
   header_plot <- ggplot() + theme_void() + xlim(0, 1) + ylim(0, 1) +
     annotate("text", x = 0, y = 1, label = header_text, hjust = 0, vjust = 1, size = 4.2)
+
+  # 2026-09-25: no LGA -> no bar chart or focus areas; say so and list what it did collect instead.
+  if (nrow(lga_df) == 0) {
+    by_owner <- partner_collected_by_owner(org_id_val)
+    body_text <- paste0(
+      label, " has no LGAs currently assigned, so there is no target or progress percentage.\n",
+      "Its Achieved interviews count toward the LGAs they were collected in (credited to each LGA's current owner):\n\n",
+      if (nrow(by_owner) == 0) "  (none)" else paste0("  - ", by_owner$State, " / ", by_owner$LGA, ": ", by_owner$Interviews, " interviews (now ", by_owner$`Now assigned to`, ")", collapse = "\n")
+    )
+    body_plot <- ggplot() + theme_void() + xlim(0, 1) + ylim(0, 1) +
+      annotate("text", x = 0, y = 1, label = body_text, hjust = 0, vjust = 1, size = 3.8, family = "mono")
+    ggsave(file, cowplot::plot_grid(header_plot, body_plot, ncol = 1, rel_heights = c(0.30, 0.70)), width = 8.27, height = 11.69, units = "in", device = "pdf")
+    return(invisible(NULL))
+  }
 
   bar_plot <- ggplot(lga_df, aes(x = reorder(adm2_name, pct_achieved), y = pmin(pct_achieved, 1.5), fill = status)) +
     geom_col() +

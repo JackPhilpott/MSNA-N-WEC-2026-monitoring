@@ -19,7 +19,11 @@ reason_text_map <- c(
   # points", leaving it ambiguous that we don't even know the population
   # type (IDP/non-IDP) - now says so explicitly, matching the new "Was
   # This an IDP or Non-IDP Household?" column added to this sheet below.
-  crs_unmatched = "This interview couldn't be matched to any of your team's assigned sample points at all -- the export shows no sample point ID, cluster ID, or IDP/non-IDP population-type selection recorded for it whatsoever, so we don't even know which of your sample types this belongs to, let alone which specific household/building."
+  crs_unmatched = "This interview couldn't be matched to any of your team's assigned sample points at all -- the export shows no sample point ID, cluster ID, or IDP/non-IDP population-type selection recorded for it whatsoever, so we don't even know which of your sample types this belongs to, let alone which specific household/building.",
+  # ADDED 2026-09-25 (Coordinator, partner-facing wording for Jack to see before any batch is built): this reason
+  # is the tracker's record of a GPS Duplicates answer (ACF, 2026-09-06): "no nearby household match found;
+  # enumerator resolved to redo the survey; partner confirmed deletion". It had no entry, so the cell printed NA.
+  gps_no_match_partner_confirmed = "This interview's GPS location did not match any household available in its cluster. In your team's response to the GPS Duplicates sheet, no nearby household match was found and your team confirmed the deletion (the enumerator planned to redo the survey)."
 )
 
 # Reasons that register as immediately confirmed, no appeal (2026-09-06, per
@@ -29,8 +33,17 @@ reason_text_map <- c(
 # (full_batch_pipeline.R does that filtering and hands this file a plain
 # is_appealable column instead).
 NO_APPEAL_CONTEST_NOTE <- "No action needed -- confirmed per validated assessment methodology, not open to contest."
+# ADDED 2026-09-25 (Coordinator): a row whose tracker status is already "contested" - the partner has already
+# contested it - gets this instead of a second Yes/No dropdown. Must match verify_data_recovery_response.py's
+# CONTESTED_CLOSED_NOTE exactly. Wording says the dispute is ON RECORD, not that it is settled: a contested row
+# can still be moved to confirmed later (issue_tracker.R).
+CONTESTED_CLOSED_NOTE <- "No action needed -- your team has already contested this interview, and the MSNA team has it on record."
 
-build_partner_workbook <- function(pkg, out_path, deadline = "4 September 2026") {
+# 2026-09-25 (Jack, decision Q): the default was the literal "4 September 2026" - three weeks stale, and
+# never overridden by run_full_batch.R. It now defaults to EMAIL_DEADLINE (recovery_deadline.R), the same
+# constant the covering email uses, so a caller that forgets to source it fails loudly ("object
+# 'EMAIL_DEADLINE' not found") instead of printing a stale date into every partner's READ ME.
+build_partner_workbook <- function(pkg, out_path, deadline = EMAIL_DEADLINE) {
   wb <- createWorkbook()
   hdr_ref    <- createStyle(fgFill = "#DDE6E1", textDecoration = "bold", wrapText = TRUE, border = "TopBottomLeftRight")
   hdr_fill   <- createStyle(fgFill = "#FCEFD0", textDecoration = "bold", wrapText = TRUE, border = "TopBottomLeftRight")
@@ -310,12 +323,26 @@ build_partner_workbook <- function(pkg, out_path, deadline = "4 September 2026")
     # real Contest This? invitation. The other reasons keep the real
     # dropdown, scoped to just their own row range (not the whole column) so
     # the two presentations can coexist in one sheet.
+    # 2026-09-25: rows the partner has ALREADY contested (status "contested", not a no-appeal reason) get
+    # CONTESTED_CLOSED_NOTE instead of a second dropdown. NULL-guarded so a package built by an older
+    # pipeline (no is_already_contested column) renders exactly as before.
+    contested_closed <- if ("is_already_contested" %in% names(pkg$del_sheet)) pkg$del_sheet$is_already_contested else rep(FALSE, nrow(pkg$del_sheet))
     out5 <- pkg$del_sheet %>% transmute(
       `Interview ID` = uuid, `Enumerator ID` = enum_id,
       `State` = del_state, `LGA` = del_lga, `Ward` = del_ward, `Date of Submission` = as.character(del_submission_date),
       `Cluster ID` = del_cluster_id,
-      `Reason` = reason_text_map[reason],
-      `Contest This? (Yes/No)` = if_else(is_appealable, NA_character_, NO_APPEAL_CONTEST_NOTE),
+      # 2026-09-25 (fix B, Coordinator's GO): a blank reason (10 legacy IMC "contested" rows, now kept in
+      # del_sheet) or any reason with no entry in reason_text_map used to print NA in this cell. Show a plain
+      # fallback instead of leaving a partner an empty "Reason". (ACF's gps_no_match_partner_confirmed, the one
+      # unmapped reason in today's data, now has its own plain-English entry in reason_text_map above.)
+      `Reason` = {
+        txt <- unname(reason_text_map[reason])
+        ifelse(is.na(txt),
+               ifelse(is.na(reason), "Confirmed deletion - historical record from an earlier round (the specific reason was not recorded).",
+                      paste0("Confirmed deletion (", reason, ").")),
+               txt)
+      },
+      `Contest This? (Yes/No)` = if_else(is_appealable, NA_character_, if_else(contested_closed, CONTESTED_CLOSED_NOTE, NO_APPEAL_CONTEST_NOTE)),
       `If Yes, Explain` = NA_character_
     )
     writeData(wb, s5, out5, headerStyle = hdr_ref, withFilter = TRUE)

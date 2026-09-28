@@ -22,11 +22,13 @@
 # of this script relied on the default deadline ("4 September 2026") and it
 # silently went stale for every batch after the first, since nothing here
 # ever passed a fresh one. Bump EMAIL_DEADLINE by hand for the next round.
-EMAIL_DEADLINE <- "28 September 2026"
+# 2026-09-25: EMAIL_DEADLINE now lives in recovery_deadline.R (sourced below), shared with the
+# workbook stage (run_full_batch.R) so the workbook READ ME and this email carry the same date.
 SECOND_ROUND <- TRUE
 FIRST_EMAIL_DATE <- "30 August 2026"
 
 SCRIPTS_DIR <- "c:/Users/JackPHILPOTT/ACTED/IMPACT NGA - 02. MSNA/4. Data/MSNA N-WEC 2026/2_monitoring/reports/partner_data_recovery/scripts"
+source(file.path(SCRIPTS_DIR, "recovery_deadline.R"))   # EMAIL_DEADLINE
 source(file.path(SCRIPTS_DIR, "build_email_fn.R"))
 
 out_root <- "c:/Users/JackPHILPOTT/ACTED/IMPACT NGA - 02. MSNA/4. Data/MSNA N-WEC 2026/2_monitoring/reports/partner_data_recovery/outputs"

@@ -69,9 +69,11 @@ mod_progress_ui <- function(id) {
         theme = "warning"
       ),
       value_box(
+        # RELABELLED 2026-09-25 (Jack, decision Q): the date is the Round 1 cut-off
+        # for the IPC/CH decision-making forum, not the end of all fielding.
         title = info_title(
-          "Planned days remaining",
-          "Calendar days left until the planned end date — a fixed countdown, not a pace estimate."
+          "Days to Round 1 cut-off",
+          "Calendar days left until Round 1 ends, the cut-off for getting data into the IPC/CH decision-making forum. A fixed countdown, not a pace estimate."
         ),
         value = textOutput(ns("kpi_days_remaining")),
         showcase = icon("calendar-days"),
@@ -80,7 +82,7 @@ mod_progress_ui <- function(id) {
       value_box(
         title = info_title(
           "Est. days required",
-          "Days still needed to close what's outstanding, at the pace of the LAST 7 DAYS. Changed 2026-09-22 (Jack): this used to divide by the average pace since fielding began, which included every early-surge day and read faster than the teams are currently working. Compare to Planned days remaining to see if you're on track.",
+          "Days still needed to close what's outstanding, at the pace of the LAST 7 DAYS. Changed 2026-09-22 (Jack): this used to divide by the average pace since fielding began, which included every early-surge day and read faster than the teams are currently working. Compare to Days to Round 1 cut-off to see if you're on track.",
           icon_color = "white"
         ),
         value = textOutput(ns("kpi_days_required")),
@@ -100,8 +102,8 @@ mod_progress_ui <- function(id) {
       col_widths = c(8, 4),
       card(
         card_header(
-          "Daily submissions (by population group) vs. pace needed to finish on time",
-          info_icon("Bars = new interviews per day. Green line = cumulative Achieved to date (ALL interviews incl. any surplus past a stratum's own target - the raw count, deliberately). Red dotted line = the steady pace needed to hit target by the deadline. Above the line = ahead of pace in total field effort - but surplus in one stratum can't close a gap in another, so read this alongside the '% of target' tile above (credited per stratum) before concluding the target itself is on track."),
+          "Daily submissions (by population group) vs. pace needed to finish by the Round 1 cut-off",
+          info_icon("Bars = new interviews per day. Green line = cumulative Achieved to date (ALL interviews incl. any surplus past a stratum's own target - the raw count, deliberately). Red dotted line = the steady pace needed to hit target by the Round 1 cut-off (the IPC/CH data deadline). Above the line = ahead of pace in total field effort - but surplus in one stratum can't close a gap in another, so read this alongside the '% of target' tile above (credited per stratum) before concluding the target itself is on track."),
           span(
             class = "text-muted", style = "font-size: 0.8em; font-weight: normal; margin-left: 8px;",
             "\"Unmatched\" = submissions where the enumerator picked the wrong LGA in-app, so they couldn't be linked to a sampled cluster (and therefore a pop. group) — see the Data Quality tab's LGA-mismatch flag."
@@ -127,11 +129,33 @@ mod_progress_ui <- function(id) {
       # (new, absolute-numbers, main/information-rich view) and "By %
       # achieved" (the old chart, kept as the simplified secondary view -
       # its own definition changed too, see that output's own comment).
+      # REORDERED 2026-09-25 (Jack, explicit): "By % achieved" is now the
+      # first (default) tab - it follows the sidebar's Original/Revised
+      # toggle and is the simple view anyone opening the tab sees first. "By
+      # amount" (Original vs Revised bullet chart, pinned to Original, with
+      # the Revised tick and the two-shade stages) moves second and is mainly
+      # for internal use.
       navset_pill(
-        nav_panel("By amount", plotlyOutput(ns("partner_bar_abs"), height = "480px")),
-        nav_panel("By % achieved", plotlyOutput(ns("partner_bar_pct"), height = "480px"))
+        nav_panel("By % achieved", plotlyOutput(ns("partner_bar_pct"), height = "480px")),
+        nav_panel("Original vs Revised", plotlyOutput(ns("partner_bar_abs"), height = "480px"))
       ),
-      DTOutput(ns("partner_table"))
+      DTOutput(ns("partner_table")),
+      # 2026-09-25 (Jack, decision Q): the Status / Required daily pace / Projected finish columns
+      # are all measured against FIELDING_PLANNED_END, which is the Round 1 cut-off for the IPC/CH
+      # decision-making forum, not the end of all fielding - said in plain words under the table.
+      p(class = "text-muted", style = "font-size: 0.85em; margin: 8px 0 0 0;",
+        paste0("Status, Required daily pace and Projected finish are measured against the Round 1 cut-off (",
+               format(FIELDING_PLANNED_END, "%d %b %Y"), "), the date data must be in for the IPC/CH decision. ",
+               "'On pace' means the partner's projected finish, at its own current pace, is on or before that date. ",
+               "Round 2 is the fuller collection, reported on later.")),
+      # 2026-09-25 (partner registry): only when a registered partner holds no LGA. Dormant otherwise.
+      if (length(PARTNERS_NO_LGAS) > 0) {
+        p(class = "text-muted", style = "font-size: 0.85em; margin: 8px 0 0 0;",
+          paste0(paste(unname(ORG_LABELS[PARTNERS_NO_LGAS]), collapse = ", "),
+                 if (length(PARTNERS_NO_LGAS) > 1) " have" else " has",
+                 " no LGA assigned, so there is no target or pace to judge and nothing to chart. ",
+                 "The row shows the interviews the partner collected itself; they count toward the current owners of the LGAs where they were done."))
+      }
     )
   )
 }
@@ -403,8 +427,10 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum, target_basi
       # today.
       # 2026-09-14: excludes Dropped strata, same rule as the KPI tiles above.
       # FIX 2026-09-16 (Decision A), extended 2026-09-19 (global toggle):
-      # target_active - "pace needed to finish on time" is a Still-Needed
-      # concept, same basis as the KPI tiles above now.
+      # target_active - "pace needed to finish by the Round 1 cut-off" is a
+      # Still-Needed concept, same basis as the KPI tiles above now. The line
+      # ends at FIELDING_PLANNED_END = the Round 1 / IPC-CH cut-off (relabelled
+      # 2026-09-25, decision Q), not at the end of all fielding.
       target_total <- sum(filtered_stratum() %>% filter(status != "Dropped") %>% pull(target_active), na.rm = TRUE)
       pace_line <- tibble(
         submission_date = seq(FIELDING_START, FIELDING_PLANNED_END, by = "day")
@@ -427,7 +453,7 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum, target_basi
           name = "Unmatched", marker = list(color = cat_colors[["Unmatched"]]), yaxis = "y2"
         ) %>%
         add_lines(data = by_day_total, x = ~submission_date, y = ~cumulative, name = "Cumulative achieved", line = list(color = "#1E7B4D", width = 3)) %>%
-        add_lines(data = pace_line, x = ~submission_date, y = ~needed_pace, name = "Pace needed to finish on time", line = list(color = "#C1443C", dash = "dot")) %>%
+        add_lines(data = pace_line, x = ~submission_date, y = ~needed_pace, name = "Pace needed by Round 1 cut-off", line = list(color = "#C1443C", dash = "dot")) %>%
         layout(
           barmode = "stack",
           yaxis = list(title = "Cumulative interviews"),
@@ -507,7 +533,10 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum, target_basi
     # confusing side effect nobody asked for; only the BAR VALUES on
     # partner_bar_pct move with the toggle now, not which row is on top.
     partner_summary_active <- reactive(build_partner_progress_summary(target_basis()))
-    partner_pace_colors <- c("Behind pace" = "#C1443C", "On pace" = "#1E7B4D", "Complete" = "#1E7B4D", "Not started" = "#9AA3AF")
+    # "No LGAs assigned" (2026-09-25): a registered partner that holds no LGA (ACF once its LGAs
+    # move to ZOA) - darker neutral grey, distinct from "Not started" (assigned, not begun).
+    # Such a partner has no target to chart, so it appears in the table only (see the filters below).
+    partner_pace_colors <- c("Behind pace" = "#C1443C", "On pace" = "#1E7B4D", "Complete" = "#1E7B4D", "Not started" = "#9AA3AF", "No LGAs assigned" = "#6B7280")
 
     # REVISED 2026-09-16b (Jack, real feedback round on the first draft) -
     # "lowest achieved at top, highest at bottom", explicitly matching the
@@ -518,7 +547,7 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum, target_basi
     # level order the way a single-trace bar does, so this is pinned
     # explicitly via categoryorder/categoryarray below on both, not left
     # implicit to a shared factor() call).
-    partner_order <- partner_progress_summary %>% arrange(pct_achieved) %>% pull(partner_label) %>% rev()
+    partner_order <- partner_progress_summary %>% filter(status != "No LGAs assigned") %>% arrange(pct_achieved) %>% pull(partner_label) %>% rev()
 
     # Three-stage colour, shared by both the fill legend and the underlying
     # classification - all three colours already canonical in this app
@@ -545,8 +574,20 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum, target_basi
     # progress, defeating the point of switching away from %). Real
     # absolute numbers come through via text/hover only, never via
     # comparing raw bar lengths across partners.
+    # ADDED 2026-09-24 (Jack): revised-basis remaining per partner, so the
+    # "At/above Revised" stage below is judged on CREDITED progress (every
+    # stratum met its own revised target) instead of the raw achieved_n total.
+    # Lazy reactive: only computed if the chart renders; not in global.R
+    # (startup-time discipline).
+    partner_revised_remaining <- reactive({
+      build_partner_progress_summary("revised") %>%
+        select(org_id, revised_remaining_n = remaining_n, revised_credited_n = credited_achieved_n)
+    })
+
     output$partner_bar_abs <- renderPlotly({
       df <- partner_progress_summary %>%
+        filter(status != "No LGAs assigned") %>%   # no target -> nothing to plot (table only)
+        left_join(partner_revised_remaining(), by = "org_id") %>%
         mutate(
           partner_label = factor(partner_label, levels = partner_order),
           # fraction of THIS partner's own Original Target - the bar's own
@@ -568,7 +609,10 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum, target_basi
           # fraction of Original - same denominator as the bar itself, so
           # the tick and the fill are directly comparable on one bar.
           revised_frac = ifelse(target_sample > 0, target_sample_current / target_sample, NA_real_),
-          exceeded = !is.na(target_sample) & target_sample > 0 & achieved_n > target_sample,
+          # CHANGED 2026-09-24 (Jack): the surplus marker only shows for a
+          # partner that is actually complete (nothing still needed) - a raw
+          # total past target with a stratum still short must not look done.
+          exceeded = !is.na(target_sample) & target_sample > 0 & remaining_n <= 0 & achieved_n > target_sample,
           overflow_frac = ifelse(exceeded, 1.08, NA_real_),
           # REVISED 2026-09-16b: whole-fill-segment colour keyed off WHICH
           # STAGE a partner is at, not their pace status - checked in this
@@ -583,12 +627,36 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum, target_basi
           # known, documented residual, not an oversight.
           stage = factor(case_when(
             target_sample > 0 & remaining_n <= 0 ~ "At/above Original Target",
-            target_sample_current > 0 & achieved_n >= target_sample_current ~ "At/above Revised, below Original",
+            # CHANGED 2026-09-24 (Jack): credited basis - every stratum has
+            # met its own REVISED target - replacing the raw
+            # achieved_n >= target_sample_current comparison (which surplus
+            # in one stratum could satisfy while another was short).
+            target_sample_current > 0 & !is.na(revised_remaining_n) & revised_remaining_n <= 0 ~ "At/above Revised, below Original",
             TRUE ~ "Below Revised Target"
           ), levels = names(STAGE_COLORS)),
+          # ADDED 2026-09-24 (Jack): so the bar can't pass the Revised tick
+          # while the stage colour still says "Below Revised". The tick is the
+          # partner's TOTAL revised target, but the stage is judged per
+          # stratum (revised_remaining_n): interviews above a stratum's own
+          # revised target can't close another stratum's revised gap. So for a
+          # Below-Revised partner the coloured (solid) segment stops at
+          # credited-toward-REVISED (each stratum capped at its revised
+          # target) and the rest of the credited bar (credited toward
+          # Original, beyond revised in strata already met) is drawn pale.
+          # Solid never extends past the tick until every stratum has met
+          # revised. Other stages: whole bar solid, no pale segment.
+          solid_frac = ifelse(
+            stage == "Below Revised Target" & !is.na(revised_credited_n) & target_sample > 0,
+            pmin(pmin(revised_credited_n, credited_achieved_n) / target_sample, fill_frac),
+            fill_frac
+          ),
+          pale_frac = fill_frac - solid_frac,
           hover_text = paste0(
             "Credited toward target: ", comma(credited_achieved_n), " / Original Target: ", comma(target_sample),
+            # 2026-09-25 (Jack, decision F): the own-vs-others split is emails-only; whole-LGA totals here
+            if (SHOW_ATTRIBUTION_SPLIT) ifelse(credited_by_others_n > 0, paste0("\n  of which collected by other partners: ", comma(credited_by_others_n)), "") else "",
             "\nStill needed: ", comma(remaining_n),
+            "\nStill needed to reach Revised Target: ", comma(revised_remaining_n),
             "\nAll interviews (incl. surplus): ", comma(achieved_n),
             " (Revised Target: ", comma(round(target_sample_current)), ")",
             ifelse(exceeded, paste0("\nExceeded Original in total by ", comma(achieved_n - target_sample)), "")
@@ -597,9 +665,18 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum, target_basi
 
       plot_ly(df) %>%
         add_bars(
-          y = ~partner_label, x = ~fill_frac, color = ~stage, colors = STAGE_COLORS,
+          y = ~partner_label, x = ~solid_frac, color = ~stage, colors = STAGE_COLORS,
           orientation = "h", text = ~hover_text, hoverinfo = "text",
           textposition = "none", showlegend = TRUE
+        ) %>%
+        # Pale segment: credited toward Original but beyond the Revised target
+        # in strata that already met it - doesn't close any Revised gap, so
+        # it's deliberately not drawn in the stage colour. See solid_frac.
+        add_bars(
+          y = ~partner_label, x = ~pale_frac, orientation = "h",
+          marker = list(color = "rgba(193,68,60,0.30)"),
+          text = ~hover_text, hoverinfo = "text", textposition = "none",
+          showlegend = any(df$pale_frac > 0), name = "Credited beyond Revised (strata already met)"
         ) %>%
         # REVISED 2026-09-16b: the visible "remaining to Original" segment -
         # outline-only (transparent fill, grey border), not a coloured
@@ -656,6 +733,7 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum, target_basi
     # bug, not just this instance of it.
     output$partner_bar_pct <- renderPlotly({
       df <- partner_summary_active() %>%
+        filter(status != "No LGAs assigned") %>%   # no target -> nothing to plot (table only)
         mutate(partner_label = factor(partner_label, levels = partner_order))
 
       plot_ly(
@@ -694,28 +772,47 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum, target_basi
           # capped/floored rollups; % achieved is credited-based (can't
           # read 100% while any stratum is short), raw % kept alongside.
           `Credited toward target` = credited_achieved_n,
+          # ADDED 2026-09-25 (option C): of the credited figure, what other
+          # partners collected in this partner's LGAs - pace below is the
+          # partner's OWN collection only.
+          `Of which collected by other partners` = credited_by_others_n,
           `Still needed` = remaining_n,
           `% achieved` = pct_achieved,
           # "% achieved (raw)" REMOVED 2026-09-22 (Jack) - Achieved above is
           # still the full raw interview count, so nothing is hidden; it
           # just isn't shown as a second, competing percentage.
           `Shared with` = shared_with,
+          # ADDED 2026-09-25: this partner's Achieved interviews in LGAs it does
+          # not currently own; they count toward the LGA's current owner, shown
+          # here so a previous owner's collection stays visible on its own row.
+          # Defined by LGA OWNERSHIP only. Interviews in a stratum of the
+          # partner's OWN LGA that is dropped (accessibility) are the next
+          # column - real data kept for indicative reporting, not an ownership
+          # question - and never-matched interviews are in neither.
+          `Collected outside assigned LGAs` = achieved_outside_assigned_n,
+          `In dropped strata (indicative only)` = achieved_in_dropped_strata_n,
           `Start date` = start_date,
           `Current daily pace` = round(current_daily_pace, 1),
           `Required daily pace` = round(required_daily_pace, 1),
           `Projected finish` = projected_finish_date,
-          Status = factor(status, levels = c("Behind pace", "On pace", "Complete", "Not started"))
+          Status = factor(status, levels = c("Behind pace", "On pace", "Complete", "Not started", "No LGAs assigned"))
         )
 
-      # 0-based (2026-09-22: "% achieved (raw)" removed): 0 Partner,
-      # 1 Original Target, 2 Revised Target, 3 Collected, 4 Confirmed
-      # Deleted, 5 Oversampling Surplus, 6 Pending Deletion, 7 Achieved,
-      # 8 Credited toward target, 9 Still needed, 10 % achieved,
-      # 11 Shared with, 12 Start date, 13 Current pace, 14 Required pace,
-      # 15 Projected finish, 16 Status.
+      # 2026-09-25 (Jack, decision F): the own-vs-others split columns are emails-only, so the dashboard
+      # table shows whole-LGA totals. The three columns are still built above (flip
+      # SHOW_ATTRIBUTION_SPLIT in global.R to bring them back) and dropped here.
+      split_cols <- c("Of which collected by other partners", "Collected outside assigned LGAs", "In dropped strata (indicative only)")
+      if (!SHOW_ATTRIBUTION_SPLIT) df <- df %>% select(-any_of(split_cols))
+      # DT wants 0-based column positions; look them up BY NAME so hiding or showing the split columns
+      # can never shift the right-alignment or the default sort (the old hard-coded 1:11, 13, 14, 16, 17
+      # and order column 10 were only right for the full 20-column layout).
+      num_cols <- c("Original Target", "Revised Target", "Collected", "Confirmed Deleted", "Oversampling Surplus",
+                    "Pending Deletion", "Achieved", "Credited toward target", split_cols, "Still needed", "% achieved",
+                    "Current daily pace", "Required daily pace")
       datatable(
         df, rownames = FALSE, filter = "top",
-        options = list(pageLength = 20, order = list(list(9, "desc")), columnDefs = list(list(className = "dt-right", targets = c(1:10, 13, 14))))
+        options = list(pageLength = 20, order = list(list(which(names(df) == "Still needed") - 1L, "desc")),
+                       columnDefs = list(list(className = "dt-right", targets = which(names(df) %in% num_cols) - 1L)))
       ) %>%
         # 2026-09-14 (Jack): Original/Revised Target were showing raw
         # unrounded decimals here - target_sample_current (global.R) is now

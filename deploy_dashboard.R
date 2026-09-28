@@ -102,6 +102,19 @@ source("cleaning/prep/prep_accessibility_layer.R")
 # before that, same reasoning as the accessibility layer above.
 source("cleaning/prep/prep_psu_geometries.R")
 
+# 2026-09-27 (Jack, the proper fix over accepting the drift): snapshot
+# real_submissions.csv's is_duplicate/deletion_status BEFORE prep overwrites
+# it — prep_real_submissions.R's own dup-key computation has zero memory of
+# past runs, so an already-settled interview's is_duplicate would otherwise
+# silently revert to its naive (pre-live-claims-promotion) value every time
+# this chain runs. Paired with restore_duplicate_history() after refresh_
+# deletion_columns() below. See cleaning/real/preserve_duplicate_history.R's
+# own header for the full mechanism, why this needed its own snapshot/restore
+# pair rather than a fix inside refresh_deletion_columns() itself, and why
+# it's provably a zero-Achieved-impact, display-only correctness fix.
+source("cleaning/real/preserve_duplicate_history.R")
+snapshot_duplicate_history()
+
 # ---- refresh submissions from whatever's currently in cleaning/ (picks up
 # the latest anonymised export + all cleaning logs) — always the first
 # DATA step (mirrors above are plumbing, not data), per Jack: "redeploy"
@@ -149,6 +162,19 @@ run_independent_duration_check()
 run_independent_duplicate_check()
 run_independent_listing_missing_check()
 run_independent_percentage_missing_check()
+# ADDED 2026-09-25 (PREPARED in the working tree; RUN, with Jack's yes, starting deploy 1 on
+# 2026-09-26 — that stayed unwired in this comment for a day, found + corrected 2026-09-27 during a
+# peer's pre-push audit of this file, once no live gap remained to fix, only a stale comment: deploy 1
+# registered the exact CARE/Lafia crs_unmatched row this note's own example describes, confirming the
+# yes was in fact given and acted on, not still pending). These two were built the same day as the five
+# above (commit 9996a4a, 2026-09-11, "Other Issues" pipeline) but were only ever called from independent_
+# deletion_checks.R's own standalone block before that, so nothing in this chain registered a date_outlier
+# or crs_unmatched row between the last manual run on 2026-09-13 and deploy 1 (found 2026-09-25: the
+# unmatched CARE/Lafia interview uploaded 2026-09-23 sat in no tracker row and so never reached CARE's
+# workbook). Appended at the END, same order as that standalone block: neither was ever a DO reason, so a
+# uuid that also trips one of the five above keeps that reason (register_issues() keeps the first).
+run_independent_date_outlier_check()
+run_independent_unmatched_check()
 source("cleaning/real/build_confirmed_deletions_overlay.R")
 
 # ADDED 2026-09-22 (Jack, after the cross-format sweep found it): the three
@@ -168,7 +194,23 @@ source("cleaning/real/build_confirmed_deletions_overlay.R")
 source("cleaning/real/refresh_deletion_columns.R")
 refresh_deletion_columns()
 
+# Restores any already-settled interview's is_duplicate to its pre-run value where this run's fresh
+# computation drifted it - see the snapshot_duplicate_history() call above and cleaning/real/
+# preserve_duplicate_history.R's own header. Must run AFTER refresh_deletion_columns() (needs its
+# output as the "after" state to compare against) and does not touch deletion_status/any other
+# column's real content beyond any_quality_flag's own re-combine.
+restore_duplicate_history()
+
 source("cleaning/real/sanity_checks.R")
+# 2026-09-25: recompute which LGAs have no partner / no documented decision from the
+# CURRENT (just-synced) frame, so the state file bundled below can't lag a frame
+# change (prep_partner_lga_assignment.R is a manual one-off and is not in this chain).
+# Prints its own banner and appends to SANITY_WARNINGS only when the flagged set
+# changed; STRICT_UNASSIGNED=1 in the environment makes it stop() instead.
+source("scripts/shared/coverage_state.R")
+refresh_coverage_state(".")
+source("scripts/shared/partner_registry.R")
+refresh_partner_registry(".")
 print_sanity_banner_if_present() # most important checkpoint: right before this goes live and public
 
 # ---- report generation, before the deploy itself — same freshly-refreshed data, one run ----

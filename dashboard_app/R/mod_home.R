@@ -9,6 +9,9 @@ mod_home_ui <- function(id) {
   nav_panel(
     title = "Home",
     icon = icon("house"),
+    # 2026-09-25: red block when any LGA has no partner and no recorded decision
+    # (global.R, coverage_alert_ui); NULL - nothing shown - in the normal case.
+    coverage_alert_ui(),
     layout_columns(
       col_widths = c(8, 4),
       card(
@@ -215,7 +218,12 @@ mod_home_server <- function(id, target_basis) {
 
       tags$table(
         class = "table table-sm",
-        tags$tr(tags$td("Fielding window"), tags$td(strong(paste(format(FIELDING_START, "%d %b"), "-", format(FIELDING_PLANNED_END, "%d %b %Y"))))),
+        # RELABELLED 2026-09-25 (Jack, decision Q): the end date is the Round 1 cut-off for the
+        # IPC/CH decision-making forum, not the end of all fielding (Round 2 is the fuller collection).
+        tags$tr(
+          tags$td("Round 1 window", info_icon("Round 1 ends on the last date shown, the cut-off for getting data into the IPC/CH decision-making forum. Round 2 is the fuller collection, reported on later.")),
+          tags$td(strong(paste(format(FIELDING_START, "%d %b"), "-", format(FIELDING_PLANNED_END, "%d %b %Y"))))
+        ),
         tags$tr(
           tags$td("Original Target", info_icon("The total planned interviews set at the start of collection, unchanged since. Always the national total, regardless of sidebar filters.")),
           tags$td(strong(comma(TOTAL_PLANNED_INTERVIEWS)))
@@ -275,7 +283,10 @@ mod_home_server <- function(id, target_basis) {
         tags$tr(tags$td("Target by population group"), tags$td(strong("Non-IDP: ", comma(target_non_idp), " / IDP: ", comma(target_idp)))),
         tags$tr(tags$td("Covered LGAs"), tags$td(strong(TOTAL_COVERED_LGAS))),
         tags$tr(tags$td("States / regions"), tags$td(strong(n_states, " states across ", n_regions, " regions (", paste(sort(unique(strata_frame$adm1_name)), collapse = ", "), ")"))),
-        tags$tr(tags$td("Field partners"), tags$td(strong(length(setdiff(unique(partner_lga_assignment$org_id), "other"))))),
+        # 2026-09-25 (partner registry): partners holding at least one LGA; a registered partner with none
+        # (ACF after its LGAs move to ZOA) is named alongside rather than dropped or counted as assigned.
+        tags$tr(tags$td("Field partners"), tags$td(strong(length(PARTNERS_ASSIGNED)),
+          if (length(PARTNERS_NO_LGAS) > 0) tagList(" (plus ", paste(unname(ORG_LABELS[PARTNERS_NO_LGAS]), collapse = ", "), ", no LGAs assigned)"))),
         tags$tr(
           tags$td("Partners with zero submissions", info_icon("Partners assigned an LGA who haven't submitted any interviews yet.")),
           tags$td(strong(if (length(PARTNERS_NOT_STARTED) == 0) "None" else paste(unname(ORG_LABELS[PARTNERS_NOT_STARTED]), collapse = ", ")))
@@ -314,7 +325,13 @@ mod_home_server <- function(id, target_basis) {
       # follows the sidebar's Target basis toggle, matching output$glance
       # above and every other headline % on the dashboard now.
       total_target <- active_planned_interviews(target_basis())
-      last_upload <- max(submissions_raw$uploaded_at, na.rm = TRUE)
+      # 2026-09-25: uploaded_at is NA for rows whose dates were reconstructed
+      # (see scripts/shared/date_reconstruction.R) - never let max() over an all-NA
+      # column ("-Inf") reach the page, and say how many rows have no upload time.
+      up_all <- submissions_raw$uploaded_at
+      n_no_upload <- sum(is.na(up_all))
+      last_upload <- if (any(!is.na(up_all))) max(up_all, na.rm = TRUE) else NA
+      n_dates_reconstructed <- if ("dates_reconstructed" %in% names(submissions_raw)) sum(submissions_raw$dates_reconstructed %in% TRUE) else 0L
 
       tags$table(
         class = "table table-sm",
@@ -329,7 +346,15 @@ mod_home_server <- function(id, target_basis) {
           tags$td("Total collected to date", info_icon("Every completed interview, including surplus, duplicates and unmatched submissions.")),
           tags$td(strong(comma(total_collected)))
         ),
-        tags$tr(tags$td("Most recent upload timestamp"), tags$td(strong(format(last_upload, "%d %b %Y %H:%M"))))
+        tags$tr(
+          tags$td("Most recent upload timestamp"),
+          tags$td(strong(if (is.na(last_upload)) "not available" else format(last_upload, "%d %b %Y %H:%M")),
+                  if (n_no_upload > 0) span(class = "text-muted", paste0(" (", comma(n_no_upload), " submission(s) have no upload time)")))
+        ),
+        if (n_dates_reconstructed > 0) tags$tr(
+          tags$td("Submission dates reconstructed", info_icon("The data officer's export arrived without start/end times for these submissions, so their dates were rebuilt from the KoBo audit logs - the start time and date are accurate, the end time is approximate and there is no upload time.")),
+          tags$td(strong(comma(n_dates_reconstructed)))
+        )
       )
     })
 

@@ -157,6 +157,16 @@ no_appeal_confirmed_uuids <- tracker %>%
          deletion_reason %in% NO_APPEAL_DELETION_REASONS) %>%
   pull(uuid)
 
+# ADDED 2026-09-25 (option C): every SETTLED deletion for ALL collectors -
+# tracker confirmed_deletion rows in a terminal status that were not recovered.
+# Exactly build_confirmed_deletions_overlay.R's CONFIRMED definition, i.e. what
+# the dashboard's is_confirmed_deletion() reads, so credited/remaining here tie
+# to the dashboard. (Distinct from the per-partner achieved_excluded_uuids
+# further down, which is scoped to one partner's own displayed items.)
+settled_all_uuids <- tracker %>%
+  filter(issue_type == "confirmed_deletion", status %in% TERMINAL_STATUSES, is.na(recovery_type), !is.na(uuid)) %>%
+  pull(uuid)
+
 # ================================================================
 build_partner_package <- function(org) {
   # FIXED 2026-09-11: was just excluding "listing_missing" - date_outlier/
@@ -171,11 +181,23 @@ build_partner_package <- function(org) {
   # register_deletion_log_issues.R) - shown as FYI only, no real appeal.
   # Everything else keeps the real Contest This? flow. See build_workbook_fn.R
   # for how this drives the sheet's presentation.
+  #
+  # 2026-09-25 (Coordinator, under Jack's standing rule; generic, not partner-specific): a row whose status is
+  # already "contested" means the partner HAS contested it (issue_tracker.R: "partner disputed a Confirmed
+  # Deletion"). Offering it a "Contest This? Yes/No" dropdown again asks the partner to contest something it
+  # already contested, so it gets a closed-row note instead (is_already_contested). Only that state changes:
+  # pending / sent / rejected rows (live, first-time or re-asked appeals) and rows in any other status keep the
+  # dropdown, and a no-appeal reason keeps its own methodology note whatever the status. On the 09-25 data this
+  # touches exactly IMC's 10 legacy contested rows (and no live appeal row anywhere - the Confirmed Deletions
+  # sheets hold no pending/sent/rejected row at all). NB "contested" is NOT "settled" (a contested row can
+  # still be moved to confirmed later), so the note says the dispute is on record, not that it is closed.
   del_sheet_all <- del_all_org %>%
     filter(status %in% c(TERMINAL_STATUSES, "pending", "sent", "rejected")) %>%
     mutate(
       enum_id = del_enum_id, reason = deletion_reason,
-      is_appealable = !deletion_reason %in% NO_APPEAL_DELETION_REASONS
+      is_no_appeal = deletion_reason %in% NO_APPEAL_DELETION_REASONS,
+      is_already_contested = status %in% "contested" & !is_no_appeal,
+      is_appealable = !is_no_appeal & !is_already_contested
     ) %>%
     # RESOLVED 2026-09-21 (Jack, explicit): Confirmed Deletions is one of
     # three sheets (with Oversampled Clusters and Enumerator Performance)
@@ -231,9 +253,26 @@ build_partner_package <- function(org) {
   # mechanism (idp_hh_number_from_listing/claimed_by_cluster_all, same as
   # its n_claims>1 rows already use) - see that block further down.
   # duplicate_point (either pop_type) now NEVER reaches del_sheet.
-  del_sheet <- del_sheet_all %>% filter(reason != "duplicate_point")
-  nonidp_dup_raw <- del_sheet_all %>% filter(reason == "duplicate_point", del_pop_type == "non_idp")
-  idp_dup_raw <- del_sheet_all %>% filter(reason == "duplicate_point", del_pop_type == "idp")
+  #
+  # FIX A 2026-09-25 (Coordinator's GO; found checking the line-303 fix): del_sheet_all is every tracker row
+  # for this org INCLUDING recovered ones (status "confirmed" + recovery_type "false_positive"), so every
+  # sheet below listed them: 350 recovered rows on the 09-25 data (Non-IDP Duplicates 269, IDP Listing
+  # Duplicates 46, Confirmed Deletions 35 - the fcs_zero rows recovered 2026-09-10 shown as "confirmed for
+  # removal"), 304 of them decision D's (2026-09-25), so D's "partners stop reviewing non-issues" never reached
+  # the workbooks. A recovered row is RESOLVED as not-a-problem: nothing for the partner to answer, not a
+  # deletion. The DISPLAY set (del_sheet_display) therefore drops rows with a recovery_type, and every sheet
+  # below is built from it. excluded_uuids (above) deliberately stays on the UNFILTERED del_sheet_all, so a
+  # recovered row is still suppressed as a candidate for the GPS / IDP Listing sheets and is never re-flagged as
+  # a fresh one - recovery only removes it from the lists a partner sees, not from candidate suppression.
+  del_sheet_display <- del_sheet_all %>% filter(is.na(recovery_type))
+  # FIX B 2026-09-25 (same GO): a bare `reason != "duplicate_point"` drops any row whose reason is blank
+  # (NA != x is NA, and dplyr::filter() drops NA). 10 legacy "contested" rows with no deletion_reason (all IMC's,
+  # from its own earlier response) were settled deletions on the dashboard yet in NO sheet. Keep them. The two
+  # `== "duplicate_point"` filters below are safe: a blank reason is not a duplicate, and no duplicate_point row has
+  # a blank del_pop_type (checked 2026-09-25: 0 of 2,011).
+  del_sheet <- del_sheet_display %>% filter(is.na(reason) | reason != "duplicate_point")
+  nonidp_dup_raw <- del_sheet_display %>% filter(reason == "duplicate_point", del_pop_type == "non_idp")
+  idp_dup_raw <- del_sheet_display %>% filter(reason == "duplicate_point", del_pop_type == "idp")
   # nonidp_dup_sheet's final assignment is DEFERRED past gps_o/
   # cluster_lookup_nonidp below (2026-09-21) - the nearby-unclaimed-number
   # recovery columns added there need frame_nonidp's per-cluster available
@@ -290,7 +329,16 @@ build_partner_package <- function(org) {
   # c("confirmed","contested")) - regardless of appealable/no-appeal split
   # and regardless of date, since achieved must reflect the CURRENT
   # settled truth, not a display-scoped subset of it.
-  achieved_excluded_uuids <- del_all_org %>% filter(status %in% TERMINAL_STATUSES) %>% pull(uuid)
+  # FIX 2026-09-25 (found preparing IMC's package; Coordinator's GO, working tree only): a terminal-status row
+  # WITH a recovery_type (status "confirmed", recovery_type "false_positive") was RECOVERED - it is not a
+  # settled deletion and the dashboard counts it as Achieved (is_confirmed_deletion / the overlay's CONFIRMED
+  # definition = terminal status AND is.na(recovery_type)), as settled_all_uuids above already does. Without
+  # is.na(recovery_type) this set wrongly held every recovered row: 350 on the 09-25 data (the 46 earlier
+  # recoveries + 304 cleared under decision D; FACT 183), understating the email headline "currently count
+  # as Achieved", the Oversampled Clusters counts and the Enumerator Performance "% counting as Achieved" flag
+  # (all three read this set). 20 completed rows with no matched_survey_id (CRS 19, CARE 1) remain a
+  # separate, deliberate difference from the dashboard - see the !is.na(matched_survey_id) terms below.
+  achieved_excluded_uuids <- del_all_org %>% filter(status %in% TERMINAL_STATUSES, is.na(recovery_type)) %>% pull(uuid)
 
   gps_o <- gps_all %>% filter(org_id == org, dist_to_claimed_device > 150, !uuid %in% excluded_uuids)
   if (nrow(gps_o) > 0) {
@@ -479,7 +527,9 @@ build_partner_package <- function(org) {
   # row in the same tracker entry) - kept for the same general rule as
   # gps_o/idp_o above, in case a future change stops that mutual exclusion
   # from holding.
-  lm <- confirmed_deletion_all %>% filter(org_id == org, deletion_reason == "listing_missing", !uuid %in% no_appeal_confirmed_uuids)
+  # 2026-09-25 (fix A): display set only - a recovered row (recovery_type set) is resolved, not shown. None exist
+  # for listing_missing today (all 350 recovered rows are fcs_zero / duplicate_point); the filter keeps the rule uniform.
+  lm <- confirmed_deletion_all %>% filter(org_id == org, deletion_reason == "listing_missing", is.na(recovery_type), !uuid %in% no_appeal_confirmed_uuids)
   listing_sheet <- if (nrow(lm) > 0) {
     lm %>%
       mutate(del_cluster_id = coalesce(del_cluster_id, "(not identified -- contact IMPACT)")) %>%
@@ -514,7 +564,7 @@ build_partner_package <- function(org) {
   # Monitoring while tracing this script, fixed here - not yet run for a
   # real partner round, so nothing partner-facing has shipped with the bug.
   mh <- tracker %>%
-    filter(issue_type == "missing_hh_listing", org_id == org) %>%
+    filter(issue_type == "missing_hh_listing", org_id == org, is.na(recovery_type)) %>%
     left_join(cluster_geo_lookup, by = "cluster_id")
   missing_hh_sheet <- if (nrow(mh) > 0) {
     n_completed_by_cluster <- full_all %>%
@@ -563,7 +613,7 @@ build_partner_package <- function(org) {
   # (reason_text_map lookup at render time), matching how del_sheet passes
   # through raw `reason` rather than pre-formatting it here.
   other_sheet <- confirmed_deletion_all %>%
-    filter(org_id == org, deletion_reason %in% c("date_outlier", "crs_unmatched"), !status %in% TERMINAL_STATUSES) %>%
+    filter(org_id == org, deletion_reason %in% c("date_outlier", "crs_unmatched"), !status %in% TERMINAL_STATUSES, is.na(recovery_type)) %>%
     transmute(
       uuid, enum_id = del_enum_id,
       state = del_state, lga = del_lga, ward = del_ward, cluster_id = del_cluster_id,
@@ -625,21 +675,57 @@ build_partner_package <- function(org) {
   # matched_strata_id being present so a pre-2026-09 real_submissions.csv
   # degrades to the old raw figures rather than erroring (this pipeline is
   # dormant at the time of writing).
+  #
+  # CHANGED 2026-09-25 (Jack's "option C" for shared/reallocated LGAs): credited
+  # and remaining follow the CURRENT LGA owner and count EVERY collector's
+  # interviews in the partner's assigned strata (as the dashboard and
+  # Resampling's workbooks already do), not just this partner's own - so after
+  # Chibok/Damboa moved IMC -> FACT, FACT's still-needed there reflects IMC's
+  # 194 interviews and IMC's credited no longer includes them. Same settled
+  # set as the dashboard (settled_all_uuids: tracker confirmed/contested rows
+  # not recovered - the overlay's definition), same rule: completed and not
+  # settled-deleted. n_credited_own / n_credited_by_others is the split of
+  # credited by collector (own share can't exceed the stratum's credited);
+  # n_outside_assigned counts this partner's own Achieved interviews in strata
+  # it does not currently own. Follow-up ITEMS stay routed to the collector.
+  # n_achieved (own, anywhere) is unchanged.
+  n_credited_own <- NA_real_; n_credited_by_others <- 0; n_outside_assigned <- 0; n_in_dropped_strata <- 0
   if ("matched_strata_id" %in% names(full_o) && "strata_id" %in% names(strata_frame)) {
     strata_targets_o <- strata_frame %>%
       filter(adm2_pcode %in% my_adm2, coverage_status != "excluded") %>%
       select(strata_id, target_sample) %>%
       mutate(target_sample = coalesce(as.numeric(target_sample), 0))
-    achieved_by_stratum_o <- full_o %>%
-      filter(interview_outcome == "completed", !is.na(matched_survey_id), !(uuid %in% achieved_excluded_uuids)) %>%
-      count(matched_strata_id, name = "n_ach")
+    achieved_rows_all <- full_all %>%
+      filter(interview_outcome == "completed", !(uuid %in% settled_all_uuids))
+    achieved_all_by_stratum <- achieved_rows_all %>% count(matched_strata_id, name = "n_ach_all")
+    achieved_own_by_stratum <- achieved_rows_all %>% filter(org_id == org) %>% count(matched_strata_id, name = "n_ach_own")
     rollup_o <- strata_targets_o %>%
-      left_join(achieved_by_stratum_o, by = c("strata_id" = "matched_strata_id")) %>%
-      mutate(n_ach = coalesce(n_ach, 0L),
-             credited = pmin(n_ach, target_sample),
-             remaining = pmax(target_sample - n_ach, 0))
+      left_join(achieved_all_by_stratum, by = c("strata_id" = "matched_strata_id")) %>%
+      left_join(achieved_own_by_stratum, by = c("strata_id" = "matched_strata_id")) %>%
+      mutate(n_ach_all = coalesce(n_ach_all, 0L),
+             n_ach_own = coalesce(n_ach_own, 0L),
+             credited = pmin(n_ach_all, target_sample),
+             remaining = pmax(target_sample - n_ach_all, 0),
+             credited_own = pmin(n_ach_own, credited))
     n_credited <- sum(rollup_o$credited)
     n_remaining <- sum(rollup_o$remaining)
+    n_credited_own <- sum(rollup_o$credited_own)
+    n_credited_by_others <- n_credited - n_credited_own
+    # by LGA OWNERSHIP (matched_strata_id is "<pop_type>_<adm2 pcode>"; "NA_..." =
+    # never matched to a sampled stratum, counted in neither): outside = own
+    # interviews in an LGA the partner does not currently own; in-dropped-strata
+    # = own interviews in a dropped stratum of one of its OWN LGAs (e.g. Gubio).
+    own_valid <- achieved_own_by_stratum %>%
+      filter(grepl("^(idp|non_idp)_NG[0-9]{6}$", matched_strata_id)) %>%
+      mutate(adm2 = sub("^.*_(NG[0-9]{6})$", "\\1", matched_strata_id))
+    # An LGA excluded outright (no active assignment row, e.g. Gubio) is still
+    # this partner's if it is its recorded prior partner (same lookup as the
+    # dashboard's excluded_lga_prior_partners) - dropped-strata data, not an
+    # ownership question.
+    prior_excl <- read_csv(file.path(mon_dir, "input_data/partner_coverage/excluded_lga_prior_partners.csv"), show_col_types = FALSE)
+    my_lgas_incl_dropped <- union(my_adm2, prior_excl$adm2_pcode[prior_excl$org_id == org])
+    n_outside_assigned <- sum(own_valid$n_ach_own[!(own_valid$adm2 %in% my_lgas_incl_dropped)])
+    n_in_dropped_strata <- sum(own_valid$n_ach_own[own_valid$adm2 %in% my_lgas_incl_dropped]) - sum(rollup_o$n_ach_own)
   } else {
     n_credited <- n_achieved
     n_remaining <- max(target_sample - n_achieved, 0)
@@ -813,7 +899,13 @@ build_partner_package <- function(org) {
        cluster_lookup_nonidp = cluster_lookup_nonidp, cluster_lookup_idp = cluster_lookup_idp,
        n_collected_total = nrow(full_o), n_achieved_total = n_achieved,
        n_credited_total = n_credited, n_remaining_total = n_remaining,
+       n_credited_own_total = n_credited_own, n_credited_by_others_total = n_credited_by_others,
+       n_outside_assigned_total = n_outside_assigned, n_in_dropped_strata_total = n_in_dropped_strata,
        target_sample = target_sample,
+       # 2026-09-25 (partner registry): TRUE for a registered partner that holds no LGA at all (ACF once
+       # its LGAs move to ZOA). It has no target, so build_email_fn.R must not print a percentage or a
+       # "still needed" figure for it; its follow-up items are unaffected (routed by collector).
+       no_lgas = length(my_adm2) == 0,
        start_date = start_date, n_flagged_enums = sum(scorecard$notes != ""),
        n_duration_under_20_total = sum(scorecard$n_duration_under_20),
        n_duration_20_30_total = sum(scorecard$n_duration_20_30))

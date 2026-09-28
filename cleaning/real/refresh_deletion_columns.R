@@ -90,9 +90,30 @@ refresh_deletion_columns <- function(csv_path = "data/real_submissions.csv",
   new_status <- blank(fl$status[match(subs$submission_uuid, fl$uuid)])
 
   settled <- c("confirmed", "contested")
+
+  # ADDED 2026-09-25 (4a): the duplicate flag depends on which claimants are
+  # settled-deleted, so it has to be re-derived from THIS run's overlays here
+  # too, not left at prep's one-run-old view - same lag, same fix as the three
+  # deletion columns. Rule/ordering: scripts/shared/live_claims.R. Needs the
+  # claim-identity columns; an older file without them just skips this step.
+  claim_cols <- c("pop_type", "matched_survey_id", "matched_cluster_id", "idp_hh_number_from_listing",
+                  "idp_walk_position", "interview_outcome", "uploaded_at", "start_datetime", "is_duplicate",
+                  "flag_gps_outlier", "flag_duration_outlier", "flag_hh_size_mismatch", "flag_lga_mismatch")
+  dup_refresh <- all(claim_cols %in% names(subs))
+  if (dup_refresh) {
+    source("scripts/shared/live_claims.R")
+    adj <- apply_live_claim_rule(subs, settled_uuid = subs$submission_uuid[new_status %in% settled])
+    old_live <- if ("n_live_claims" %in% names(subs)) subs$n_live_claims else rep("", nrow(subs))
+    dup_changed <- subs$is_duplicate != adj$is_duplicate | subs$any_quality_flag != adj$any_quality_flag | old_live != adj$n_live_claims
+    n_dup_flipped <- sum(subs$is_duplicate == "TRUE" & adj$is_duplicate == "FALSE") - sum(subs$is_duplicate == "FALSE" & adj$is_duplicate == "TRUE")
+  } else {
+    dup_changed <- rep(FALSE, nrow(subs)); n_dup_flipped <- 0L
+  }
+
   changed <- subs$quality_exclusion_reason != new_quality |
     subs$flagged_deletion_reason != new_flag_reason |
-    subs$deletion_status != new_status
+    subs$deletion_status != new_status |
+    dup_changed
   # the subset that actually moves Achieved: a completed interview whose
   # settled/not-settled state differs between the copy and the source
   moves_achieved <- changed & subs$interview_outcome == "completed" &
@@ -111,13 +132,19 @@ refresh_deletion_columns <- function(csv_path = "data/real_submissions.csv",
   subs$quality_exclusion_reason <- new_quality
   subs$flagged_deletion_reason <- new_flag_reason
   subs$deletion_status <- new_status
+  if (dup_refresh) {
+    subs$is_duplicate <- adj$is_duplicate
+    subs$any_quality_flag <- adj$any_quality_flag
+    subs$n_live_claims <- adj$n_live_claims
+  }
   retry_file_write(function(p) write_csv(subs, p, na = "NA"), csv_path)
 
   cat(sprintf(
-    "refresh_deletion_columns(): updated %d of %d row(s) from the current overlays; %d completed interview(s) changed settled-state (these would otherwise have stayed a pipeline run behind on the dashboard: %d newly excluded from Achieved, %d newly restored to it).\n",
+    "refresh_deletion_columns(): updated %d of %d row(s) from the current overlays; %d completed interview(s) changed settled-state (these would otherwise have stayed a pipeline run behind on the dashboard: %d newly excluded from Achieved, %d newly restored to it). Duplicate flag re-derived against this run's settled deletions: net %d row(s) cleared of is_duplicate (first live claimant of a slot; Achieved unaffected).\n",
     n_changed, nrow(subs), sum(moves_achieved),
     sum(moves_achieved & new_status %in% settled),
-    sum(moves_achieved & old_status %in% settled & !(new_status %in% settled))
+    sum(moves_achieved & old_status %in% settled & !(new_status %in% settled)),
+    n_dup_flipped
   ))
   invisible(list(changed = n_changed, moves_achieved = sum(moves_achieved)))
 }

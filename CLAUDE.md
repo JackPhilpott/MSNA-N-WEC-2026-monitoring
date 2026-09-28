@@ -39,32 +39,38 @@ and, in detail, on the rebuild.
   convention) plus this repo's own derived data (`real_submissions.csv`,
   the two deletion overlays).
 
-## Two Achieved bases — by design, expected to disagree
+## Achieved — one rule, read two ways (was "Two Achieved bases" until 2026-09-11)
 
-- **Dashboard/provisional** (`is_achieved()`, `dashboard_app/global.R`):
-  `interview_outcome == "completed" & !is_duplicate & !is.na(matched_survey_id)
-  & is.na(deletion_status)` — excludes ANY flagged issue, ANY status
-  (pending/sent/confirmed/contested all exclude equally, not just settled
-  ones) — pessimistic default, incentivizes a partner to respond before
-  their number visibly drops. CORRECTED 2026-09-11: an earlier version of
-  this section wrongly said Achieved only excludes settled
-  (confirmed/contested) items — that is NOT what `is_achieved()` does; a
-  merely-pending flag excludes here too. Reads `deletion_status`, not
-  `flagged_deletion_reason` (the latter can be legitimately blank on
-  pre-2026-09-06-schema tracker rows even when `deletion_status` is
-  populated — using the wrong field here was a real bug, fixed 2026-09-09).
-  "Pending Deletion" is a SEPARATE, third bucket sitting alongside Achieved,
-  not something Achieved itself absorbs — see "Collected/Achieved/Confirmed
-  Deletion/Pending Deletion" below.
-- **Resampling/confirmed-only** (`05_build_accessibility_impact_workbook.py`,
-  1_sampling): excludes only settled (`confirmed`/upheld-`contested`)
-  deletions — conservative, avoids drawing replacements for something that
-  might still be recovered.
-  Reads `CONFIRMED_DELETIONS_OVERLAY.csv`.
+- **Dashboard** (`is_achieved()`, `dashboard_app/global.R`):
+  `interview_outcome == "completed" & !is_confirmed_deletion(df)` — excludes
+  ONLY settled deletions (`deletion_status` confirmed/contested). A pending/
+  sent/rejected flag of any kind — including a raw `is_duplicate` and an
+  unmatched row — still COUNTS as Achieved. Policy change 2026-09-11 (Jack,
+  donor-facing): limited time/money, most pending items expected to resolve
+  favourably, so better to risk asking a field team to go back for a specific
+  interview later than have them oversample now against a pessimistic count.
+  This fully reversed the earlier "pessimistic dashboard" rule (exclude any
+  flagged issue in any status); an earlier version of this section, edited the
+  same day, still described that pessimistic rule as current and went stale
+  within hours - corrected 2026-09-25 to match the code. `is_duplicate` and
+  `matched_survey_id` are no longer inputs to Achieved at all. Reads
+  `deletion_status`, not `flagged_deletion_reason` (the latter can be
+  legitimately blank on pre-2026-09-06-schema tracker rows even when
+  `deletion_status` is populated — using the wrong field here was a real bug,
+  fixed 2026-09-09); `refresh_deletion_columns.R` keeps that copy current with
+  each run's overlays. "Pending Deletion" is a separate, informational subset
+  OF Achieved (Achieved interviews still carrying an unresolved tracker flag),
+  not a deduction from it — see "Collected/Achieved/Confirmed Deletion/Pending
+  Deletion" below.
+- **Resampling** (`05_build_accessibility_impact_workbook.py`, `frame_status.R`,
+  1_sampling): the same rule — excludes only settled (`confirmed`/upheld-
+  `contested`) deletions; reads `CONFIRMED_DELETIONS_OVERLAY.csv`.
 
 Both overlays are built by `cleaning/real/build_confirmed_deletions_overlay.R`
-from the tracker, same source, two different filters. See that file's own
-header for the full reasoning.
+from the tracker: CONFIRMED (settled only) is what Achieved excludes on both
+sides; FLAGGED (every tracker row, pending included) feeds the `deletion_status`
+column, Pending Deletion and the Flagged displays, not Achieved. See that
+file's own header for the full reasoning.
 
 ## Collected/Achieved/Confirmed Deletion/Pending Deletion — reconciliation model (2026-09-09/10 redesign)
 
@@ -82,8 +88,8 @@ this identity — see its own bullet below.)
 
 - **Collected** (`collected_n`): every submission matched to the
   stratum/cluster, regardless of quality flags.
-- **Achieved**: `is_achieved()` — the NARROW, pessimistic count (excludes any
-  flag at all) — see "Two Achieved bases" above. UNCAPPED as of 2026-09-20
+- **Achieved**: `is_achieved()` — completed and not a settled deletion (pending
+  flags still count) — see "Achieved — one rule, read two ways" above. UNCAPPED as of 2026-09-20
   (Jack's decision, informed by discussion with donors) — every oversampled
   interview now counts in full; until then this was additionally capped at
   each cluster's own target before being summed to stratum/LGA/national
