@@ -855,18 +855,39 @@ accessibility_lga_ward_counts <- read_csv(
 # LGAs) just shows that one; omitted (not shown as "0%") for a pop type the
 # LGA never had a stratum for at all, same sparse non_idp/idp coverage
 # strata_frame itself has.
+# FIX 2026-09-29: found live (crashed the whole deploy - "non-numeric argument to
+# round()"). 1_sampling's accessibility_strata_level.csv can legitimately carry the
+# literal text "N/A" in these three columns for a stratum whose accessible population
+# genuinely isn't computable right now (e.g. mid-investigation on Resampling's side -
+# 22 of 327 strata carried it this run). read_csv() with no col_types types the WHOLE
+# column as character the moment even one row has "N/A", which crashed round()/
+# formatC() for every row, not just the affected 22. Coerce to numeric explicitly
+# (NA for anything non-numeric, "N/A" text included) right after reading, and fall
+# back to a plain "N/A" label instead of a numeric one for a stratum affected this way
+# - matches this file's own coalesce(..., "n/a") fallback a few lines below for the
+# no-accessibility-data-at-all case, same idea, just at the per-stratum-within-label
+# grain rather than the whole LGA.
 accessibility_pop_remaining_label <- read_csv(
   file.path(INPUT_DIR, "accessibility/accessibility_strata_level.csv"),
   show_col_types = FALSE
 ) %>%
+  mutate(
+    `% of population remaining` = suppressWarnings(as.numeric(`% of population remaining`)),
+    `Updated population within accessible area` = suppressWarnings(as.numeric(`Updated population within accessible area`)),
+    `Total population (design, n_pop)` = suppressWarnings(as.numeric(`Total population (design, n_pop)`))
+  ) %>%
   left_join(strata_frame %>% distinct(strata_id, adm2_pcode), by = c("Strata ID" = "strata_id")) %>%
   filter(!is.na(adm2_pcode)) %>%
   transmute(
     adm2_pcode,
-    label = paste0(
-      `Pop type`, ": ", round(`% of population remaining`), "% (",
-      formatC(round(`Updated population within accessible area`), big.mark = ",", format = "d"), " of ",
-      formatC(round(`Total population (design, n_pop)`), big.mark = ",", format = "d"), ")"
+    label = ifelse(
+      is.na(`% of population remaining`) | is.na(`Updated population within accessible area`) | is.na(`Total population (design, n_pop)`),
+      paste0(`Pop type`, ": N/A"),
+      paste0(
+        `Pop type`, ": ", round(`% of population remaining`), "% (",
+        formatC(round(`Updated population within accessible area`), big.mark = ",", format = "d"), " of ",
+        formatC(round(`Total population (design, n_pop)`), big.mark = ",", format = "d"), ")"
+      )
     )
   ) %>%
   group_by(adm2_pcode) %>%

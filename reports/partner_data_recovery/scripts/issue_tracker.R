@@ -85,6 +85,27 @@
 #                    set when a flagged issue is instead resolved as
 #                    recovered (rejoins Achieved) rather than confirmed
 #                    deleted. NA for anything not recovered.
+#   fallback_status   - (added 2026-09-28, recovery-workbook closeout system -
+#                    see fallback_resolvers.R) applied_candidate |
+#                    no_candidate_available | no_fallback_defined. Deliberately
+#                    NOT one of status's own
+#                    values and NEVER written by apply_resolution() - a
+#                    fallback resolution is explicitly NOT a real partner/
+#                    internal_team confirmation (Jack's rule), so it lives in
+#                    its own column rather than overloading `status` /
+#                    TERMINAL_STATUSES. NA until the fallback sweep has run
+#                    for this issue_id. A late real partner response still
+#                    wins regardless of this column's value - nothing here
+#                    blocks or is read by apply_resolution()/register_issues().
+#   fallback_mechanism - which resolver in FALLBACK_RESOLVERS produced this
+#                    (e.g. "iom_dtm_listing", "gis_nearest_household"). NA
+#                    unless fallback_status is set.
+#   fallback_resolution - free text, same spirit as `resolution` but for the
+#                    fallback's own substituted value/reasoning (e.g. which
+#                    DTM site/HH count, or which replacement household point
+#                    and its distance). NA unless fallback_status is set.
+#   fallback_applied_date - date fallback_resolvers.R's apply_fallback_sweep()
+#                    wrote this row. NA until then.
 #   notes
 #
 # Status lifecycle: pending -> sent -> (confirmed | rejected | contested).
@@ -137,7 +158,8 @@ TRACKER_PATH <- local({
 TRACKER_COLUMNS <- c(
   "issue_id", "issue_type", "deletion_reason", "org_id", "cluster_id", "strata_id", "uuid", "listing_number",
   "status", "detected_date", "first_batch_date", "last_batch_date", "rounds_outstanding",
-  "resolution", "resolution_date", "confirmed_by", "recovery_type", "notes"
+  "resolution", "resolution_date", "confirmed_by", "recovery_type",
+  "fallback_status", "fallback_mechanism", "fallback_resolution", "fallback_applied_date", "notes"
 )
 
 # confirmed_deletion issues that are validated methodology thresholds, not

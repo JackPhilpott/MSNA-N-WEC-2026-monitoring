@@ -25,11 +25,21 @@ TRACKER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "recover
 COLUMNS = [
     "issue_id", "issue_type", "deletion_reason", "org_id", "cluster_id", "strata_id", "uuid", "listing_number",
     "status", "detected_date", "first_batch_date", "last_batch_date", "rounds_outstanding",
-    "resolution", "resolution_date", "confirmed_by", "recovery_type", "notes",
+    "resolution", "resolution_date", "confirmed_by", "recovery_type",
+    "fallback_status", "fallback_mechanism", "fallback_resolution", "fallback_applied_date", "notes",
 ]
 # Schema note (2026-09-06): deletion_reason/rounds_outstanding/confirmed_by/
 # recovery_type added - see issue_tracker.R's header for the full schema
 # doc, kept in sync between both files.
+# Schema note (2026-09-28): fallback_status/fallback_mechanism/fallback_
+# resolution/fallback_applied_date added (recovery-workbook closeout system,
+# fallback_resolvers.R - R-only, this file never writes these columns
+# itself) - added here ONLY so write_tracker()'s csv.DictWriter(fieldnames=
+# COLUMNS) doesn't silently DROP them from the file on the next Python-side
+# write (e.g. verify_data_recovery_response.py's real-response ingestion,
+# which always runs before the fallback sweep and must not destroy a prior
+# day's already-applied fallback data). read_tracker()'s existing backfill
+# loop already covers these with no further change needed.
 
 # NAMING CAUTION (added 2026-09-11, after this exact conflation produced a
 # real bug in 1_sampling's partner-package scripts, which filtered
