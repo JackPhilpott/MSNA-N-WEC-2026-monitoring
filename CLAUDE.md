@@ -184,6 +184,19 @@ that always runs against the CURRENT full dataset, never a day-snapshot.
   flag, NOT a literal cutoff), run independently against 2_monitoring's own
   reads of `audit.zip` / the raw anonymised export + the DO's kobo tool
   XLSForm (all read-only resources inside `cleaning/MSNA_Data_Cleaning/`).
+- **The duration rule (Jack, 2026-10-02):** an interview is removed for short
+  duration only when its audit-trail duration, ROUNDED TO ONE DECIMAL PLACE of
+  a minute, is below 20.0 — i.e. when it is under 19.95 minutes (1,197,000 ms).
+  This is the rounding both the DO's own check and `run_independent_duration_
+  check()` already apply (`round(ms / 60000, 1) < 20`). Any removal from any
+  process that doesn't meet it is reinstated: on 2026-10-02 four interviews of
+  19.96–19.99 min (removed by the 30 Aug legacy exclusions list / IMC's 3 Sep
+  contested batch, which compared the unrounded value) and one MdM interview of
+  24.4 min (an 8 Sep DO flag the full audit trail doesn't support) were
+  reinstated — `_working_files/scripts/round1_reinstate_duration_rounding.py`,
+  which also moved the three later, different households that had since taken
+  three of those interviews' points (Q3-C). `round1_build_deletion_log.py`
+  refuses to write a duration removal at or above 19.95 min.
 - `duplicate_point` is independently rebuilt for its KEY-BASED half only
   (reuses `real_submissions.csv`'s own `is_duplicate`/`dup_key` — the same
   identifier logic as the DO's `check_duplicate_cluster_visits()` check #1,

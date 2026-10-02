@@ -223,6 +223,12 @@ source("generate_partner_digest.R")
 source("scripts/shared/bundle_dashboard_mirrors.R")
 bundle_dashboard_mirrors(".")
 
+# 2026-10-02 (Jack: "agreed on the allowlist file"): the last word before anything leaves this machine - stops the
+# deploy unless every file rsconnect would upload is on scripts/shared/dashboard_bundle_allowlist.txt and every
+# bundled data file matches its source. bundle_dashboard_mirrors() already ran it once; this re-checks the final
+# state, so nothing that lands in dashboard_app/ in between can ship unnoticed.
+check_dashboard_bundle(".")
+
 deployApp(
   appDir = "dashboard_app",
   appName = "dashboard_app",

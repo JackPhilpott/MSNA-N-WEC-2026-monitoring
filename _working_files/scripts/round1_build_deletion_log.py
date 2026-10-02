@@ -53,6 +53,7 @@ ORG = {"nrc": "NRC", "coopi": "COOPI", "imc": "IMC", "plan": "PLAN", "malteser":
        "acf": "ACF", "crs": "CRS", "care": "CARE", "si": "SI", "lhi": "LHI", "intersos": "INTERSOS", "zoa": "ZOA",
        "street_child": "Street Child"}
 CLOSEOUT = f"MSNA team - Round 1 closeout ({TODAY})"
+DURATION_RULE_MS = 1_197_000  # 19.95 minutes: the lowest audit-trail duration that rounds to 20.0 at one decimal place
 
 
 def miss(x):
@@ -126,6 +127,8 @@ def basis_for_kept(t):
         return "Round 1 closeout rule Q4 (Jack): household number checked against the real listing"
     if mech == "q6_date_exception" or t["deletion_reason"] == "date_outlier":
         return "Round 1 closeout rule Q6 (Jack): wrong device date -> kept as an exception"
+    if mech == "duration_rule_one_decimal":
+        return "Duration rule (Jack, 2 Oct 2026): removed only when under 20.0 minutes at one decimal place (under 19.95 minutes)"
     if partner_answer(t):
         return "Partner response (recovery workbook)"
     if "live claimant" in (t["resolution"] or "").lower() or "live_claimant" in (t["resolution"] or ""):
@@ -139,8 +142,14 @@ def main():
     post = {r["submission_uuid"]: r for r in csv.DictReader(open(REPO / "data/real_submissions.csv", encoding="utf-8-sig"))}
     trk = list(csv.DictReader(open(REPO / "reports/partner_data_recovery/scripts/recovery_issue_tracker.csv", encoding="utf-8-sig")))
     by_id = {t["issue_id"]: t for t in trk}
-    removed = {r["uuid"] for r in csv.DictReader(open(REPO / "data/CONFIRMED_DELETIONS_OVERLAY.csv", encoding="utf-8-sig"))
+    # settled removals straight from the tracker (exactly build_confirmed_deletions_overlay.R's rule), cross-checked
+    # against the overlay file itself so a stale overlay can never slip a different set into the log
+    removed = {t["uuid"] for t in trk if t["issue_type"] == "confirmed_deletion" and t["status"] in ("confirmed", "contested")
+               and miss(t["recovery_type"])} & members
+    overlay = {r["uuid"] for r in csv.DictReader(open(REPO / "data/CONFIRMED_DELETIONS_OVERLAY.csv", encoding="utf-8-sig"))
                if r["status"] in ("confirmed", "contested")} & members
+    if overlay != removed:
+        raise SystemExit(f"CONFIRMED overlay is stale vs the tracker ({len(overlay)} vs {len(removed)}) - rebuild it first")
     audit = {r["uuid"]: float(r["duration_audit_sum_all_ms"])
              for r in csv.DictReader(open(REPO / "cleaning/real/audit_duration_cache.csv", encoding="utf-8-sig"))}
     nrc_contested = {r["key"] for r in csv.DictReader(open(CL / "round1_returned_workbooks_classified.csv", encoding="utf-8"))
@@ -206,7 +215,9 @@ def main():
         t, r = cd_row[u], pre.get(u, {})
         reason, res, mech = t["deletion_reason"], t["resolution"] or "", t["fallback_mechanism"] or ""
         ms = audit.get(u)
-        short = ms is not None and ms < 1_200_000
+        # THE DURATION RULE (Jack, 2 Oct 2026): removed only when the audit-trail duration, rounded to one decimal place
+        # of a minute, is below 20.0 - i.e. under 19.95 minutes (1,197,000 ms), the master log's own rounding
+        short = ms is not None and ms < DURATION_RULE_MS
         note, reminder = "", ""
         if reason == "no_consent":
             cid, issue, q, old = "no_consent", "Respondent did not consent", "consent", "no"
@@ -233,22 +244,8 @@ def main():
                 note = (" It had also been flagged for sharing its sample point with another interview; the removal rests "
                         "on its duration alone.")
             if not short:
-                # the one earlier flag the audit trail no longer supports - kept as removed pending Jack's decision
-                issue = "Interview flagged under 20 minutes (not confirmed by the audit trail)"
-                feedback = (f"Flagged under 20 minutes on {t['detected_date']} by the data officer's duration check at the "
-                            f"time; the MSNA team's audit-trail recomputation now gives {old} minutes.")
-                fo = (f"Survey removed on {t['resolution_date']} (flagged under 20 minutes; {org(t['org_id'])} did not "
-                      f"contest). Its audit-trail duration is now {old} minutes, above the threshold - see review_reminder.")
-                note = ""
-                reminder = (f"Audit-trail duration is {old} minutes, above the 20-minute threshold; this removal rests on an "
-                            f"earlier flag and is likely to be reversed - pending the MSNA team's decision.")
-                basis = "Earlier automatic flag (data officer's duration check), not contested by the partner"
-            elif float(fmt_min(ms)) < 20 <= round(ms / 60000, 1):
-                # strictly under 20, but 20.0 at 1 decimal: the master log and the MSNA team's own current automatic
-                # check (both round first) would keep it - it was removed by an earlier process
-                reminder = (f"{old} minutes by the audit trail: under 20 strictly, but 20.0 rounded to 1 decimal, so the master "
-                            f"log and the current automatic check would keep it; removed by an earlier process - pending the "
-                            f"MSNA team's decision.")
+                raise SystemExit(f"{u}: a duration removal at or above 19.95 minutes breaks the duration rule - reinstate it first "
+                                 f"(round1_reinstate_duration_rounding.py)")
         elif mech == "q3_same_household":
             cid, issue = "duplicate_point_same_household", "Same household interviewed twice"
             q, old = claim_field(r)
@@ -351,6 +348,14 @@ def main():
             fo = "No action. " + strip_prefix(res) + " The responses are retained."
             if u in do_dates:
                 in_do = "yes - the master log corrects today/start/end for this interview (device_date_error)"
+        elif reason == "duration_under_20":
+            # reinstated under the duration rule (Jack, 2 Oct 2026) - the master log keeps these too (duration_low)
+            q, old = "duration_audit_sum_all_minutes", (f"{audit[u] / 60000:.2f}" if u in audit else "")
+            issue = "Interview flagged under 20 minutes - not short under the duration rule"
+            feedback = f"Audit-trail duration {old} minutes (time actually spent on the questions)."
+            fo = "No action - the interview is retained. " + strip_prefix(res)
+            if u in do_dur:
+                in_do = f"yes - the master log keeps it too (duration_low, {do_dur[u]} minutes)"
         elif reason == "fcs_zero":
             issue, feedback = "Food consumption score of zero", "Every food group recorded as eaten on zero days."
             fo = ("No action - no longer a removal reason (Jack, 10 Sep 2026): the interview is retained; the FCS module "
@@ -476,8 +481,10 @@ def change_row(u, var, old, new, c, ids, ident, by_id, do_changed, do_removed):
         in_do = f"CONFLICT - the master log sets {var} to {his[0]}; this log's value supersedes it"
     else:
         in_do = "no"
-    src = {"closeout": CLOSEOUT, "unique": CLOSEOUT, "step2": "Partner recovery workbook (Round 1)",
-           "earlier": "Partner recovery workbook (earlier round)", "earlier+closeout": f"Partner recovery workbook (earlier round); {CLOSEOUT}"}
+    src_part = {"closeout": CLOSEOUT, "unique": CLOSEOUT, "step2": "Partner recovery workbook (Round 1)",
+                "earlier": "Partner recovery workbook (earlier round)",
+                "reinstate": f"MSNA team - duration-rule reinstatement of the first interview at this identifier ({TODAY})"}
+    src = {c["sources"]: "; ".join(dict.fromkeys(src_part.get(p, p) for p in c["sources"].split("+")))}
     return dict(ident(u), check_binding=f"{var} ~/~ {u}", check_id=cid, issue=issue, label=var, question=var,
                 old_value=eff_old, change_type="change_response", new_value=new, Data_Feedback=feedback,
                 FO_Comments=f"Changed from {eff_old or 'blank'} to {new}. {c['justification']}",
@@ -537,11 +544,12 @@ def write(out, sheet_rows):
         ["decided_by", "partner = confirmed by the partner in a recovery workbook; internal_team = decided by the MSNA team under the stated rule."],
         ["tracker_issue_id", "The row's id(s) in the MSNA team's recovery issue tracker, for tracing its full history."],
         ["review_reminder", "Filled where the MSNA team asks for a check before the interview is used: GPS-placed interviews (population group never recorded), interviews kept 500 m-2 km from the nearest drawn point, partner answers the device GPS does not support, household numbers outside the latest listing, and one removal the audit trail no longer supports."],
-        ["already_in_do_master_log", "yes = the master log already does the same: don't apply it twice. follows = the master log first recovers this variable (auto_recovery_sampling_fields), and this row applies after it - old_value is the recovered value. CONFLICT = the master log does something different and this log supersedes it (the interviews the master log removes for sampling_assignment_missing that this log keeps, placed by device GPS; four removals the master log keeps as duration_low - three of 19.98-19.99 minutes that round to 20.0 there, and one flagged for review)."],
+        ["already_in_do_master_log", "yes = the master log already does the same: don't apply it twice. follows = the master log first recovers this variable (auto_recovery_sampling_fields), and this row applies after it - old_value is the recovered value. CONFLICT = the master log does something different and this log supersedes it (the interviews the master log removes for sampling_assignment_missing that this log keeps, placed by device GPS; and one removal, for a reason other than duration, of an interview the master log keeps as duration_low)."],
         ["", ""],
         ["Suffixes _b, _c ...", "A second (third ...) DIFFERENT household recorded at one drawn sample point or listed household number (household size or head's sex/age differ from the first): both are kept, and the later one's identifier is suffixed so key-based duplicate checks don't re-flag it. Cluster and stratum are unchanged."],
         ["Integer questions", "idp_hh_number_from_listing and idp_walk_position are integer questions in the tool: a suffix makes the value text. gps_cluster_checks.R builds its duplicate key with dplyr::coalesce() of these two fields, which needs both columns to be the same type - convert both to character before running it."],
-        ["Durations", "Removal durations are audit-trail minutes (cleaningtools' create_duration_from_audit_sum_all, as the master log uses), recomputed by the MSNA team on the full audit export. Three interviews of 19.9x minutes are written with 2 decimals so they don't read as 20.0."],
+        ["Duration rule", "An interview is removed for short duration only when its audit-trail duration (cleaningtools' create_duration_from_audit_sum_all - the time actually spent on the questions), rounded to one decimal place of a minute, is below 20.0 minutes - that is, when it is under 19.95 minutes. This is the same rounding the master log's own duration check uses (decided by the MSNA team lead, 2 Oct 2026). Durations were recomputed by the MSNA team on the full audit export."],
+        ["Reinstated interviews", "Five interviews removed earlier by other processes do not meet this rule and are reinstated (no_action rows, check_id duration_under_20): four of 19.96-19.99 minutes (20.0 at one decimal place) and one of 24.4 minutes whose earlier flag the full audit trail does not support. Three of them share their sample point / listed household with a later interview of a different household (a re-visit after the removal); the earlier upload keeps it and the later interview is reassigned or suffixed - change_response rows."],
         ["GPS distances", "dist_btn_sample_collected is recomputed (device GPS to the new point, the form's own formula) only where an interview's point actually moved and its device GPS was in the raw export of 29 Sep."],
         ["", ""],
         ["Master cleaning log readme (for reference):", ""],

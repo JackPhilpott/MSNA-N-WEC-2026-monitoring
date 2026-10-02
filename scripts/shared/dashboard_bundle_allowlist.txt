@@ -1,0 +1,38 @@
+# Files the deployed dashboard may contain - one regular expression per line, matched against the path relative to
+# dashboard_app/ (the exact paths rsconnect uploads). bundle_dashboard_mirrors() copies ONLY data/ and input_data/
+# files that match, and check_dashboard_bundle() stops a deploy if anything rsconnect would upload does not match.
+#
+# Agreed with Jack 2 Oct 2026 after bundle 12636193 shipped a raw household-GPS extract that happened to sit in data/.
+# To ship a new file: add it here, deliberately, in the same commit as the code that reads it. Never add a raw,
+# household-level or working extract - those belong outside data/ and input_data/ altogether.
+
+# ---- app code (rsconnect's own ignore rules already drop .Rhistory, rsconnect/ etc.) ----
+^app\.R$
+^global\.R$
+^R/[^/]+\.R$
+^tests/[^/]+\.R$
+
+# ---- data/ : the submissions the app shows ----
+^data/real_submissions\.csv$
+^data/real_meta\.rds$
+^data/TARGET_REVISION_LOG\.csv$
+
+# ---- input_data/accessibility ----
+^input_data/accessibility/accessibility_strata_level\.csv$
+^input_data/accessibility/accessible_area_lga_ward_portions_repaired\.gpkg$
+^input_data/accessibility/master_accessibility_status_(lga|ward)_level\.csv$
+
+# ---- input_data/boundaries (a shapefile needs its sidecar files) ----
+^input_data/boundaries/nga_admin[012]_em\.(shp|shx|dbf|prj|cpg)$
+^input_data/boundaries/nga_wards_grid3\.gpkg$
+^input_data/boundaries/psu/psu_(hexagons_non_idp|sites_idp)\.gpkg$
+
+# ---- input_data/partner_coverage ----
+^input_data/partner_coverage/(coverage_state_by_lga|excluded_lga_prior_partners|excluded_lgas|partner_lga_assignment|partner_registry)\.csv$
+
+# ---- input_data/sampling_frame: the FULL frames (latest version only - the bundler drops older versions) ----
+^input_data/sampling_frame/NGA_MSNA_2026_(stage2|strata_level)_sampling_frame_v[0-9]+_FULL\.csv$
+^input_data/sampling_frame/_frame_version\.txt$
+
+# ---- input_data/round1: the Round 1 representativity toggle (read only when its flag is on) ----
+^input_data/round1/collection_period_access\.csv$

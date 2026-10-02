@@ -44,7 +44,7 @@ STEP2_SNAPSHOT = LOG_DIR / "2026-10-02_001323_round1_partner_responses_BEFORE.cs
 OUT_CSV = CL / "round1_final_corrections.csv"
 DATA_OUT = REPO / "data/ROUND1_CORRECTIONS.csv"
 SUFFIX = re.compile(r"_[b-z]$")
-ORDER = {"earlier": 1, "step2": 2, "closeout": 3, "unique": 4}
+ORDER = {"earlier": 1, "step2": 2, "closeout": 3, "unique": 4, "reinstate": 5}
 ORG = {"nrc": "NRC", "coopi": "COOPI", "imc": "IMC", "plan": "PLAN", "malteser": "Malteser", "fact": "FACT", "mdm": "MdM",
        "acf": "ACF", "crs": "CRS", "care": "CARE", "si": "SI", "lhi": "LHI", "intersos": "INTERSOS", "zoa": "ZOA",
        "street_child": "Street Child", "iom": "IOM"}
@@ -114,6 +114,15 @@ def main():
         steps[(u, c["field"])].append(dict(src=src, seq=i, old=norm(c["old_value"]), new=norm(c["new_value"]), org_id=c["org_id"],
                                            issue_ids=[c["issue_id"]] if c["issue_id"] else [], decision=d, text=text,
                                            reminder=c["reminder"], decided_by=decided))
+    # 5th source (2 Oct, after the closeout): five duration removals reinstated under the defined duration rule (Jack);
+    # where a later, different household had since taken a reinstated interview's point/number, Q3-C moved the later
+    # one - see round1_reinstate_duration_rounding.py. Chained after everything above.
+    reinstate = CL / "round1_reinstatement_corrections.csv"
+    if reinstate.exists():
+        for i, c in enumerate(csv.DictReader(open(reinstate, encoding="utf-8"))):
+            steps[(c["uuid"], c["field"])].append(dict(src="reinstate", seq=i, old=norm(c["old_value"]), new=norm(c["new_value"]),
+                                                       org_id=c["org_id"], issue_ids=[], decision=c["decision"],
+                                                       text=c["justification"], reminder="", decided_by="internal_team"))
 
     final, dropped = {}, []
     for key, ss in steps.items():

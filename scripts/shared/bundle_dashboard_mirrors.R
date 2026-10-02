@@ -21,49 +21,100 @@
 # call it, not duplicated.
 #
 # 2026-09-09 (Jack, live crash): this used to copy input_data/ wholesale,
-# including every `_archive_*` snapshot folder that the various sync
-# scripts leave behind under input_data/sampling_frame/ and
-# input_data/accessibility/ (their own "archive stale mirror before
-# overwrite" convention, correct for the source repo, but never meant to
-# be shipped). global.R's loaders are non-recursive/specific-pattern and
-# never read these - they're pure audit trail. Nothing excluded them from
-# the deploy bundle, which grew to 618MB (mostly archives, ~525MB) after
-# the 2026-09-08 v7 propagation added its own 135MB archive on top -
-# shinyapps.io's worker failed to start under that bundle weight, 503 for
-# everyone. Fixed once to skip top-level "_archive*" entries only - wrong,
-# the archive folders actually live one level down (input_data/sampling_frame/
-# _archive_.../, input_data/accessibility/_archive_.../), so that first fix
-# still shipped 646MB on the very next deploy. Now walks and copies files
-# individually, skipping any path component starting with "_archive" at any
-# depth.
+# including every `_archive_*` snapshot folder - a 618MB bundle shinyapps.io's
+# worker couldn't start under. Archive folders at any depth are still skipped.
+#
+# 2026-10-02 (Jack, "agreed on the allowlist file"): copies ONLY the files the
+# app reads, listed in scripts/shared/dashboard_bundle_allowlist.txt - no longer
+# everything in data/ and input_data/. Bundle 12636193 shipped a raw
+# household-GPS extract that happened to sit in data/; with an allowlist a new
+# file only ships once it is deliberately added there. Also fixed: the old copy
+# never overwrote (file.copy's default) and its unlink() could leave files
+# behind (an undeletable empty _archive_2026-08-31 folder blocks removing
+# dashboard_app/data itself), so a stale file could in principle survive into
+# a bundle. Now every file is deleted individually, every copy overwrites, and
+# check_dashboard_bundle() then proves the result: everything rsconnect would
+# upload is allowlisted, and every bundled data file is byte-identical to its
+# source. deploy_dashboard.R runs that check again right before deployApp().
 # ==============================================================================
+DASHBOARD_BUNDLE_ALLOWLIST <- "scripts/shared/dashboard_bundle_allowlist.txt"
+.ARCHIVE_PATH <- "(^|/)_archive[^/]*(/|$)"
+
+read_bundle_allowlist <- function(path = DASHBOARD_BUNDLE_ALLOWLIST) {
+  x <- trimws(readLines(path, warn = FALSE))
+  x[nzchar(x) & !startsWith(x, "#")]
+}
+
+bundle_path_allowed <- function(paths, allow = read_bundle_allowlist()) {
+  vapply(paths, function(p) any(vapply(allow, function(re) grepl(re, p), logical(1))), logical(1), USE.NAMES = FALSE)
+}
+
+# Keep only the highest frame version of each family (e.g. ..._stage2_sampling_frame_v14_FULL.csv) - the app reads
+# the latest one only (latest_frame_file()), so older versions would just be dead weight in the bundle.
+.latest_frame_versions_only <- function(paths) {
+  m <- regmatches(paths, regexec("^(.*_sampling_frame_v)([0-9]+)(_[A-Z]+\\.csv)$", paths))
+  is_frame <- lengths(m) == 4
+  if (!any(is_frame)) return(paths)
+  fam <- vapply(m[is_frame], function(x) paste0(x[2], "#", x[4]), character(1))
+  ver <- vapply(m[is_frame], function(x) as.integer(x[3]), integer(1))
+  keep_frame <- ver == ave(ver, fam, FUN = max)
+  c(paths[!is_frame], paths[is_frame][keep_frame])
+}
+
 bundle_dashboard_mirrors <- function(project_dir = ".") {
   old_wd <- getwd()
   setwd(project_dir)
   on.exit(setwd(old_wd))
+  allow <- read_bundle_allowlist()
 
   for (d in c("dashboard_app/data", "dashboard_app/input_data")) {
-    if (dir.exists(d)) unlink(d, recursive = TRUE)
-  }
-  dir.create("dashboard_app/data")
-  dir.create("dashboard_app/input_data")
-
-  copy_excluding_archives <- function(src_dir, dest_dir) {
-    all_files <- list.files(src_dir, recursive = TRUE, full.names = FALSE)
-    keep <- all_files[!grepl("(^|/)_archive[^/]*(/|$)", all_files)]
-    for (f in keep) {
-      dest_file <- file.path(dest_dir, f)
-      dir.create(dirname(dest_file), recursive = TRUE, showWarnings = FALSE)
-      file.copy(file.path(src_dir, f), dest_file)
+    if (dir.exists(d)) {
+      unlink(list.files(d, recursive = TRUE, full.names = TRUE, all.files = TRUE, no.. = TRUE), force = TRUE)
+      unlink(d, recursive = TRUE, force = TRUE)
     }
+    dir.create(d, showWarnings = FALSE, recursive = TRUE)
   }
-  copy_excluding_archives("data", "dashboard_app/data")
-  copy_excluding_archives("input_data", "dashboard_app/input_data")
 
-  data_mb <- sum(file.info(list.files("dashboard_app/data", recursive = TRUE, full.names = TRUE))$size, na.rm = TRUE) %/% 1e6
-  input_mb <- sum(file.info(list.files("dashboard_app/input_data", recursive = TRUE, full.names = TRUE))$size, na.rm = TRUE) %/% 1e6
-  cat("bundle_dashboard_mirrors(): bundled data/ (", data_mb, "MB) and input_data/ (", input_mb, "MB) into dashboard_app/\n", sep = "")
-  invisible(TRUE)
+  src <- c(file.path("data", list.files("data", recursive = TRUE)),
+           file.path("input_data", list.files("input_data", recursive = TRUE)))
+  src <- src[!grepl(.ARCHIVE_PATH, src)]
+  keep <- .latest_frame_versions_only(src[bundle_path_allowed(src, allow)])
+  for (f in keep) {
+    dest <- file.path("dashboard_app", f)
+    dir.create(dirname(dest), recursive = TRUE, showWarnings = FALSE)
+    if (!file.copy(f, dest, overwrite = TRUE)) stop("bundle_dashboard_mirrors(): could not copy ", f)
+  }
+  skipped <- setdiff(src, keep)
+
+  check_dashboard_bundle(".", allow = allow)
+  mb <- sum(file.info(file.path("dashboard_app", keep))$size, na.rm = TRUE) %/% 1e6
+  cat(sprintf("bundle_dashboard_mirrors(): %d allowlisted data file(s) bundled into dashboard_app/ (%d MB); %d file(s) in data/ and input_data/ not on the allowlist, left out.\n",
+              length(keep), mb, length(skipped)))
+  invisible(list(bundled = keep, skipped = skipped))
+}
+
+# The pre-deploy check: everything rsconnect would upload from dashboard_app/ must be on the allowlist, and every
+# bundled data file must be byte-identical to its source in data/ or input_data/. Stops on any failure.
+check_dashboard_bundle <- function(project_dir = ".", allow = NULL) {
+  old_wd <- getwd()
+  setwd(project_dir)
+  on.exit(setwd(old_wd))
+  if (is.null(allow)) allow <- read_bundle_allowlist()
+  upload <- rsconnect::listDeploymentFiles("dashboard_app")
+  unexpected <- upload[!bundle_path_allowed(upload, allow)]
+  if (length(unexpected) > 0) {
+    stop("check_dashboard_bundle(): ", length(unexpected), " file(s) in dashboard_app/ are not on the allowlist (",
+         DASHBOARD_BUNDLE_ALLOWLIST, ") - NOT deploying: ", paste(head(unexpected, 20), collapse = ", "))
+  }
+  data_files <- upload[grepl("^(data|input_data)/", upload)]
+  differs <- data_files[unname(tools::md5sum(file.path("dashboard_app", data_files))) != unname(tools::md5sum(data_files))]
+  if (length(differs) > 0) {
+    stop("check_dashboard_bundle(): ", length(differs), " bundled file(s) differ from their source - re-run ",
+         "bundle_dashboard_mirrors(): ", paste(head(differs, 20), collapse = ", "))
+  }
+  cat(sprintf("check_dashboard_bundle(): OK - all %d file(s) rsconnect would upload are allowlisted; %d bundled data file(s) match their source.\n",
+              length(upload), length(data_files)))
+  invisible(upload)
 }
 
 if (sys.nframe() == 0) {
