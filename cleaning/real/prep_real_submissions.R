@@ -503,6 +503,57 @@ main <- main %>%
 
 cat("NG037 tool-bug repairs applied:", sum(main$was_id_repaired), "of", nrow(main), "rows\n")
 
+# ---- 3b. Round 1 closeout corrections (2026-10-02, Jack) -------------------
+# data/ROUND1_CORRECTIONS.csv holds ONE final value per (interview, field) for
+# every correction accepted in the Round 1 recovery closeout: partner answers
+# from the returned recovery workbooks, partner confirmations from earlier
+# rounds that were never applied, and Jack's closeout rules (reassignment to a
+# free household, GPS placement of interviews whose sampling section was never
+# filled, recomputed GPS distance for an interview whose point moved). Built by
+# _working_files/scripts/round1_consolidate_corrections.py, which builds the
+# Round 1 deletion & correction log for the data officer from the very same
+# rows - so the dashboard counts every interview exactly where that log puts
+# it, before he has applied the log to his own dataset. Applying it again once
+# he has changes nothing: every row SETS a final value.
+#
+# A "_b"/"_c" suffix marks a second, distinct household kept at a drawn point
+# or listing number (Jack, Q3: household size/head differ from the first). It
+# stays on the CLAIM fields (non_idp_point_id, idp_hh_number_from_listing,
+# idp_walk_position), so the duplicate key below and live_claims.R keep the two
+# households apart, and is stripped wherever a frame id is needed
+# (matched_survey_id, matched_cluster_id), so every frame join still works.
+# No file = no-op: a checkout without it behaves exactly as before.
+ROUND1_CORRECTIONS_FILE <- "data/ROUND1_CORRECTIONS.csv"
+CLAIM_SUFFIX <- "_[b-z]$"
+r1_corr <- if (file.exists(ROUND1_CORRECTIONS_FILE)) {
+  read_csv(ROUND1_CORRECTIONS_FILE, show_col_types = FALSE, col_types = cols(.default = "c"))
+} else {
+  tibble(submission_uuid = character(), field = character(), new_value = character())
+}
+r1_set <- function(current, rows, uuid) {
+  i <- match(uuid, rows$submission_uuid)
+  out <- as.character(current)
+  out[!is.na(i)] <- rows$new_value[i[!is.na(i)]]
+  out
+}
+r1_field <- function(fld) r1_corr[r1_corr$field == fld, ]
+main <- main %>%
+  mutate(
+    non_idp_point_id_repaired = r1_set(non_idp_point_id_repaired, r1_field("non_idp_point_id"), uuid),
+    idp_hh_number_from_listing = r1_set(idp_hh_number_from_listing, r1_field("idp_hh_number_from_listing"), uuid),
+    idp_walk_position = r1_set(idp_walk_position, r1_field("idp_walk_position"), uuid),
+    sample_pop_type_filter = r1_set(sample_pop_type_filter, r1_field("pop_type"), uuid),
+    # an IDP placement's cluster IS its sample point; a non-IDP cluster follows from its point (3c below)
+    idp_cluster_id_repaired = r1_set(idp_cluster_id_repaired, r1_field("cluster_id") %>% filter(startsWith(new_value, "idp_")), uuid),
+    # as.numeric also fixes a pre-existing bug (found 2 Oct): the column arrives as TEXT, so match_quality's
+    # "> GPS_OUTLIER_THRESHOLD_M" compared strings - 88 m flagged as an outlier ("8" > "5"), 4,913 m not. On the
+    # Round 1 data: 5,933 rows flagged before, 1,439 genuinely over 500 m. Achieved never reads this flag.
+    dist_btn_sample_collected = as.numeric(r1_set(dist_btn_sample_collected, r1_field("dist_btn_sample_collected"), uuid)),
+    r1_corrected = uuid %in% r1_corr$submission_uuid
+  )
+cat("Round 1 closeout corrections applied:", sum(main$r1_corrected), "interview(s),", nrow(r1_corr), "field value(s) from",
+    ROUND1_CORRECTIONS_FILE, "\n")
+
 # resolved sample_point_id / cluster_id / strata_id. IDP has no PRE-ASSIGNED
 # per-household point the way non-IDP does (selection happens live in the
 # field, not from a pre-assigned list — see the sampling methodology notes
@@ -534,12 +585,30 @@ main <- main %>%
     matched_survey_id = case_when(
       sample_pop_type_filter == "idp" & !is.na(idp_household_suffix) ~ paste0(idp_cluster_id_repaired, "_", idp_household_suffix),
       sample_pop_type_filter == "idp" ~ idp_cluster_id_repaired,
-      TRUE ~ non_idp_point_id_repaired
+      TRUE ~ str_remove(non_idp_point_id_repaired, CLAIM_SUFFIX)
     ),
-    matched_cluster_id = if_else(sample_pop_type_filter == "idp", idp_cluster_id_repaired, str_remove(non_idp_point_id_repaired, "_(HH|R)\\d+$")),
+    matched_cluster_id = if_else(sample_pop_type_filter == "idp", idp_cluster_id_repaired,
+                                 str_remove(str_remove(non_idp_point_id_repaired, CLAIM_SUFFIX), "_(HH|R)\\d+$")),
     matched_strata_id = paste0(sample_pop_type_filter, "_", admin2),
     matched_status = if_else(sample_pop_type_filter == "idp", "primary", sample_status_filter)
   )
+
+# ---- 3c. a corrected interview takes its stratum from the frame (a GPS-placed
+# interview can sit at a point across the LGA line from the admin2 it recorded)
+# and, for non-IDP, its status from its new point (_HHnn primary, _Rnn reserve,
+# the frame's own naming - every existing row follows it, checked 2 Oct) -------
+r1_strata <- frame_full_ids %>% filter(!is.na(cluster_id)) %>% distinct(cluster_id, .keep_all = TRUE)
+r1_strata_of <- setNames(r1_strata$strata_id, r1_strata$cluster_id)
+r1_before <- main$matched_strata_id
+main <- main %>%
+  mutate(
+    matched_strata_id = if_else(r1_corrected & !is.na(r1_strata_of[matched_cluster_id]),
+                                unname(r1_strata_of[matched_cluster_id]), matched_strata_id),
+    matched_status = if_else(r1_corrected & sample_pop_type_filter %in% "non_idp" & !is.na(matched_survey_id),
+                             if_else(str_detect(matched_survey_id, "_R\\d+$"), "reserve", "primary"), matched_status)
+  )
+cat("Round 1 corrections: stratum taken from the frame for", sum(main$r1_corrected), "interview(s);",
+    sum(main$matched_strata_id != r1_before, na.rm = TRUE), "differ from <pop_type>_<recorded admin2>\n")
 
 # ---- 4. real duplicate detection (methodology-aware, not distance-based) ---
 # Claimant order = exact upload time, as it always was. ADDED 2026-09-25: a row
@@ -618,10 +687,12 @@ main <- main %>% left_join(gps_lookup, by = "uuid")
 # spatial-duplicate audit above (most rows) or the claimed point_id doesn't
 # exist in the frame.
 main <- main %>%
+  mutate(.claimed_point = str_remove(non_idp_point_id_repaired, CLAIM_SUFFIX)) %>% # a "_b" household sits at its drawn point (3b)
   left_join(
     point_coords %>% rename(claimed_lat = latitude, claimed_lon = longitude),
-    by = c("non_idp_point_id_repaired" = "survey_id")
+    by = c(".claimed_point" = "survey_id")
   ) %>%
+  select(-.claimed_point) %>%
   mutate(
     dist_to_claimed_device_m = if_else(
       sample_pop_type_filter == "idp" | is.na(lat) | is.na(claimed_lat) | is.na(claimed_lon),

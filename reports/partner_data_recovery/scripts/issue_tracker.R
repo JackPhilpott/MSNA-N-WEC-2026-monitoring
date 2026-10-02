@@ -87,7 +87,12 @@
 #                    deleted. NA for anything not recovered.
 #   fallback_status   - (added 2026-09-28, recovery-workbook closeout system -
 #                    see fallback_resolvers.R) applied_candidate |
-#                    no_candidate_available | no_fallback_defined. Deliberately
+#                    no_candidate_available | no_fallback_defined |
+#                    rule_resolved (added 2026-10-02, Round 1 closeout -
+#                    _working_files/scripts/round1_resolve_all.py: closed by
+#                    one of Jack's Q3-Q8 rules with no substitute candidate
+#                    involved, e.g. a same-household delete, a live-claimant
+#                    clear, a listing-number check). Deliberately
 #                    NOT one of status's own
 #                    values and NEVER written by apply_resolution() - a
 #                    fallback resolution is explicitly NOT a real partner/

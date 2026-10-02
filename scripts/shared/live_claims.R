@@ -42,8 +42,13 @@ claim_key <- function(df) {
   has_walk <- idp & !has_listing & !is_missing(df$idp_walk_position)
   key[has_listing] <- paste0(df$matched_cluster_id[has_listing], "|listing_", df$idp_hh_number_from_listing[has_listing])
   key[has_walk] <- paste0(df$matched_cluster_id[has_walk], "|walk_", df$idp_walk_position[has_walk])
+  # Non-IDP claims key on the CLAIMED point (non_idp_point_id), so a second distinct household kept at a drawn
+  # point under a "_b" suffix (Round 1 closeout, Jack Q3 - see prep's section 3b) is its own claim rather than
+  # a duplicate of the first. Everywhere else the two columns hold the same value (prep sets both from the same
+  # repaired point id, the suffix aside); a frame without the column falls back to matched_survey_id as before.
   non_idp <- !idp & !is_missing(df$matched_survey_id)
-  key[non_idp] <- as.character(df$matched_survey_id[non_idp])
+  claimed <- if ("non_idp_point_id" %in% names(df)) as.character(df$non_idp_point_id) else rep(NA_character_, nrow(df))
+  key[non_idp] <- ifelse(is_missing(claimed[non_idp]), as.character(df$matched_survey_id[non_idp]), claimed[non_idp])
   key
 }
 
