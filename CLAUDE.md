@@ -197,6 +197,25 @@ that always runs against the CURRENT full dataset, never a day-snapshot.
   which also moved the three later, different households that had since taken
   three of those interviews' points (Q3-C). `round1_build_deletion_log.py`
   refuses to write a duration removal at or above 19.95 min.
+- **The duration rule overrides a recovery for another reason (Jack, 2026-10-04).**
+  The tracker holds ONE `confirmed_deletion` row per interview, so a short
+  interview whose row had been recovered for another reason (e.g. a
+  `duplicate_point` flag cleared as `false_positive`) used to stay Achieved.
+  `run_independent_duration_check()` now turns such a row into a confirmed
+  `duration_under_20` deletion, keeping the earlier decision verbatim in
+  `resolution`/`notes` and logging to `_review_decisions_log/`. A row whose
+  recovery was itself a duration ruling is never touched. First applied to 10
+  Round 1 FACT Katsina interviews. Same night: 17 more Round 1 interviews
+  whose audit files arrived after the 2 Oct closeout were found short. Round 1
+  was NOT changed retroactively (submitted 5 Oct as is); all 27 count as
+  deletions from Round 2 on, listed in `reports/partner_data_recovery/outputs/
+  _round1_closeout/POST_SUBMISSION_duration_findings_2026-10-04.csv`.
+- **One-time overrides (2026-10-04), off unless set, always reported:**
+  `MSNA_ANON_EXPORT=<path>` makes prep (and `audit_missingness.R`) use that
+  export file. `MSNA_AUDIT_FALLBACK_CACHE=<DO's audit_duration_cache.csv>`,
+  used only when `audit.zip` is missing, fills durations our cache lacks. It is
+  refused unless the DO's cache matches ours exactly, and our cache is never
+  written from it.
 - `duplicate_point` is independently rebuilt for its KEY-BASED half only
   (reuses `real_submissions.csv`'s own `is_duplicate`/`dup_key` — the same
   identifier logic as the DO's `check_duplicate_cluster_visits()` check #1,

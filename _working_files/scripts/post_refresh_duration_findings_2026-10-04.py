@@ -25,10 +25,15 @@ def rows(path):
         return list(csv.DictReader(f))
 
 
-pre_ids = {r["issue_id"] for r in rows(PRE)}
-new = [r for r in rows(NOW) if r["deletion_reason"] == "duration_under_20" and r["issue_id"] not in pre_ids]
+pre = {r["issue_id"]: r for r in rows(PRE)}
+# newly removed for duration since the pre-refresh snapshot: a new duration row, OR an existing row for another reason
+# that the 4 Oct fix turned into a duration deletion (it had been recovered, e.g. a duplicate flag cleared)
+new = [r for r in rows(NOW) if r["deletion_reason"] == "duration_under_20" and r["status"] in ("confirmed", "contested")
+       and not r["recovery_type"] and (r["issue_id"] not in pre or pre[r["issue_id"]]["deletion_reason"] != "duration_under_20"
+                                       or pre[r["issue_id"]]["recovery_type"])]
 with open("data/ROUND1_MEMBERSHIP.csv", encoding="utf-8-sig", newline="") as f:
     r1 = {r[0] for r in csv.reader(f)}
+ours = {r["uuid"] for r in rows("cleaning/real/audit_duration_cache.csv")}
 subs = {}
 with open("data/real_submissions.csv", encoding="utf-8-sig", newline="") as f:
     for r in csv.DictReader(f):
@@ -43,8 +48,10 @@ for t in new:
         "strata_id": t["strata_id"], "matched_cluster_id": t["cluster_id"], "matched_survey_id": s.get("matched_survey_id", ""),
         "submission_date": s.get("submission_date", ""), "duration_min": s.get("duration_min", ""),
         "tracker_status": t["status"], "confirmed_by": t["confirmed_by"], "resolution_date": t["resolution_date"],
-        "duration_source": "data officer's audit-duration cache (one-time fallback)" if "data officer's own audit-duration cache" in t["notes"]
-                           else "our own audit read",
+        "how": "new duration finding" if t["issue_id"] not in pre else
+               f"overrode an earlier {pre[t['issue_id']]['deletion_reason']} recovery ({pre[t['issue_id']]['recovery_type']})",
+        # our own cache is never written in fallback mode, so "not in it" = the number came from the DO's cache
+        "duration_source": "our own audit read" if t["uuid"] in ours else "data officer's audit-duration cache (one-time fallback)",
         "note": ("Counted as Achieved in the Round 1 submission (audit file reached the audit log after the 2 Oct closeout). "
                  "Round 1 not changed retroactively (Jack, 4 Oct); removed from Round 2 onwards.") if t["uuid"] in r1 else "",
     })
@@ -60,4 +67,5 @@ for label in ("Round 1", "post-Round 1"):
     print(f"{label}: {len(part)} newly removed for duration; status {dict(Counter(r['tracker_status'] for r in part))}")
     print("   by partner/state:", dict(Counter((r["org_id"], r["state"]) for r in part)))
     print("   by pop_type:", dict(Counter(r["pop_type"] for r in part)), "| source:", dict(Counter(r["duration_source"] for r in part)))
+    print("   how:", dict(Counter(r["how"] for r in part)))
 print("written:", OUT)

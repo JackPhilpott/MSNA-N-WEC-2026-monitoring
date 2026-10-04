@@ -262,9 +262,44 @@ run_independent_duration_check <- function() {
     if (n_auto_confirmed > 0) write_tracker(current)
   }
 
+  # FIX 2026-10-04 (Jack: "Remove + fix the gap"). The tracker keeps ONE confirmed_deletion row per interview, so a
+  # short interview whose row was already RECOVERED for another reason (e.g. a duplicate_point flag cleared as a
+  # false_positive / justified_exception) could never get a duration row, and stayed Achieved. A recovery from another
+  # reason does not answer the duration question, and the duration rule has no appeal, so it applies here too: that
+  # row becomes a confirmed duration deletion and the earlier decision is kept word for word in resolution + notes.
+  # Never touches a row whose recovery was itself a duration decision (a human ruling on this very question stands),
+  # nor any interview that isn't short. First found on 10 Round 1 FACT Katsina interviews; logged to the same
+  # append-only decisions log as apply_review_decisions().
+  n_overridden <- 0L
+  if (nrow(short) > 0) {
+    current <- read_tracker()
+    dmin <- setNames(round(short$duration_audit_sum_all_minutes, 1), short$submission_uuid)
+    ov <- current$issue_type == "confirmed_deletion" & current$uuid %in% names(dmin) & !is.na(current$recovery_type) &
+      coalesce(current$deletion_reason, "") != "duration_under_20"
+    if (any(ov)) {
+      prior <- sprintf("earlier %s decision: recovered as %s on %s (%s)", coalesce(current$deletion_reason[ov], "?"),
+                       current$recovery_type[ov], coalesce(current$resolution_date[ov], "?"), coalesce(current$resolution[ov], ""))
+      current$resolution[ov] <- paste0("Interview duration ", dmin[current$uuid[ov]], " minutes, under the ", DURATION_FLOOR_MINUTES,
+                                       "-minute floor: the no-appeal duration rule applies even though the interview was cleared for another reason (",
+                                       prior, ").")
+      current$notes[ov] <- paste0(coalesce(current$notes[ov], ""), " | ", Sys.Date(), ": deletion reason changed to duration_under_20; ", prior)
+      current$deletion_reason[ov] <- "duration_under_20"
+      current$status[ov] <- "confirmed"
+      current$recovery_type[ov] <- NA_character_
+      current$confirmed_by[ov] <- "internal_team"
+      current$resolution_date[ov] <- as.character(Sys.Date())
+      write_tracker(current)
+      n_overridden <- sum(ov)
+      dir.create("reports/partner_data_recovery/outputs/_review_decisions_log", showWarnings = FALSE, recursive = TRUE)
+      cat(sprintf("%s | decided_by=Jack (4 Oct 2026: duration rule overrides recoveries for other reasons) | n=%d | new_status=confirmed | confirmed_by=internal_team | recovery_type=(cleared) | resolution=duration_under_20 overrides an earlier recovery for another reason | issue_ids=%s\n",
+                  format(Sys.time(), "%Y-%m-%d %H:%M:%S"), n_overridden, paste(current$issue_id[ov], collapse = ";")),
+          file = sprintf("reports/partner_data_recovery/outputs/_review_decisions_log/%s.log", format(Sys.Date(), "%Y-%m-%d")), append = TRUE)
+    }
+  }
+
   cat(sprintf(
-    "independent_deletion_checks(): duration_under_20 - %d completed row(s) under %d min (of %d with a real audit duration available), %d newly auto-confirmed this run.\n",
-    nrow(new_issues), DURATION_FLOOR_MINUTES, nrow(durations), n_auto_confirmed
+    "independent_deletion_checks(): duration_under_20 - %d completed row(s) under %d min (of %d with a real audit duration available), %d newly auto-confirmed this run, %d earlier recovery(ies) for another reason overridden.\n",
+    nrow(new_issues), DURATION_FLOOR_MINUTES, nrow(durations), n_auto_confirmed, n_overridden
   ))
   invisible(new_issues)
 }
