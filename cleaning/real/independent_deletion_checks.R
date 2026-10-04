@@ -229,9 +229,16 @@ run_independent_duration_check <- function() {
       listing_number = NA_character_,
       notes = paste0(
         "Interview duration was ", round(duration_audit_sum_all_minutes, 1), " minutes, under the ",
-        DURATION_FLOOR_MINUTES, "-minute floor. Computed independently via cleaning/real/audit_duration.R ",
-        "(same cleaningtools::create_duration_from_audit_sum_all() method the data officer's own pipeline uses, ",
-        "run against our own read of the raw audit trail) - not sourced from the data officer's deletion log."
+        DURATION_FLOOR_MINUTES, "-minute floor. ",
+        # 2026-10-04: say where the number came from - the one-time audit fallback (audit_duration.R) takes it from the
+        # data officer's own audit-duration cache when audit.zip is missing
+        ifelse(coalesce(duration_source, "our_audit_read") == "do_cache_fallback",
+               paste0("Taken from the data officer's own audit-duration cache (same cleaningtools::create_duration_from_audit_sum_all() ",
+                      "method) because audit.zip was missing on ", Sys.Date(), "; that cache reproduced our own independent read ",
+                      "exactly on every interview both held. Not sourced from the data officer's deletion log."),
+               paste0("Computed independently via cleaning/real/audit_duration.R ",
+                      "(same cleaningtools::create_duration_from_audit_sum_all() method the data officer's own pipeline uses, ",
+                      "run against our own read of the raw audit trail) - not sourced from the data officer's deletion log."))
       )
     )
 

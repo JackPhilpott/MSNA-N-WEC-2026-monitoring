@@ -199,6 +199,8 @@ compute_our_audit_durations <- function(audit_zip_path = OUR_AUDIT_ZIP_PATH,
                                           only_uuids = NULL,
                                           verbose = TRUE) {
   if (!file.exists(audit_zip_path)) {
+    fallback <- Sys.getenv("MSNA_AUDIT_FALLBACK_CACHE")
+    if (nzchar(fallback)) return(.durations_from_fallback_cache(cache_file, fallback, only_uuids))
     stop("compute_our_audit_durations(): audit zip not found at ", audit_zip_path)
   }
   manifest <- .our_audit_zip_manifest(audit_zip_path)
@@ -257,6 +259,36 @@ compute_our_audit_durations <- function(audit_zip_path = OUR_AUDIT_ZIP_PATH,
   .write_our_audit_cache(merged, cache_file)
 
   result$duration_audit_sum_all_minutes <- round(result$duration_audit_sum_all_ms / 60000, digits = 1)
+  result$duration_source <- "our_audit_read"
   if (verbose) message("  our audit duration cache: ready — ", nrow(result), " UUID(s) returned this call.")
-  result[, c("uuid", "duration_audit_sum_all_ms", "duration_audit_sum_all_minutes")]
+  result[, c("uuid", "duration_audit_sum_all_ms", "duration_audit_sum_all_minutes", "duration_source")]
+}
+
+# ONE-TIME FALLBACK, 2026-10-04 (Jack: the DO's run left the audit logs out of place; "find what you need ... until he
+# fixes it"). Used ONLY when audit.zip is missing AND MSNA_AUDIT_FALLBACK_CACHE points at the data officer's own
+# audit-duration cache (cleaning/MSNA_Data_Cleaning/audit/audit_duration_cache.csv - same cleaningtools sum_all method,
+# same uuid + archive_length keying as ours). Our own cache supplies every interview it has; the DO's cache supplies only
+# the ones ours lacks, and only after it reproduces ours EXACTLY on every interview both hold - any difference stops the
+# run. Our cache is NOT written: it stays purely our own computation, so once audit.zip is back the normal path measures
+# the fallback interviews itself. Rows say where their number came from (duration_source = "do_cache_fallback").
+.durations_from_fallback_cache <- function(cache_file, fallback_file, only_uuids = NULL) {
+  ours <- .read_our_audit_cache(cache_file)
+  theirs <- .read_our_audit_cache(fallback_file)
+  if (is.null(ours) || is.null(theirs)) stop("audit fallback: could not read ", if (is.null(ours)) cache_file else fallback_file)
+  shared <- merge(ours, theirs, by = "uuid", suffixes = c("_ours", "_do"))
+  differ <- shared$duration_audit_sum_all_ms_ours != shared$duration_audit_sum_all_ms_do
+  if (any(differ)) {
+    stop("audit fallback REFUSED: the data officer's cache differs from ours on ", sum(differ), " of ", nrow(shared),
+         " shared interviews (e.g. ", paste(utils::head(shared$uuid[differ], 3), collapse = ", "), ") - restore audit.zip instead.")
+  }
+  extra <- theirs[!(theirs$uuid %in% ours$uuid), , drop = FALSE]
+  result <- rbind(data.frame(uuid = ours$uuid, duration_audit_sum_all_ms = ours$duration_audit_sum_all_ms, duration_source = "our_audit_read"),
+                  data.frame(uuid = extra$uuid, duration_audit_sum_all_ms = extra$duration_audit_sum_all_ms, duration_source = "do_cache_fallback"))
+  if (!is.null(only_uuids)) result <- result[result$uuid %in% only_uuids, , drop = FALSE]
+  result$duration_audit_sum_all_minutes <- round(result$duration_audit_sum_all_ms / 60000, digits = 1)
+  cat("\n!!! ONE-TIME AUDIT FALLBACK (MSNA_AUDIT_FALLBACK_CACHE): ", OUR_AUDIT_ZIP_PATH, " is missing. Durations: ",
+      sum(result$duration_source == "our_audit_read"), " from our own cache, ", sum(result$duration_source == "do_cache_fallback"),
+      " from ", fallback_file, " (which reproduced ours exactly on all ", nrow(shared), " shared interviews). Our cache was not changed.\n\n",
+      sep = "")
+  result[, c("uuid", "duration_audit_sum_all_ms", "duration_audit_sum_all_minutes", "duration_source")]
 }

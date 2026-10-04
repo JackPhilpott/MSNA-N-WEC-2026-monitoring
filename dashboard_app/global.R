@@ -87,6 +87,10 @@ SHOW_ATTRIBUTION_SPLIT <- FALSE
 # date that actually appears in the data, so the date filter/home page can't
 # disagree with what's really there.
 FIELDING_PLANNED_END <- as.Date("2026-09-27")
+# 2026-10-04 (Jack): the dashboard shows ALL data collected (Round 1 is an internal mechanism, not a dashboard
+# boundary); the Progress Overview timeline marks where Round 1 ended with a subtle dotted line on this date. Not the
+# same date as FIELDING_PLANNED_END above (27 Sep, the IPC-CH pace target).
+ROUND1_DATE <- as.Date("2026-09-30")
 
 # ---- load data -------------------------------------------------------------
 
@@ -1243,6 +1247,109 @@ TOTAL_PLANNED_INTERVIEWS_CURRENT <- strata_frame %>%
   inner_join(strata_target_current, by = "strata_id") %>%
   pull(target_sample_current) %>%
   sum(na.rm = TRUE)
+
+# ---- Margin-of-error toggle: Full design vs Simplified - STAGED, flag OFF -------------------------------------
+# Jack (2 Oct, relayed by Coordinator): a universal toggle between two ways of judging representativity - e.g. to
+# show on the Coverage Map how much becomes representative under the simplified margin of error. Renamed 4 Oct (Jack:
+# "not Round 1/Round 2" - name it after the method it switches). Built for his review and OFF unless the R session
+# sets MSNA_FEATURE_SIMPLIFIED_MOE=1 before this file loads (the deployed app never does): with the flag off, nothing
+# below is read or computed and no UI changes anywhere.
+#
+#   Full design (cluster-adjusted) - current behaviour, unchanged: each stratum is judged against its target -
+#     1_sampling's strict sample_needed_for_moe() requirement (cluster design effect, certainty PSUs) - Complete /
+#     In progress / Not started / Dropped.
+#   Simplified (design effect 1) - Jack's 1 Oct decisions; the same rule as Coordinator's prototype (1_sampling/
+#     resampling/scripts/one_off_analyses/build_round1_representativity_prototype_2026-10-02.py): margin of error on the interviews
+#     actually ACHIEVED, design effect 1, Z = 1.6449 (90%), p = 0.5, finite-population correction on the
+#     stratum's accessible households (N_hh x the impact workbook's GIS "% of population remaining"), 0 once
+#     achieved >= accessible households. Representative = MoE <= 10%; Indicative = at least 20 achieved;
+#     otherwise Dropped. Excluded / no accessible population = Dropped. An LGA gets its own MoE,
+#     Z x sqrt(sum W_h^2 Var_h) over its non-Dropped strata (W_h = share of accessible households) - Dropped
+#     strata are left out entirely, as if not in the design.
+#     Data collected before an access loss counts (Jack, 2 Oct: "we always want to include any data collected
+#     wherever possible"): a stratum WITH achieved interviews that has since lost all accessible population, or was
+#     excluded for accessibility loss, is assessed against its accessible share DURING collection - the larger of
+#     the 8 Sep / 26 Sep archived layers (input_data/round1/collection_period_access.csv, built by
+#     _working_files/scripts/build_round1_collection_period_access.py), or all its households if never recorded
+#     accessible in either (a larger denominator never overstates representativity).
+FEATURE_SIMPLIFIED_MOE <- identical(Sys.getenv("MSNA_FEATURE_SIMPLIFIED_MOE"), "1")
+SMOE_Z <- qnorm(0.95)
+SMOE_TARGET_MOE <- 10
+SMOE_FLOOR <- 20
+SMOE_COLORS <- c(Representative = "#1E7B4D", Indicative = "#D99A2B", Dropped = "#9AA3AF")
+smoe_pct_accessible <- if (FEATURE_SIMPLIFIED_MOE) {
+  read_csv(file.path(INPUT_DIR, "accessibility/accessibility_strata_level.csv"), show_col_types = FALSE,
+           col_select = c(`Strata ID`, `% of population remaining`)) %>%
+    transmute(strata_id = `Strata ID`, smoe_pct_accessible = suppressWarnings(as.numeric(`% of population remaining`)))
+}
+smoe_collection_access <- if (FEATURE_SIMPLIFIED_MOE) {
+  read_csv(file.path(INPUT_DIR, "round1/collection_period_access.csv"), show_col_types = FALSE,
+           col_select = c(adm2_pcode, pop_type, pct_accessible_collection_period))
+}
+
+# Per stratum, on compute_progress_by_stratum()'s output (so it follows the sidebar filters like everything else):
+# adds smoe_basis, smoe_N_acc (accessible households), smoe_var, smoe_moe (%) and smoe_label.
+add_simplified_moe <- function(progress) {
+  progress %>%
+    left_join(smoe_pct_accessible, by = "strata_id") %>%
+    left_join(smoe_collection_access, by = c("adm2_pcode", "pop_type")) %>%
+    mutate(
+      smoe_lost_access = achieved_n > 0 & (
+        (coverage_status == "covered" & coalesce(smoe_pct_accessible, 0) <= 0) |
+          (coverage_status != "covered" & grepl("accessibility_loss", coalesce(exclusion_reason, ""), fixed = TRUE))
+      ),
+      smoe_basis = case_when(
+        smoe_lost_access & coalesce(pct_accessible_collection_period, 0) > 0 ~ "accessible population during collection",
+        smoe_lost_access ~ "all households (never recorded accessible)",
+        TRUE ~ "current accessible population"
+      ),
+      smoe_pct_used = case_when(
+        smoe_lost_access & coalesce(pct_accessible_collection_period, 0) > 0 ~ pct_accessible_collection_period,
+        smoe_lost_access ~ 100,
+        TRUE ~ coalesce(smoe_pct_accessible, 0)
+      ),
+      smoe_assessed = coverage_status == "covered" | smoe_lost_access,
+      smoe_N_acc = suppressWarnings(as.numeric(N_hh)) * smoe_pct_used / 100,
+      smoe_var = case_when(
+        !smoe_assessed | is.na(smoe_N_acc) | smoe_N_acc <= 0 | achieved_n <= 0 ~ NA_real_,
+        achieved_n >= smoe_N_acc ~ 0,
+        TRUE ~ 0.25 / (achieved_n * (smoe_N_acc - 1) / (smoe_N_acc - achieved_n))
+      ),
+      smoe_moe = 100 * SMOE_Z * sqrt(smoe_var),
+      smoe_label = case_when(
+        !smoe_assessed | is.na(smoe_N_acc) | smoe_N_acc <= 0 ~ "Dropped",
+        !is.na(smoe_moe) & smoe_moe <= SMOE_TARGET_MOE ~ "Representative",
+        achieved_n >= SMOE_FLOOR ~ "Indicative",
+        TRUE ~ "Dropped"
+      )
+    )
+}
+
+# Per LGA (IDP + Non-IDP combined), from add_simplified_moe()'s output: the LGA's own MoE over its
+# non-Dropped strata, its label, the share of its accessible households those strata speak for, and a per-stratum
+# line for the map's hover text.
+simplified_moe_lga_summary <- function(r1) {
+  r1 %>%
+    mutate(.inc = smoe_label != "Dropped") %>%
+    group_by(adm2_pcode) %>%
+    summarise(
+      smoe_n_strata = n(),
+      smoe_n_included = sum(.inc),
+      smoe_var_lga = if (any(.inc) && sum(smoe_N_acc[.inc]) > 0) sum((smoe_N_acc[.inc] / sum(smoe_N_acc[.inc]))^2 * smoe_var[.inc]) else NA_real_,
+      smoe_pct_represented = if (sum(smoe_N_acc, na.rm = TRUE) > 0) sum(smoe_N_acc[.inc]) / sum(smoe_N_acc, na.rm = TRUE) else NA_real_,
+      smoe_detail = paste0(
+        ifelse(pop_type == "idp", "IDP", "Non-IDP"), ": ", smoe_label,
+        ifelse(is.na(smoe_moe), "", paste0(" (MoE ", sprintf("%.1f", smoe_moe), "%, ", achieved_n, " achieved)")),
+        ifelse(smoe_basis == "current accessible population", "", " - assessed on the population accessible during collection"),
+        collapse = "<br>"
+      ),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      smoe_moe_lga = 100 * SMOE_Z * sqrt(smoe_var_lga),
+      smoe_label_lga = case_when(is.na(smoe_moe_lga) ~ "Dropped", smoe_moe_lga <= SMOE_TARGET_MOE ~ "Representative", TRUE ~ "Indicative")
+    )
+}
 
 compute_progress_by_stratum <- function(subs, target_basis = c("original", "revised")) {
   target_basis <- match.arg(target_basis)

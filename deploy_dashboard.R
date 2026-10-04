@@ -229,9 +229,17 @@ bundle_dashboard_mirrors(".")
 # state, so nothing that lands in dashboard_app/ in between can ship unnoticed.
 check_dashboard_bundle(".")
 
-deployApp(
-  appDir = "dashboard_app",
-  appName = "dashboard_app",
-  account = "impact-nga-jp",
-  forceUpdate = TRUE
-)
+# 2026-10-04: MSNA_DEPLOY_DRY_RUN=1 (set by run_refresh_and_deploy.R --dry-run) runs everything above - the full
+# refresh, checks, report and bundle - and skips only the upload, so the whole chain can be tested without changing
+# the live dashboard.
+if (identical(Sys.getenv("MSNA_DEPLOY_DRY_RUN"), "1")) {
+  cat("\nMSNA_DEPLOY_DRY_RUN=1 - DRY RUN: everything above ran and the bundle passed its checks; the upload to",
+      "shinyapps.io was skipped. The live dashboard is unchanged.\n")
+} else {
+  deployApp(
+    appDir = "dashboard_app",
+    appName = "dashboard_app",
+    account = "impact-nga-jp",
+    forceUpdate = TRUE
+  )
+}

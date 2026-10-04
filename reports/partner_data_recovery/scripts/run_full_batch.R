@@ -20,7 +20,14 @@
 # filename) but DOES add a second, undecided workbook alongside it - confirm
 # that's actually what's wanted for a given round before running the full
 # batch, rather than assuming every partner is starting a from-scratch round.
-SCRIPTS_DIR <- "c:/Users/JackPHILPOTT/ACTED/IMPACT NGA - 02. MSNA/4. Data/MSNA N-WEC 2026/2_monitoring/reports/partner_data_recovery/scripts"
+SCRIPTS_DIR <- file.path((function() {  # 2_monitoring on any machine: MSNA_WORKSPACE, else walk up (as scripts/shared/project_root.R)
+  d <- normalizePath(Sys.getenv("MSNA_WORKSPACE", getwd()), winslash = "/", mustWork = FALSE)
+  repeat {
+    for (p in file.path(d, c(".", "2_monitoring"))) if (file.exists(file.path(p, "deploy_dashboard.R"))) return(normalizePath(p, winslash = "/"))
+    if (dirname(d) == d) stop("can't find 2_monitoring - set MSNA_WORKSPACE to the folder holding 1_sampling/ and 2_monitoring/")
+    d <- dirname(d)
+  }
+})(), "reports/partner_data_recovery/scripts")
 source(file.path(SCRIPTS_DIR, "full_batch_pipeline.R"))
 source(file.path(SCRIPTS_DIR, "build_workbook_fn.R"))
 # 2026-09-25 (Jack, decision Q): the workbook's READ ME "return by" date is the SAME constant the
@@ -28,7 +35,14 @@ source(file.path(SCRIPTS_DIR, "build_workbook_fn.R"))
 # build_partner_workbook()'s stale "4 September 2026" default.
 source(file.path(SCRIPTS_DIR, "recovery_deadline.R"))   # EMAIL_DEADLINE
 
-out_root <- "c:/Users/JackPHILPOTT/ACTED/IMPACT NGA - 02. MSNA/4. Data/MSNA N-WEC 2026/2_monitoring/reports/partner_data_recovery/outputs"
+out_root <- file.path((function() {  # 2_monitoring on any machine: MSNA_WORKSPACE, else walk up (as scripts/shared/project_root.R)
+  d <- normalizePath(Sys.getenv("MSNA_WORKSPACE", getwd()), winslash = "/", mustWork = FALSE)
+  repeat {
+    for (p in file.path(d, c(".", "2_monitoring"))) if (file.exists(file.path(p, "deploy_dashboard.R"))) return(normalizePath(p, winslash = "/"))
+    if (dirname(d) == d) stop("can't find 2_monitoring - set MSNA_WORKSPACE to the folder holding 1_sampling/ and 2_monitoring/")
+    d <- dirname(d)
+  }
+})(), "reports/partner_data_recovery/outputs")
 state_dir <- file.path(out_root, "_batch_state")
 dir.create(state_dir, showWarnings = FALSE, recursive = TRUE)
 

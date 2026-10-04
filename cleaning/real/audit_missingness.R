@@ -32,6 +32,8 @@ MISSINGNESS_STRONGNESS_FACTOR <- 8 # matches deletion_log.R's own value exactly
 # anon_files block (kept separate rather than sourcing that script just for
 # this helper - it's 6 lines and this stays a standalone-runnable script).
 latest_anon_file <- function(dir = MSNA_ANON_DIR) {
+  # one-time override, same as prep_real_submissions.R (which validates it first in the deploy chain)
+  if (nzchar(Sys.getenv("MSNA_ANON_EXPORT"))) return(normalizePath(Sys.getenv("MSNA_ANON_EXPORT"), winslash = "/", mustWork = TRUE))
   anon_files <- list.files(dir, pattern = "\\.xlsx$", full.names = TRUE)
   stopifnot(length(anon_files) > 0)
   anon_dates <- as.Date(str_extract(basename(anon_files), "\\d{4}-\\d{2}-\\d{2}"))

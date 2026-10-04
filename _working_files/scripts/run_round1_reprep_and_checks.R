@@ -1,5 +1,11 @@
 # run_round1_reprep_and_checks.R - 2026-10-01, Round 1 recovery closeout.
 #
+# ONE-OFF, KEPT FOR THE RECORD - never part of a routine run. 2026-10-04 (Jack: "show all data collected, the
+# concept of Round 1 is very much an internal mechanism"): routine refreshes ingest every new export through
+# run_refresh_and_deploy.R / deploy_dashboard.R, which have no Round 1 pin. Guard A below now fails by design (a
+# later export exists, and the 1 Oct file was re-saved 4 bytes smaller on 3 Oct). Guard B's invariant - no Round 1
+# submission ever disappears - lives on in validity_checks/modules/three_way_reconciliation.R.
+#
 # Re-runs prep_real_submissions.R against the RESTORED v14 frame mirror (a
 # OneDrive sync conflict had silently reverted the live frame to its 30 Sep
 # 01:38 version, missing 2,412 rows of 30 Sep top-ups; Coordinator restored

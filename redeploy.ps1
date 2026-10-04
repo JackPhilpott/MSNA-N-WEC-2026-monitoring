@@ -10,11 +10,25 @@
 #   .\redeploy.ps1
 # (right-click > "Run with PowerShell" also works; a plain double-click may
 # just open it in an editor depending on Windows' file association).
+#
+# 2026-10-04: for the data officer's routine runs, use run_refresh_and_deploy.bat instead - the same deploy plus
+# pre-flight checks, the frame/partner update and a run report. This script stays as the bare deploy, and no longer
+# hard-codes one person's R install: MSNA_RSCRIPT if set, else Rscript on the PATH, else the newest standard install.
 
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 
-$RscriptExe = "C:\Users\JackPHILPOTT\AppData\Local\Programs\R\R-4.6.0\bin\Rscript.exe"
+$RscriptExe = $null
+if ($env:MSNA_RSCRIPT -and (Test-Path $env:MSNA_RSCRIPT)) { $RscriptExe = $env:MSNA_RSCRIPT }
+if (-not $RscriptExe) { $cmd = Get-Command Rscript.exe -ErrorAction SilentlyContinue; if ($cmd) { $RscriptExe = $cmd.Source } }
+if (-not $RscriptExe) {
+    $installs = foreach ($root in @("$env:LOCALAPPDATA\Programs\R", "$env:ProgramFiles\R")) {
+        if (Test-Path $root) { Get-ChildItem $root -Directory -Filter "R-*" | Where-Object { Test-Path (Join-Path $_.FullName "bin\Rscript.exe") } }
+    }
+    $newest = $installs | Sort-Object { [version]($_.Name -replace '^R-', '') } -Descending | Select-Object -First 1
+    if ($newest) { $RscriptExe = Join-Path $newest.FullName "bin\Rscript.exe" }
+}
+if (-not $RscriptExe) { throw "Rscript.exe not found - install R, or set MSNA_RSCRIPT to its full path." }
 
 Write-Host "Running full refresh + deploy from $PSScriptRoot ..."
 & $RscriptExe -e "source('deploy_dashboard.R')"

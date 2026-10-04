@@ -82,15 +82,47 @@ mod_map_ui <- function(id) {
           strong(paste0(N_ACCESSIBILITY_PARTNERS_REPORTED, " of ", TOTAL_ACCESSIBILITY_PARTNERS, " partners")),
           " have reported so far — a live, partial picture (default is accessible until a partner reports otherwise), not a final count.",
           info_icon("Based on partners' own accessibility reports for their assigned areas.")
-        )
+        ),
+        # STAGED margin-of-error toggle - only in the UI while global.R's FEATURE_SIMPLIFIED_MOE is on
+        if (FEATURE_SIMPLIFIED_MOE) uiOutput(ns("smoe_summary"))
       ),
       leafletOutput(ns("map"), height = "780px")
     )
   )
 }
 
-mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active = reactive(TRUE), target_basis = reactive("original")) {
+mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active = reactive(TRUE), target_basis = reactive("original"),
+                           moe_basis = reactive("design")) {
   moduleServer(id, function(input, output, session) {
+    # STAGED margin-of-error toggle (Jack's, built 2 Oct, renamed 4 Oct; flag OFF by default - see global.R's
+    # FEATURE_SIMPLIFIED_MOE): with "Simplified (design effect 1)" selected, the LGA view is coloured by each LGA's
+    # simplified-MoE label instead of % of target, its hover text leads with the simplified MoE per stratum, and a
+    # line above the map compares it with the full design. Computed from filtered_stratum() BEFORE filtered_lga()'s
+    # Dropped-zeroing below - the simplified rule decides its own Dropped strata. The cluster view is unaffected
+    # (it is a stratum/LGA rule).
+    smoe_on <- reactive(identical(moe_basis(), "simplified"))
+    smoe_strata <- reactive({
+      req(smoe_on())
+      add_simplified_moe(filtered_stratum())
+    })
+    smoe_lga <- reactive(simplified_moe_lga_summary(smoe_strata()))
+    output$smoe_summary <- renderUI({
+      if (!smoe_on()) return(NULL)
+      s <- smoe_strata()
+      l <- smoe_lga()
+      n_of <- function(x, lab) sum(x == lab)
+      span(
+        class = "text-muted", style = "font-size: 0.85em; font-weight: normal;",
+        strong("Simplified margin of error: "),
+        paste0(
+          n_of(s$smoe_label, "Representative"), " of ", nrow(s), " strata Representative, ", n_of(s$smoe_label, "Indicative"),
+          " Indicative, ", n_of(s$smoe_label, "Dropped"), " Dropped; ", n_of(l$smoe_label_lga, "Representative"), " of ", nrow(l),
+          " LGAs Representative. Under the full design, ", sum(s$status == "Complete"), " of these strata are Complete."
+        ),
+        info_icon("The margin of error on the interviews achieved so far, ignoring clustering. Representative = within 10%; Indicative = at least 20 interviews; otherwise Dropped.")
+      )
+    })
+
     # BUG FIX 2026-09-09, REVERSED 2026-09-16 (Decision A), extended 2026-
     # 09-19 (global target-basis toggle): this used to key pct_achieved/
     # status off target_sample (original) while compute_progress_by_
@@ -233,7 +265,7 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
     # status didn't clear it, needed a different checkbox re-toggled first
     # to "unstick" it). Same fix applied to cluster_status() below.
     lga_map_data <- reactive({
-      scope_admin2_sf() %>%
+      md <- scope_admin2_sf() %>%
         mutate(
           pct_achieved = coalesce(pct_achieved, 0),
           # 2026-09-20 (Jack: extend Inaccessible styling to LGA grain) - a
@@ -275,11 +307,20 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
           # ADDED 2026-09-16 (Jack, visibility ask): shared helper (global.R),
           # reused identically in the popup label below.
           target_delta = target_delta_label(target_sample, target_sample_current),
-          target_diverges = is_significant_target_divergence(target_sample, target_sample_current)
+          target_diverges = is_significant_target_divergence(target_sample, target_sample_current),
+          # the % of target colour, kept for the hover text's "Credited toward target" line whichever
+          # margin of error colours the polygon (STAGED margin-of-error toggle, below)
+          progress_color = fill_color
         ) %>%
         left_join(accessibility_lga_summary, by = "adm2_pcode") %>%
         left_join(remaining_by_pop_type(), by = "adm2_pcode") %>%
         filter(status %in% input$status_filter)
+      if (smoe_on()) {
+        md <- md %>%
+          left_join(smoe_lga(), by = "adm2_pcode") %>%
+          mutate(fill_color = unname(SMOE_COLORS[coalesce(smoe_label_lga, "Dropped")]))
+      }
+      md
     })
 
     # accessibility layer — scoped to the same in-scope LGAs as the ward
@@ -589,6 +630,26 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
       } else {
         paste0("color:", TARGET_BASIS_INACTIVE_COLOR, ";")
       }
+      # STAGED margin-of-error toggle: with the simplified margin of error selected, its verdict leads the hover
+      # text - the LGA's own MoE and label, the share of accessible households its included strata speak for when
+      # some are Dropped, then each stratum's label and MoE.
+      smoe_block <- if (smoe_on()) {
+        paste0(
+          "<b>Simplified margin of error: <span style='color:", md$fill_color, ";'>", coalesce(md$smoe_label_lga, "Dropped"), "</span></b>",
+          ifelse(
+            is.na(md$smoe_moe_lga), "",
+            paste0(
+              " (MoE ", sprintf("%.1f", md$smoe_moe_lga), "%",
+              ifelse(is.na(md$smoe_pct_represented) | md$smoe_pct_represented >= 0.999, "",
+                     paste0("; covers ", round(100 * md$smoe_pct_represented), "% of accessible households")),
+              ")"
+            )
+          ),
+          "<br>", coalesce(md$smoe_detail, ""), "<hr style='margin:4px 0;'>"
+        )
+      } else {
+        ""
+      }
       leafletProxy("map", data = md) %>%
         clearGroup("LGA progress") %>%
         addPolygons(
@@ -600,6 +661,7 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
           options = pathOptions(pane = "lgaProgressPane"),
           label = ~lapply(
             paste0(
+              smoe_block,
               "<b>", adm2_name, "</b>, ", adm1_name, "<br>",
               "Partner(s): ", partner_coverage, "<br>",
               # FIX 2026-09-16 (Decision A): headline fraction is now vs.
@@ -621,7 +683,7 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
               # (per-stratum capped, see filtered_lga()) - an LGA's IDP
               # surplus no longer colours over its Non-IDP shortfall. Raw
               # all-interviews count kept alongside ("show both").
-              "Credited toward target: <span style='color:", fill_color, ";font-weight:bold;'>", coalesce(credited_achieved_n, 0), " (", label_pct, " of ", target_basis_label(target_basis()), ")</span>",
+              "Credited toward target: <span style='color:", progress_color, ";font-weight:bold;'>", coalesce(credited_achieved_n, 0), " (", label_pct, " of ", target_basis_label(target_basis()), ")</span>",
               " | Still needed: ", coalesce(remaining_n, 0), "<br>",
               "Achieved (all interviews incl. surplus): ", coalesce(achieved_n, 0), "<br>",
               # 2026-09-20 (Jack: extend Inaccessible styling to LGA grain) -
@@ -880,7 +942,17 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
     observe({
       req(input$map_view)
       proxy <- leafletProxy("map") %>% removeControl("map_legend")
-      if (input$map_view == "lga") {
+      if (input$map_view == "lga" && smoe_on()) {
+        # STAGED margin-of-error toggle: the LGA fill is the simplified-MoE label, so is the legend
+        proxy %>%
+          hideGroup(c("Cluster status", "Cluster status sites")) %>%
+          showGroup("LGA progress") %>%
+          addLegend(
+            layerId = "map_legend", position = "bottomright",
+            colors = unname(SMOE_COLORS), labels = names(SMOE_COLORS),
+            title = "Simplified margin of error (LGA)", opacity = 0.9
+          )
+      } else if (input$map_view == "lga") {
         proxy %>%
           hideGroup(c("Cluster status", "Cluster status sites")) %>%
           showGroup("LGA progress") %>%

@@ -439,6 +439,22 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum, target_basi
 
       cat_colors <- c("Non-IDP" = unname(POP_TYPE_COLORS[["non_idp"]]), "IDP" = unname(POP_TYPE_COLORS[["idp"]]), "Unmatched" = UNMATCHED_COLOR)
 
+      # 2026-10-04 (Jack): "a vertical dotted line to show Round 1 date (30/09/2026) - subtle and non-intrusive". Drawn
+      # only when that date is inside the dates shown, so a narrower date filter never stretches the axis to reach it.
+      round1_mark <- ROUND1_DATE >= min(df$submission_date) && ROUND1_DATE <= max(df$submission_date)
+      round1_shapes <- if (round1_mark) {
+        list(list(type = "line", xref = "x", yref = "paper", x0 = format(ROUND1_DATE), x1 = format(ROUND1_DATE), y0 = 0, y1 = 1,
+                  layer = "below", line = list(color = "#9AA3AF", width = 1, dash = "dot")))
+      } else {
+        list()
+      }
+      round1_labels <- if (round1_mark) {
+        list(list(x = format(ROUND1_DATE), y = 1, xref = "x", yref = "paper", text = "Round 1", showarrow = FALSE,
+                  xanchor = "left", yanchor = "top", xshift = 3, font = list(size = 10, color = "#8A93A0")))
+      } else {
+        list()
+      }
+
       plot_ly()  %>%
         add_bars(
           data = by_day_pop %>% filter(pop_cat == "Non-IDP"), x = ~submission_date, y = ~n,
@@ -461,7 +477,9 @@ mod_progress_server <- function(id, filtered_subs, filtered_stratum, target_basi
           xaxis = list(title = ""),
           legend = list(orientation = "h", y = -0.2),
           hovermode = "x unified",
-          margin = list(l = 60, r = 80, t = 20, b = 40)
+          margin = list(l = 60, r = 80, t = 20, b = 40),
+          shapes = round1_shapes,
+          annotations = round1_labels
         )
     })
 

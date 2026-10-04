@@ -46,6 +46,9 @@ reports/partner_digests/
 # git per standing convention, same as every other partner-communications
 # draft in this project.
 cleaning/UNHCR_MSNA_Data_Cleaning/
+# 2026-10-03: the data officer's combined MSNA + UNHCR cleaning project (raw_data/, output/, audit/, zips) - the
+# same kind of read-only pipeline as the two above, excluded the same way.
+cleaning/NGA2605_MSNA_UNHCR_Combined_Cleaning/
 reports/partner_status_emails_2026-09-21/
 reports/partner_status_emails_2026-09-21_corrected/
 # config/ itself IS tracked (coverage_decisions.csv, partner_registry.csv are
@@ -58,6 +61,9 @@ reports/partner_data_recovery/inputs/
 reports/partner_data_recovery/outputs/
 reports/accessibility_review/
 reports/lga_prioritization/
+# 2026-10-02: Round 1 weighting package for the data officer - holds the
+# anonymised dataset with weights attached, so it is never versioned.
+reports/round1_weighting_package*/
 # FIX 2026-09-11 (later same night): the two backup dirs previously excluded
 # here by their old top-level names were archived into
 # reports/partner_data_recovery/_archive/<date>_<reason>/ as part of the
@@ -82,3 +88,5 @@ Desktop.ini
 
 # Python
 __pycache__/
+# 2026-10-04: run_refresh_and_deploy.R's per-run reports and logs (local to each computer; logs can name interviews)
+runs_log/

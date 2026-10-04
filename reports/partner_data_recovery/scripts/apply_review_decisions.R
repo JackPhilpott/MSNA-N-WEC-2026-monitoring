@@ -43,7 +43,14 @@
 # FIX 2026-09-11: PROJECT_DIR/setwd() used to be hardcoded here directly -
 # now shared with generate_review_queue.R via one file instead of two
 # independent copies of the same literal path.
-source("c:/Users/JackPHILPOTT/ACTED/IMPACT NGA - 02. MSNA/4. Data/MSNA N-WEC 2026/2_monitoring/scripts/shared/project_root.R")
+source(file.path((function() {  # 2_monitoring on any machine: MSNA_WORKSPACE, else walk up (as scripts/shared/project_root.R)
+  d <- normalizePath(Sys.getenv("MSNA_WORKSPACE", getwd()), winslash = "/", mustWork = FALSE)
+  repeat {
+    for (p in file.path(d, c(".", "2_monitoring"))) if (file.exists(file.path(p, "deploy_dashboard.R"))) return(normalizePath(p, winslash = "/"))
+    if (dirname(d) == d) stop("can't find 2_monitoring - set MSNA_WORKSPACE to the folder holding 1_sampling/ and 2_monitoring/")
+    d <- dirname(d)
+  }
+})(), "scripts/shared/project_root.R"))
 suppressPackageStartupMessages(library(dplyr))
 source("reports/partner_data_recovery/scripts/issue_tracker.R")
 

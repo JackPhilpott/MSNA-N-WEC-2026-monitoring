@@ -83,7 +83,14 @@
 # ==============================================================================
 suppressPackageStartupMessages({library(dplyr); library(readr); library(purrr); library(stringr); library(tidyr)})
 
-MON_DIR <- "c:/Users/JackPHILPOTT/ACTED/IMPACT NGA - 02. MSNA/4. Data/MSNA N-WEC 2026/2_monitoring"
+MON_DIR <- (function() {  # 2_monitoring on any machine: MSNA_WORKSPACE, else walk up (as scripts/shared/project_root.R)
+  d <- normalizePath(Sys.getenv("MSNA_WORKSPACE", getwd()), winslash = "/", mustWork = FALSE)
+  repeat {
+    for (p in file.path(d, c(".", "2_monitoring"))) if (file.exists(file.path(p, "deploy_dashboard.R"))) return(normalizePath(p, winslash = "/"))
+    if (dirname(d) == d) stop("can't find 2_monitoring - set MSNA_WORKSPACE to the folder holding 1_sampling/ and 2_monitoring/")
+    d <- dirname(d)
+  }
+})()
 source(file.path(MON_DIR, "reports/partner_data_recovery/scripts/real_hh_listing.R"))
 
 # Same formula as full_batch_pipeline.R's own haversine_m() - an independent

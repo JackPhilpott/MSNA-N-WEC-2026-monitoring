@@ -143,6 +143,17 @@ read_excel_robust <- function(path, ...) {
 # time. Ordering by mtime within the max date removes that luck dependency
 # regardless of naming convention.
 anon_files <- list.files(file.path(CLEANING_OUTPUT_DIR, "anonymised_data"), pattern = "\\.xlsx$", full.names = TRUE)
+# 2026-10-04 (Jack: the DO wrote that day's export to another library; "run the data refresh as a one-time path"):
+# MSNA_ANON_EXPORT=<full path to one NGA2605_MSNA_anonymised_<date>.xlsx> makes this run use exactly that file
+# instead of the newest one here. The blank-date guard below still applies to it. Unset = normal behaviour.
+ANON_EXPORT_OVERRIDE <- Sys.getenv("MSNA_ANON_EXPORT")
+if (nzchar(ANON_EXPORT_OVERRIDE)) {
+  if (!file.exists(ANON_EXPORT_OVERRIDE) || !grepl("^NGA2605_MSNA_anonymised_\\d{4}-\\d{2}-\\d{2}\\.xlsx$", basename(ANON_EXPORT_OVERRIDE)))
+    stop("MSNA_ANON_EXPORT='", ANON_EXPORT_OVERRIDE, "' is not an existing NGA2605_MSNA_anonymised_<date>.xlsx file")
+  anon_files <- normalizePath(ANON_EXPORT_OVERRIDE, winslash = "/")
+  cat("\n!!! ONE-TIME EXPORT OVERRIDE (MSNA_ANON_EXPORT): using", anon_files, "instead of the newest export in",
+      file.path(CLEANING_OUTPUT_DIR, "anonymised_data"), "\n\n")
+}
 stopifnot(length(anon_files) > 0)
 anon_dates <- as.Date(str_extract(basename(anon_files), "\\d{4}-\\d{2}-\\d{2}"))
 

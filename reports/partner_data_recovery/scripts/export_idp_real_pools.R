@@ -20,7 +20,14 @@
 # ==============================================================================
 suppressPackageStartupMessages({library(readr); library(dplyr); library(tidyr)})
 
-SCRIPTS_DIR <- "c:/Users/JackPHILPOTT/ACTED/IMPACT NGA - 02. MSNA/4. Data/MSNA N-WEC 2026/2_monitoring/reports/partner_data_recovery/scripts"
+SCRIPTS_DIR <- file.path((function() {  # 2_monitoring on any machine: MSNA_WORKSPACE, else walk up (as scripts/shared/project_root.R)
+  d <- normalizePath(Sys.getenv("MSNA_WORKSPACE", getwd()), winslash = "/", mustWork = FALSE)
+  repeat {
+    for (p in file.path(d, c(".", "2_monitoring"))) if (file.exists(file.path(p, "deploy_dashboard.R"))) return(normalizePath(p, winslash = "/"))
+    if (dirname(d) == d) stop("can't find 2_monitoring - set MSNA_WORKSPACE to the folder holding 1_sampling/ and 2_monitoring/")
+    d <- dirname(d)
+  }
+})(), "reports/partner_data_recovery/scripts")
 source(file.path(SCRIPTS_DIR, "real_hh_listing.R"))
 
 pools <- compute_real_avail_pools()

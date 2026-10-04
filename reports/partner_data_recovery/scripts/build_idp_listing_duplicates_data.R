@@ -103,7 +103,14 @@ ORG_ID <- tolower(args[1])
 OUT_CSV <- args[2]
 FULL_MODE <- "--full" %in% args
 
-MONITORING_DIR <- "c:/Users/JackPHILPOTT/ACTED/IMPACT NGA - 02. MSNA/4. Data/MSNA N-WEC 2026/2_monitoring"
+MONITORING_DIR <- (function() {  # 2_monitoring on any machine: MSNA_WORKSPACE, else walk up (as scripts/shared/project_root.R)
+  d <- normalizePath(Sys.getenv("MSNA_WORKSPACE", getwd()), winslash = "/", mustWork = FALSE)
+  repeat {
+    for (p in file.path(d, c(".", "2_monitoring"))) if (file.exists(file.path(p, "deploy_dashboard.R"))) return(normalizePath(p, winslash = "/"))
+    if (dirname(d) == d) stop("can't find 2_monitoring - set MSNA_WORKSPACE to the folder holding 1_sampling/ and 2_monitoring/")
+    d <- dirname(d)
+  }
+})()
 setwd(MONITORING_DIR)
 CLEANING_OUTPUT_DIR <- "cleaning/MSNA_Data_Cleaning/output"
 
