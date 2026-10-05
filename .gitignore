@@ -64,6 +64,9 @@ reports/lga_prioritization/
 # 2026-10-02: Round 1 weighting package for the data officer - holds the
 # anonymised dataset with weights attached, so it is never versioned.
 reports/round1_weighting_package*/
+# 2026-10-04: the Round 1 IPC/CH representativity deliverables (xlsx + intermediate CSVs) - outputs, not code; the
+# builder lives in 1_sampling.
+reports/round1_ipc_ch_representativity_*/
 # FIX 2026-09-11 (later same night): the two backup dirs previously excluded
 # here by their old top-level names were archived into
 # reports/partner_data_recovery/_archive/<date>_<reason>/ as part of the

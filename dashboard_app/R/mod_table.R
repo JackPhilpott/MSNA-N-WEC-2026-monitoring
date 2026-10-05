@@ -23,8 +23,8 @@ mod_table_ui <- function(id) {
           "Original Target = the fixed sample size set at collection start. Revised Target = the current minimum needed, recalculated as accessibility changes. Status and % achieved follow the sidebar's Target basis toggle. Δ vs Original flags a 25%+ shift between the two. Dropped = excluded from the design; its interviews stay on this row and are left out of national and partner totals."
         )
       ),
-      if (!is.na(FRAME_AS_OF_LABEL)) {
-        div(class = "text-muted", style = "font-size: 0.8em; padding: 0 12px;", FRAME_AS_OF_LABEL)
+      if (!is.na(AS_OF_CAPTION)) {
+        div(class = "text-muted", style = "font-size: 0.8em; padding: 0 12px;", AS_OF_CAPTION)
       },
       DTOutput(ns("table"))
     )

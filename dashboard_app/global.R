@@ -1248,12 +1248,13 @@ TOTAL_PLANNED_INTERVIEWS_CURRENT <- strata_frame %>%
   pull(target_sample_current) %>%
   sum(na.rm = TRUE)
 
-# ---- Margin-of-error toggle: Full design vs Simplified - STAGED, flag OFF -------------------------------------
+# ---- Margin-of-error toggle: Full design vs Simplified - LIVE (on by default) ---------------------------------
 # Jack (2 Oct, relayed by Coordinator): a universal toggle between two ways of judging representativity - e.g. to
 # show on the Coverage Map how much becomes representative under the simplified margin of error. Renamed 4 Oct (Jack:
-# "not Round 1/Round 2" - name it after the method it switches). Built for his review and OFF unless the R session
-# sets MSNA_FEATURE_SIMPLIFIED_MOE=1 before this file loads (the deployed app never does): with the flag off, nothing
-# below is read or computed and no UI changes anywhere.
+# "not Round 1/Round 2" - name it after the method it switches). Built staged OFF; switched ON by default 4 Oct night
+# (Jack: "Yes, on by default"). It lives in this file, so every deploy - Jack's or the data officer's launcher - carries
+# it. MSNA_FEATURE_SIMPLIFIED_MOE=0 in the R session switches it off again: then nothing below is read or computed
+# and no UI changes anywhere. Full design stays the default selection in the sidebar.
 #
 #   Full design (cluster-adjusted) - current behaviour, unchanged: each stratum is judged against its target -
 #     1_sampling's strict sample_needed_for_moe() requirement (cluster design effect, certainty PSUs) - Complete /
@@ -1272,7 +1273,7 @@ TOTAL_PLANNED_INTERVIEWS_CURRENT <- strata_frame %>%
 #     the 8 Sep / 26 Sep archived layers (input_data/round1/collection_period_access.csv, built by
 #     _working_files/scripts/build_round1_collection_period_access.py), or all its households if never recorded
 #     accessible in either (a larger denominator never overstates representativity).
-FEATURE_SIMPLIFIED_MOE <- identical(Sys.getenv("MSNA_FEATURE_SIMPLIFIED_MOE"), "1")
+FEATURE_SIMPLIFIED_MOE <- !identical(Sys.getenv("MSNA_FEATURE_SIMPLIFIED_MOE"), "0")
 SMOE_Z <- qnorm(0.95)
 SMOE_TARGET_MOE <- 10
 SMOE_FLOOR <- 20
@@ -2022,6 +2023,13 @@ FRAME_AS_OF_LABEL <- if (!is.na(FRAME_AS_OF_DATE)) {
 } else {
   NA_character_
 }
+# 2026-10-04 (Jack): the frame's date and the data's date are different things - "Sampling frame as of 02 Oct" beside
+# interviews from 3-4 Oct read as stale data. AS_OF_CAPTION shows both: the latest interview date in the data, then the
+# frame's version date. Built from submissions_raw, already loaded above (no extra read at startup).
+DATA_AS_OF_DATE <- suppressWarnings(max(submissions_raw$submission_date, na.rm = TRUE))
+DATA_AS_OF_LABEL <- if (is.finite(DATA_AS_OF_DATE)) paste0("Data up to ", format(DATA_AS_OF_DATE, "%d %b %Y")) else NA_character_
+AS_OF_CAPTION <- paste(c(DATA_AS_OF_LABEL, FRAME_AS_OF_LABEL)[!is.na(c(DATA_AS_OF_LABEL, FRAME_AS_OF_LABEL))], collapse = " · ")
+if (!nzchar(AS_OF_CAPTION)) AS_OF_CAPTION <- NA_character_
 
 # ---- per-partner progress (for the Partner Report tab) ----------------------
 

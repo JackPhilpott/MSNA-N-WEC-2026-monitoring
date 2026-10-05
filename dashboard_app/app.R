@@ -110,9 +110,8 @@ filter_sidebar <- sidebar(
       selected = "original", inline = TRUE
     )
   ),
-  # STAGED (Jack's margin-of-error toggle, for his review; built 2 Oct, renamed 4 Oct from "Round 1 / Round 2" to
-  # the method it switches): only exists when global.R's FEATURE_SIMPLIFIED_MOE is on, so the sidebar is
-  # unchanged otherwise.
+  # Jack's margin-of-error toggle (built 2 Oct, renamed 4 Oct from "Round 1 / Round 2" to the method it switches,
+  # live by default from 4 Oct night): shown whenever global.R's FEATURE_SIMPLIFIED_MOE is on, which is the default.
   if (FEATURE_SIMPLIFIED_MOE) {
     div(
       style = "background: rgba(255,255,255,0.08); border-radius: 6px; padding: 8px 10px; margin-top: 8px;",
@@ -539,7 +538,7 @@ server <- function(input, output, session) {
   # single point of truth for "which basis is active right now" - matches
   # the existing pattern for map_tab_active()/effective_lgas() etc. above.
   target_basis <- reactive(input$target_basis)
-  # STAGED margin-of-error toggle: always "design" (the full design) while global.R's FEATURE_SIMPLIFIED_MOE is off
+  # margin-of-error toggle: always "design" (the full design) if global.R's FEATURE_SIMPLIFIED_MOE is switched off
   moe_basis <- reactive(if (FEATURE_SIMPLIFIED_MOE && identical(input$moe_basis, "simplified")) "simplified" else "design")
 
   # Computed from filtered_subs() (not the static progress_by_stratum), so

@@ -44,8 +44,8 @@ mod_map_ui <- function(id) {
           span(
             "Coverage map",
             info_icon("Colour and % reflect Achieved — completed interviews that count toward target. Coverage by LGA follows the sidebar's Target basis toggle; Coverage by cluster always uses each cluster's own fixed target. Hover any area for its Collected, Confirmed Deleted, Oversampling Surplus and Pending Deletion breakdown."),
-            if (!is.na(FRAME_AS_OF_LABEL)) {
-              span(class = "text-muted", style = "font-size: 0.75em; font-weight: normal; margin-left: 10px;", FRAME_AS_OF_LABEL)
+            if (!is.na(AS_OF_CAPTION)) {
+              span(class = "text-muted", style = "font-size: 0.75em; font-weight: normal; margin-left: 10px;", AS_OF_CAPTION)
             }
           ),
           div(
@@ -83,7 +83,7 @@ mod_map_ui <- function(id) {
           " have reported so far — a live, partial picture (default is accessible until a partner reports otherwise), not a final count.",
           info_icon("Based on partners' own accessibility reports for their assigned areas.")
         ),
-        # STAGED margin-of-error toggle - only in the UI while global.R's FEATURE_SIMPLIFIED_MOE is on
+        # margin-of-error toggle - in the UI whenever global.R's FEATURE_SIMPLIFIED_MOE is on (the default)
         if (FEATURE_SIMPLIFIED_MOE) uiOutput(ns("smoe_summary"))
       ),
       leafletOutput(ns("map"), height = "780px")
@@ -94,7 +94,7 @@ mod_map_ui <- function(id) {
 mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active = reactive(TRUE), target_basis = reactive("original"),
                            moe_basis = reactive("design")) {
   moduleServer(id, function(input, output, session) {
-    # STAGED margin-of-error toggle (Jack's, built 2 Oct, renamed 4 Oct; flag OFF by default - see global.R's
+    # margin-of-error toggle (Jack's, built 2 Oct, renamed 4 Oct; on by default from 4 Oct night - see global.R's
     # FEATURE_SIMPLIFIED_MOE): with "Simplified (design effect 1)" selected, the LGA view is coloured by each LGA's
     # simplified-MoE label instead of % of target, its hover text leads with the simplified MoE per stratum, and a
     # line above the map compares it with the full design. Computed from filtered_stratum() BEFORE filtered_lga()'s
@@ -309,7 +309,7 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
           target_delta = target_delta_label(target_sample, target_sample_current),
           target_diverges = is_significant_target_divergence(target_sample, target_sample_current),
           # the % of target colour, kept for the hover text's "Credited toward target" line whichever
-          # margin of error colours the polygon (STAGED margin-of-error toggle, below)
+          # margin of error colours the polygon (margin-of-error toggle, below)
           progress_color = fill_color
         ) %>%
         left_join(accessibility_lga_summary, by = "adm2_pcode") %>%
@@ -630,7 +630,7 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
       } else {
         paste0("color:", TARGET_BASIS_INACTIVE_COLOR, ";")
       }
-      # STAGED margin-of-error toggle: with the simplified margin of error selected, its verdict leads the hover
+      # margin-of-error toggle: with the simplified margin of error selected, its verdict leads the hover
       # text - the LGA's own MoE and label, the share of accessible households its included strata speak for when
       # some are Dropped, then each stratum's label and MoE.
       smoe_block <- if (smoe_on()) {
@@ -943,7 +943,7 @@ mod_map_server <- function(id, filtered_stratum, filtered_subs, map_tab_active =
       req(input$map_view)
       proxy <- leafletProxy("map") %>% removeControl("map_legend")
       if (input$map_view == "lga" && smoe_on()) {
-        # STAGED margin-of-error toggle: the LGA fill is the simplified-MoE label, so is the legend
+        # margin-of-error toggle: the LGA fill is the simplified-MoE label, so is the legend
         proxy %>%
           hideGroup(c("Cluster status", "Cluster status sites")) %>%
           showGroup("LGA progress") %>%

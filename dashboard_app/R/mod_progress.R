@@ -18,8 +18,8 @@ mod_progress_ui <- function(id) {
     # fillable argument — an earlier attempt to set fillable=FALSE right
     # here did nothing but attach a stray, inert HTML attribute; the real
     # control lives on page_navbar(), see app.R.)
-    if (!is.na(FRAME_AS_OF_LABEL)) {
-      div(class = "text-muted", style = "font-size: 0.8em; margin-bottom: 8px;", FRAME_AS_OF_LABEL)
+    if (!is.na(AS_OF_CAPTION)) {
+      div(class = "text-muted", style = "font-size: 0.8em; margin-bottom: 8px;", AS_OF_CAPTION)
     },
     # Six tiles at col_widths 4, two rows of three. Order was Achieved >
     # follow-up gap > Collected > % of target > days remaining > days

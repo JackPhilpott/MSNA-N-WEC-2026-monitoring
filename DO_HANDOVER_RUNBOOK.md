@@ -8,14 +8,21 @@
 
 **What you won't do this week:** resampling (new draws or top-ups), accessibility changes, partner reallocations, the recovery-workbook pipeline. Log any request of this kind in the parking lot (section 8) for Jack's return.
 
-> **[PENDING]** Sections marked [PENDING] are being completed on 4 October by the sessions building the launcher and the frame/partner update; they will be filled in before hand-over.
+> **BEFORE YOUR FIRST RUN: wait for Jack's confirmation that the shared folder has been re-linked to OneDrive.**
+> On 4 October the `IMPACT NGA - 02. MSNA` library stopped syncing on Jack's laptop, so that evening's refreshed data has not reached the shared folder yet. Jack re-links it on the morning of 5 October. A run started before then would begin from an older copy of the data and split it from ours. Run nothing, not even the dry run, until Jack confirms.
+
+> **[PENDING]** Sections still marked [PENDING] are being completed by the sessions building the launcher and the frame/partner update; they will be filled in before hand-over.
 
 ---
 
 ## 1. One-time setup on your laptop
 
 1. **Shared folder.** Make sure OneDrive syncs the whole `IMPACT NGA - 02. MSNA` library, and that `4. Data/MSNA N-WEC 2026/` and `3. External coordination/NGA MSNA 2026 Package/` are set to *Always keep on this device*.
-2. **R 4.6 and packages.** Run `2_monitoring/setup_this_computer.bat` once. It installs the dashboard's R packages into a library on your own computer, never in the shared folder. [PENDING: exact steps, confirmed once the clean-install test passes]
+2. **R 4.6 and packages.** Install R 4.6 from https://cran.r-project.org/bin/windows/base/ if it isn't installed. Then double-click `2_monitoring/setup_this_computer.bat` once. It needs internet and takes 10–30 minutes the first time.
+   - It installs the dashboard's R packages, at the exact versions the project uses, into a library on your own computer (`%LOCALAPPDATA%\R\renv-library`), never in the shared folder.
+   - It installs `openpyxl` for Python, then runs the pre-flight check (item 5).
+   - It is safe to run again: it only adds what is missing.
+   - [PENDING: confirm after the clean-install test, which was cut short on 4 Oct.]
    - **One package, `cleaningtools`, downloads from GitHub,** so your network must reach github.com during setup. If setup stops on it, the message tells you why:
      - **the network blocks github.com:** try another network, e.g. a phone hotspot;
      - **GitHub's anonymous download limit was reached:** wait an hour and run it again.
@@ -27,13 +34,22 @@
    rsconnect::setAccountInfo(name = "impact-nga-jp", token = "<token>", secret = "<secret>")
    ```
    The token is then stored in your own Windows profile. **Never** put it in a file in the shared folder, in an email, or in git.
-5. **Check everything:** [PENDING: the pre-flight command]. It lists anything missing and changes nothing.
+5. **Check everything:** double-click `2_monitoring/setup_this_computer.bat` again. Its last step is the launcher's pre-flight, judged as for a real run, and it ends with "SETUP COMPLETE" or a list of what to fix. It changes no data. From a terminal in `2_monitoring/`, the same check is `Rscript run_refresh_and_deploy.R --preflight-only`.
 
 ---
 
 ## 2. Daily routine: one command
 
-[PENDING: exact command, double-click file, expected runtime]
+1. **Put the day's files in place.** The launcher reads them only from these two places in the workspace, not from any other library or folder:
+   - the new anonymised export, `NGA2605_MSNA_anonymised_<date>.xlsx`, in `2_monitoring/cleaning/MSNA_Data_Cleaning/output/anonymised_data/`;
+   - the KoBo audit logs, `audit.zip`, in `2_monitoring/cleaning/MSNA_Data_Cleaning/audit/`.
+
+   On 4 Oct the export was saved to another library by mistake and `audit.zip` was missing from its folder; the pre-flight now stops if either is missing.
+2. **Wait for OneDrive** to finish syncing (green ticks), so the export is complete on your laptop.
+3. **Double-click `2_monitoring/run_refresh_and_deploy.bat`.**
+   - On your first day, double-click `run_refresh_and_deploy_DRYRUN.bat` first. It does everything except publish: nothing goes to the live dashboard or the partner folders.
+   - A full run takes about **30–40 minutes**: phase 1 about 15, phase 2 about 10–15, the validity suite about 5.
+   - The window shows progress and stays open at the end with a one-line result. Don't close it while it runs.
 
 The launcher runs these phases in order:
 
@@ -44,7 +60,7 @@ The launcher runs these phases in order:
 | 2. Frame and partner update | Refreshes the WORKING frame, rebuilds partner workbooks and maps in a staging folder, checks them, then publishes them to the partner folders | Partners keep their last good files. A frame problem restores the frame automatically. Phase 1's deploy is never undone |
 | 3. Validity suite | Runs the 84+ standing checks on the result | Reported in the run summary |
 
-At the end you get a plain-English summary and a log folder: [PENDING: location]. **Read the summary every day.**
+At the end you get a plain-English summary and a log folder: `2_monitoring/runs_log/<date_time>/`. It holds `RUN_REPORT.md` (the summary) and one full log per phase. Dry runs end in `_dryrun`. These folders stay on your laptop and are not shared. **Read the summary every day.**
 
 **The dashboard shows all data collected** (Jack, 4 Oct). Round 1 is an internal milestone, marked by a dotted line on 30 Sep in the summary timeline. New submissions simply add to the totals.
 
@@ -66,7 +82,29 @@ At the end you get a plain-English summary and a log folder: [PENDING: location]
   - `ERROR`: the run could not finish; partners keep yesterday's files.
 - **When Phase 2 blocks,** look up the failed check in the "When it blocks: what to do" table in [1_sampling/scripts/daily_update/README_daily_update.md](../1_sampling/scripts/daily_update/README_daily_update.md). The most common action-for-you case is a partner workbook left open in Excel: close it and re-run. Everything else on that table goes into the parking lot, with the run folder.
 
-[PENDING: troubleshooting table for Phase 0/1 from the launcher]
+**The launcher's result.** The window's last line and the top of `RUN_REPORT.md` give one of these:
+
+| Result (exit code) | What it means | What to do |
+|---|---|---|
+| FINISHED OK (0) | Everything ran and passed | Nothing |
+| STOPPED AT THE PRE-FLIGHT CHECKS (10) | Nothing ran, nothing changed | Fix the items marked FAIL (table below), then run again |
+| THE DASHBOARD STEP FAILED (20) | Nothing was uploaded; the live dashboard is unchanged | Read "End of the log" in the report. A network drop during the upload: run again. Anything else: park it with the report |
+| PHASE 2 DID NOT COMPLETE (30) | The dashboard was updated; partners keep yesterday's files | See "When Phase 2 blocks" above |
+| THE VALIDITY SUITE FOUND A FAIL (40) | Everything ran; a check failed | Park it with the check name and detail |
+| THE LAUNCHER HIT AN ERROR (50) | The launcher itself stopped | Park it with `RUN_REPORT.md` and `launcher.log` |
+
+**Pre-flight FAILs and their fixes:**
+
+| FAIL | Fix |
+|---|---|
+| R packages missing / renv not active | Run `setup_this_computer.bat` |
+| shinyapps.io account not set up | Do the one-time token step (section 1, item 4) |
+| Newest anonymised export missing, too small or unreadable | Check the export is in `anonymised_data/` and that OneDrive has finished downloading it |
+| KoBo audit logs (`audit.zip`) missing | Put the latest `audit.zip` from the cleaning pipeline in `cleaning/MSNA_Data_Cleaning/audit/`. Don't work around it: the interview-duration check needs it |
+| OneDrive conflict copies | A file named like `<name>-<COMPUTERNAME>.<ext>` sits next to `<name>.<ext>`. If it is clear which one is right, keep it and move the other into an `_archive` folder. If not, park it |
+| Another run is still marked as running | If no other run is going, delete `2_monitoring/runs_log/RUNNING.lock` and start again |
+
+WARNs (e.g. "export is N days old") don't stop the run; they're listed in the report.
 
 ---
 
@@ -99,6 +137,8 @@ Partners only ever see a complete, checked set of files. If anything is doubtful
 | `1_sampling/output/data/data_collection/` | Sampling frame (FULL, WORKING, strata, cluster status) | Updated by the launcher only |
 | `3. External coordination/NGA MSNA 2026 Package/` | Partner folders (workbooks, maps, field guides) | Updated by the launcher only |
 | `validity_checks/` | Standing check suite (`CHECK_CATALOG.md` explains each check) | Run only |
+
+**Frame hand-offs.** The hand-off zips are labelled v15 (pre-spares, 4 Oct night) and v16 (post-spares, 5 Oct morning). Inside the workspace the frame files keep the `_v14_` name until a later planned version bump. The daily run is unaffected.
 
 ---
 
@@ -149,6 +189,7 @@ Log every item you park in `2_monitoring/reports/do_week_parking_lot.md`, one li
   4. One coverage-decision row (Shagari) is housekeeping.
 - **File dates.** OneDrive sometimes leaves an old modification date on a file that was rewritten. Judge freshness by content, never by date; the checks already do.
 - **"Deployed dashboard is one refresh behind" WARN** straight after a frame update: cleared by the next deploy.
+- **"10 partner-LGA row(s) could not be matched to the sampling frame"** (Guyuk, Mayo-Belwa, Geidam, Tarmua, Gudu, Tureta, Dan Musa, Sabuwa, Safana, Dandi), in the dashboard's warnings banner. These LGAs have no to-do households left, so the coverage workbook can't be matched to them. They are still assigned to FACT through the frame (the same run says "Frame-derived union added 10 row(s)"), so nothing shows as "Not partner-assigned". A different or longer list is not covered by this note: log it.
 
 ---
 

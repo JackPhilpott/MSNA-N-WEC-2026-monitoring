@@ -8,8 +8,8 @@ mod_partner_report_ui <- function(id) {
   nav_panel(
     title = "Partner Report",
     icon = icon("file-export"),
-    if (!is.na(FRAME_AS_OF_LABEL)) {
-      div(class = "text-muted", style = "font-size: 0.8em; margin-bottom: 8px;", FRAME_AS_OF_LABEL)
+    if (!is.na(AS_OF_CAPTION)) {
+      div(class = "text-muted", style = "font-size: 0.8em; margin-bottom: 8px;", AS_OF_CAPTION)
     },
     layout_columns(
       col_widths = c(4, 8),

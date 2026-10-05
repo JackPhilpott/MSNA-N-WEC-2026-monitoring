@@ -83,7 +83,8 @@ mod_home_ui <- function(id) {
             "refresh against the live accessible population), can genuinely change over the ",
             "course of fielding without any data-quality issue. ",
             if (!is.na(FRAME_AS_OF_LABEL)) {
-              tagList(strong(FRAME_AS_OF_LABEL), " — every figure on this dashboard reflects this version of the frame.")
+              tagList(strong(FRAME_AS_OF_LABEL), " — every figure on this dashboard reflects this version of the frame",
+                      if (!is.na(DATA_AS_OF_LABEL)) paste0(" and the interviews up to ", format(DATA_AS_OF_DATE, "%d %b %Y")) else "", ".")
             } else {
               "The frame's current version date isn't available right now."
             },
