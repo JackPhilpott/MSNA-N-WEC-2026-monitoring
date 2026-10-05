@@ -9,20 +9,22 @@
 **What you won't do this week:** resampling (new draws or top-ups), accessibility changes, partner reallocations, the recovery-workbook pipeline. Log any request of this kind in the parking lot (section 8) for Jack's return.
 
 > **BEFORE YOUR FIRST RUN: wait for Jack's confirmation that the shared folder has been re-linked to OneDrive, and that the dashboard is spare-aware (v16).**
-> On 4 October the `IMPACT NGA - 02. MSNA` library stopped syncing on Jack's laptop, so that evening's refreshed data has not reached the shared folder yet. Jack re-links it on the morning of 5 October. A run started before then would begin from an older copy of the data and split it from ours. Run nothing, not even the dry run, until Jack confirms.
-
-> **[PENDING]** Sections still marked [PENDING] are being completed by the sessions building the launcher and the frame/partner update; they will be filled in before hand-over.
+> On 4 October the `IMPACT NGA - 02. MSNA` library stopped syncing on Jack's laptop, so that evening's refreshed data has not reached the shared folder yet. Jack re-links it on 5 October. A run started before then would begin from an older copy of the data and split it from ours. Run nothing, not even the dry run, until Jack confirms.
 
 ---
 
 ## 1. One-time setup on your laptop
 
 1. **Shared folder.** Make sure OneDrive syncs the whole `IMPACT NGA - 02. MSNA` library, and that `4. Data/MSNA N-WEC 2026/` and `3. External coordination/NGA MSNA 2026 Package/` are set to *Always keep on this device*.
-2. **R 4.6 and packages.** Install R 4.6 from https://cran.r-project.org/bin/windows/base/ if it isn't installed. Then double-click `2_monitoring/setup_this_computer.bat` once. It needs internet and takes 10–30 minutes the first time.
+2. **R 4.6, Rtools and packages.**
+   - Install R 4.6 from https://cran.r-project.org/bin/windows/base/ if it isn't installed.
+   - Install **Rtools** from https://cran.r-project.org/bin/windows/Rtools/ (the version listed for your R). It's needed because 13 of the packages are compiled on your computer. Setup checks for it first and stops with this instruction if it's missing.
+   - Then double-click `2_monitoring/setup_this_computer.bat` once. It needs internet and takes about **20–30 minutes** the first time.
    - It installs the dashboard's R packages, at the exact versions the project uses, into a library on your own computer (`%LOCALAPPDATA%\R\renv-library`), never in the shared folder.
    - It installs `openpyxl` for Python, then runs the pre-flight check (item 5).
    - It is safe to run again: it only adds what is missing.
-   - [PENDING: confirm after the clean-install test, which was cut short on 4 Oct.]
+   - **If you ran setup before 5 October:** after the re-link, install Rtools and run it again. The earlier version could stop with a false "R PACKAGE INSTALL FAILED", or fail on packages that need Rtools.
+   - Tested on 5 Oct on a clean package cache: 119 packages downloaded and installed in about 18 minutes, `cleaningtools` included, and the pre-flight passed its package and Python checks.
    - **One package, `cleaningtools`, downloads from GitHub,** so your network must reach github.com during setup. If setup stops on it, the message tells you why:
      - **the network blocks github.com:** try another network, e.g. a phone hotspot;
      - **GitHub's anonymous download limit was reached:** wait an hour and run it again.
@@ -196,4 +198,4 @@ Log every item you park in `2_monitoring/reports/do_week_parking_lot.md`, one li
 ## 10. Contacts
 
 - MSNA lead (away 5–11 Oct): Jack Philpott. Urgent only.
-- [PENDING: backup contact at IMPACT]
+- Backup contact at IMPACT: Lina Camperos (Jack's line manager).

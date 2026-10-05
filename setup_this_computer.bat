@@ -38,6 +38,18 @@ if !ERRORLEVEL! EQU 0 (
   echo       Nothing to install - this computer already uses the shared project library.
   goto :python
 )
+rem renv installs the EXACT versions in renv.lock. On Windows 13 of them (sf, terra, data.table, stringi, ...) are older
+rem than CRAN's current binaries and are compiled on this computer, which needs Rtools (clean-install test, 5 Oct).
+rem Checked now, before a long install that would otherwise fail part-way. No "!" or "%" in the R code (cmd eats them).
+"!RSCRIPT!" --vanilla -e "quit(status = as.integer(isFALSE(any(dir.exists(c(Sys.getenv('RTOOLS46_HOME'), Sys.getenv('RTOOLS45_HOME'), 'C:/rtools46', 'C:/rtools45'))))))"
+if !ERRORLEVEL! NEQ 0 (
+  echo.
+  echo RTOOLS IS NOT INSTALLED. Some of the dashboard's R packages have to be compiled on this computer, which needs it.
+  echo Install Rtools from https://cran.r-project.org/bin/windows/Rtools/ - pick the version listed for your R version -
+  echo then run this again. Nothing has been installed or changed yet.
+  pause
+  exit /b 1
+)
 set "RENV_PATHS_LIBRARY_ROOT=%LOCALAPPDATA%\R\renv-library"
 setx RENV_PATHS_LIBRARY_ROOT "%LOCALAPPDATA%\R\renv-library" >nul
 echo       The packages will live in !RENV_PATHS_LIBRARY_ROOT! - on this computer, for this Windows user only.
@@ -45,8 +57,9 @@ echo       The packages will live in !RENV_PATHS_LIBRARY_ROOT! - on this compute
 echo       Installing the exact versions in renv.lock where missing - needs internet, 10-30 minutes the first time ...
 "!RSCRIPT!" -e "options(renv.consent = TRUE); renv::restore(prompt = FALSE)"
 set "RESTORE_RC=!ERRORLEVEL!"
-rem cleaningtools is the one package that comes from GitHub, not CRAN - checked by name so its failure is named
-"!RSCRIPT!" -e "quit(status = as.integer(!requireNamespace('cleaningtools', quietly = TRUE)))"
+rem cleaningtools is the one package that comes from GitHub, not CRAN - checked by name so its failure is named.
+rem No "!" in R code here: with EnableDelayedExpansion cmd strips a lone "!", which inverted this test (5 Oct).
+"!RSCRIPT!" -e "quit(status = as.integer(isFALSE(requireNamespace('cleaningtools', quietly = TRUE))))"
 set "CT_RC=!ERRORLEVEL!"
 if not "!CT_RC!"=="0" (
   echo.
@@ -61,6 +74,7 @@ if not "!CT_RC!"=="0" (
 if not "!RESTORE_RC!"=="0" (
   echo.
   echo R PACKAGE INSTALL FAILED - see the messages above. Check the internet connection and run this again.
+  echo If the messages mention make, gcc or a compiler, install Rtools from https://cran.r-project.org/bin/windows/Rtools/ first.
   pause
   exit /b 1
 )
