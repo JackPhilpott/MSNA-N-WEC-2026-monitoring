@@ -33,6 +33,8 @@
 # ---- input_data/sampling_frame: the FULL frames (latest version only - the bundler drops older versions) ----
 ^input_data/sampling_frame/NGA_MSNA_2026_(stage2|strata_level)_sampling_frame_v[0-9]+_FULL\.csv$
 ^input_data/sampling_frame/_frame_version\.txt$
+# spare (buffer) cluster register, 2026-10-05: global.R hides unused spares from every cluster-level figure
+^input_data/sampling_frame/buffer_cluster_register\.csv$
 
-# ---- input_data/round1: the Round 1 representativity toggle (read only when its flag is on) ----
+# ---- input_data/round1: the margin-of-error toggle (read when its flag is on, the default) ----
 ^input_data/round1/collection_period_access\.csv$

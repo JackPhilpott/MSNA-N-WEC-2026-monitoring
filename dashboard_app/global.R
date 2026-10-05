@@ -1142,6 +1142,37 @@ is_confirmed_deletion <- function(df) {
   df$interview_outcome == "completed" & !is.na(df$deletion_status) & df$deletion_status %in% c("confirmed", "contested")
 }
 
+# ---- spare (buffer) clusters - 2026-10-05, for the data officer's week (Jack's spares; register agreed with 1_sampling)
+# 1_sampling draws spare clusters into the frame like any other cluster and lists them in buffer_cluster_register.csv
+# (mirrored to input_data/sampling_frame/). A spare with no achieved interview yet is UNUSED: it must not count in any
+# cluster-level target / remaining / to-do figure, nor show as an ordinary cluster on the map. A spare with at least one
+# achieved interview is USED and counts like any other cluster - use is read from the data, so nobody releases a spare
+# by hand. Stratum targets are unaffected (they come from 1_sampling's representativity file, not from summing
+# clusters). Unused spares are dropped here from psu_hexagons_sf / psu_sites_sf - the cluster universe every
+# cluster-level figure and map layer is built from (cluster_targets, compute_cluster_progress(), the oversampling
+# table, the Coverage Map) - and listed in SPARE_CLUSTERS. No register file = no spares = no change.
+SPARE_REGISTER_PATH <- file.path(INPUT_DIR, "sampling_frame/buffer_cluster_register.csv")
+spare_register <- if (file.exists(SPARE_REGISTER_PATH)) {
+  read_csv(SPARE_REGISTER_PATH, show_col_types = FALSE, col_types = cols(.default = "c"))
+} else {
+  tibble(cluster_id = character(), strata_id = character(), pop_type = character(), partner = character(), buffer_rank = character())
+}
+# "used" = at least one canonical achieved interview (completed, matched to a frame point, not a settled deletion) by
+# matched_cluster_id - exactly 1_sampling's spare_clusters.unused_spare_ids() rule, so the partner packages, 05 and the
+# dashboard always agree on which spares are in use
+spare_used_ids <- unique(submissions_raw$matched_cluster_id[which(
+  is_achieved(submissions_raw) & !is.na(submissions_raw$matched_survey_id) & !submissions_raw$matched_survey_id %in% c("", "NA") &
+    submissions_raw$matched_cluster_id %in% spare_register$cluster_id)])
+SPARE_CLUSTERS <- spare_register %>% mutate(used = cluster_id %in% spare_used_ids)
+unused_spare_ids <- SPARE_CLUSTERS$cluster_id[!SPARE_CLUSTERS$used]
+psu_hexagons_sf <- psu_hexagons_sf %>% filter(!cluster_id %in% unused_spare_ids)
+psu_sites_sf <- psu_sites_sf %>% filter(!cluster_id %in% unused_spare_ids)
+SPARE_SUMMARY <- if (nrow(SPARE_CLUSTERS) > 0) {
+  sprintf("%d spare cluster(s) held in reserve, not shown or counted until used; %d in use", sum(!SPARE_CLUSTERS$used), sum(SPARE_CLUSTERS$used))
+} else {
+  NA_character_
+}
+
 # cluster_id -> target_households, used only to CAP achieved at the
 # cluster level below — same source (psu_hexagons_sf/psu_sites_sf) the
 # Coverage Map's oversampled-cluster border and the partner digest's

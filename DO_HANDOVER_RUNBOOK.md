@@ -8,7 +8,7 @@
 
 **What you won't do this week:** resampling (new draws or top-ups), accessibility changes, partner reallocations, the recovery-workbook pipeline. Log any request of this kind in the parking lot (section 8) for Jack's return.
 
-> **BEFORE YOUR FIRST RUN: wait for Jack's confirmation that the shared folder has been re-linked to OneDrive.**
+> **BEFORE YOUR FIRST RUN: wait for Jack's confirmation that the shared folder has been re-linked to OneDrive, and that the dashboard is spare-aware (v16).**
 > On 4 October the `IMPACT NGA - 02. MSNA` library stopped syncing on Jack's laptop, so that evening's refreshed data has not reached the shared folder yet. Jack re-links it on the morning of 5 October. A run started before then would begin from an older copy of the data and split it from ours. Run nothing, not even the dry run, until Jack confirms.
 
 > **[PENDING]** Sections still marked [PENDING] are being completed by the sessions building the launcher and the frame/partner update; they will be filled in before hand-over.

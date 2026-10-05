@@ -46,6 +46,10 @@ mod_map_ui <- function(id) {
             info_icon("Colour and % reflect Achieved — completed interviews that count toward target. Coverage by LGA follows the sidebar's Target basis toggle; Coverage by cluster always uses each cluster's own fixed target. Hover any area for its Collected, Confirmed Deleted, Oversampling Surplus and Pending Deletion breakdown."),
             if (!is.na(AS_OF_CAPTION)) {
               span(class = "text-muted", style = "font-size: 0.75em; font-weight: normal; margin-left: 10px;", AS_OF_CAPTION)
+            },
+            # spare (buffer) clusters - see global.R's SPARE_CLUSTERS: unused ones are not drawn or counted
+            if (!is.na(SPARE_SUMMARY)) {
+              span(class = "text-muted", style = "font-size: 0.75em; font-weight: normal; margin-left: 10px;", SPARE_SUMMARY)
             }
           ),
           div(
