@@ -210,6 +210,13 @@ that always runs against the CURRENT full dataset, never a day-snapshot.
   was NOT changed retroactively (submitted 5 Oct as is); all 27 count as
   deletions from Round 2 on, listed in `reports/partner_data_recovery/outputs/
   _round1_closeout/POST_SUBMISSION_duration_findings_2026-10-04.csv`.
+  Since 12 Oct (#38) the same applies to an OPEN row of another reason: when
+  the duration check confirms it, the row is relabelled `duration_under_20`
+  with the earlier reason kept in `notes` (logged to `_review_decisions_log/`).
+  A row already confirmed for another reason, and any human duration ruling,
+  are left as they are. 15 rows confirmed earlier that day under
+  `duplicate_point` (FACT 10, ZOA 4, CARE 1) were relabelled by a one-off the
+  same night.
 - **One-time overrides (2026-10-04), off unless set, always reported:**
   `MSNA_ANON_EXPORT=<path>` makes prep (and `audit_missingness.R`) use that
   export file. `MSNA_AUDIT_FALLBACK_CACHE=<DO's audit_duration_cache.csv>`,

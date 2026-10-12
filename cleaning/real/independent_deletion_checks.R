@@ -249,17 +249,41 @@ run_independent_duration_check <- function() {
   # touch rows still genuinely open, never overwrite a human decision
   # (confirmed OR contested) that already exists.
   n_auto_confirmed <- 0L
+  n_relabelled <- 0L
   if (nrow(new_issues) > 0) {
     ids <- mapply(build_issue_id, new_issues$issue_type, new_issues$uuid, new_issues$cluster_id, new_issues$listing_number)
     current <- read_tracker()
     already_terminal <- current$status %in% TERMINAL_STATUSES
     hit <- current$issue_id %in% ids & !already_terminal
+    # FIX 2026-10-12 (Jack, #38): an OPEN row raised earlier for another reason (e.g. a duplicate_point flag registered
+    # while the interview had no audit file yet) shares the interview's issue_id, so it is confirmed here - relabel it
+    # duration_under_20 instead of leaving a confirmed row that names the wrong reason, and keep the earlier reason in
+    # notes. Open rows only: a row already confirmed for another reason, and any human duration ruling, are left as they
+    # are. First found on 15 interviews (FACT 10, ZOA 4, CARE 1) confirmed on 12 Oct, relabelled by hand the same night.
+    relabel <- hit & coalesce(current$deletion_reason, "") != "duration_under_20"
+    if (any(relabel)) {
+      dmin <- setNames(round(short$duration_audit_sum_all_minutes, 1), short$submission_uuid)
+      relabel_prior <- coalesce(current$deletion_reason[relabel], "?")
+      current$notes[relabel] <- paste0(coalesce(current$notes[relabel], ""), " | ", Sys.Date(), ": deletion reason changed from ",
+                                      relabel_prior, " to duration_under_20 - interview duration ", dmin[current$uuid[relabel]],
+                                      " minutes, under the ", DURATION_FLOOR_MINUTES, "-minute floor (no appeal)")
+      current$deletion_reason[relabel] <- "duration_under_20"
+      n_relabelled <- sum(relabel)
+    }
     current$status[hit] <- "confirmed"
     current$resolution[hit] <- "validated methodology threshold, no appeal (independently computed)"
     current$resolution_date[hit] <- as.character(Sys.Date())
     current$confirmed_by[hit] <- "internal_team"
     n_auto_confirmed <- sum(hit)
     if (n_auto_confirmed > 0) write_tracker(current)
+    if (n_relabelled > 0) {
+      dir.create("reports/partner_data_recovery/outputs/_review_decisions_log", showWarnings = FALSE, recursive = TRUE)
+      prior_counts <- table(relabel_prior)
+      cat(sprintf("%s | decided_by=Jack (12 Oct 2026, #38: the duration rule relabels open rows of another reason) | n=%d | new_status=confirmed | confirmed_by=internal_team | deletion_reason=duration_under_20 (was: %s) | issue_ids=%s\n",
+                  format(Sys.time(), "%Y-%m-%d %H:%M:%S"), n_relabelled,
+                  paste(names(prior_counts), prior_counts, sep = " x", collapse = ", "), paste(current$issue_id[relabel], collapse = ";")),
+          file = sprintf("reports/partner_data_recovery/outputs/_review_decisions_log/%s.log", format(Sys.Date(), "%Y-%m-%d")), append = TRUE)
+    }
   }
 
   # FIX 2026-10-04 (Jack: "Remove + fix the gap"). The tracker keeps ONE confirmed_deletion row per interview, so a
@@ -298,8 +322,8 @@ run_independent_duration_check <- function() {
   }
 
   cat(sprintf(
-    "independent_deletion_checks(): duration_under_20 - %d completed row(s) under %d min (of %d with a real audit duration available), %d newly auto-confirmed this run, %d earlier recovery(ies) for another reason overridden.\n",
-    nrow(new_issues), DURATION_FLOOR_MINUTES, nrow(durations), n_auto_confirmed, n_overridden
+    "independent_deletion_checks(): duration_under_20 - %d completed row(s) under %d min (of %d with a real audit duration available), %d newly auto-confirmed this run (%d of them open rows of another reason, relabelled duration_under_20), %d earlier recovery(ies) for another reason overridden.\n",
+    nrow(new_issues), DURATION_FLOOR_MINUTES, nrow(durations), n_auto_confirmed, n_relabelled, n_overridden
   ))
   invisible(new_issues)
 }
