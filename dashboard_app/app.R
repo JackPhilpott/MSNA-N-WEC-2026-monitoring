@@ -39,6 +39,17 @@ GLOBAL_CSS <- tags$style(HTML("
   }
 "))
 
+# 16 Oct 2026 (Jack, relayed by Coordinator): data collection is finished - one line above every tab's content says
+# this is the final overview. page_navbar()'s header argument places it above all nav_panel() content, so no tab can
+# miss it. Dates come from global.R (COLLECTION_CLOSED_DATE / FINAL_DOWNLOAD_DATE).
+FINAL_BANNER <- div(
+  class = "alert alert-primary",
+  style = "margin-bottom: 8px; padding: 6px 12px; font-size: 0.95em;",
+  icon("flag-checkered"), " ",
+  strong(paste0("Data collection closed on ", fmt_long_date(COLLECTION_CLOSED_DATE), ".")),
+  paste0(" This is the final overview of the collected data (final download ", fmt_long_date(FINAL_DOWNLOAD_DATE), ").")
+)
+
 # A proper collapsed dropdown for every multi-select filter — showing all
 # ~176 LGAs or ~2,000 wards as individual removable tags (what
 # selectizeInput did) made the sidebar stretch absurdly long once
@@ -111,7 +122,8 @@ filter_sidebar <- sidebar(
     )
   ),
   # Jack's margin-of-error toggle (built 2 Oct, renamed 4 Oct from "Round 1 / Round 2" to the method it switches,
-  # live by default from 4 Oct night): shown whenever global.R's FEATURE_SIMPLIFIED_MOE is on, which is the default.
+  # live by default from 4 Oct night). REMOVED 16 Oct 2026: global.R's FEATURE_SIMPLIFIED_MOE is now a hard FALSE, so
+  # this block never renders - dormant, to be deleted at wrap-up.
   if (FEATURE_SIMPLIFIED_MOE) {
     div(
       style = "background: rgba(255,255,255,0.08); border-radius: 6px; padding: 8px 10px; margin-top: 8px;",
@@ -174,10 +186,11 @@ ui <- tagList(
   GLOBAL_CSS,
   page_navbar(
     id = "main_nav",
-    title = "MSNA N-WEC 2026 — Monitoring",
+    title = "MSNA N-WEC 2026 — Final data collection overview",
     theme = bs_theme(version = 5, primary = "#1B2A4A", success = "#1E7B4D", warning = "#D99A2B", danger = "#C1443C"),
     navbar_options = navbar_options(bg = THEME_NAVBAR_BG, theme = "dark"),
     sidebar = filter_sidebar,
+    header = FINAL_BANNER,
     # fillable is a page_navbar()-level setting, not a nav_panel() one —
     # nav_panel() has no fillable argument at all (confirmed against the
     # installed bslib 0.11.0's own formals()), so the fillable=FALSE

@@ -15,7 +15,7 @@ mod_home_ui <- function(id) {
     layout_columns(
       col_widths = c(8, 4),
       card(
-        card_header("MSNA North-West / East / Central Nigeria 2026 — Monitoring Dashboard"),
+        card_header("MSNA North-West / East / Central Nigeria 2026 — Final Data Collection Overview"),
         div(
           style = "font-size: 1.02em; line-height: 1.6;",
           p(
@@ -84,7 +84,7 @@ mod_home_ui <- function(id) {
             "course of fielding without any data-quality issue. ",
             if (!is.na(FRAME_AS_OF_LABEL)) {
               tagList(strong(FRAME_AS_OF_LABEL), " — every figure on this dashboard reflects this version of the frame",
-                      if (!is.na(DATA_AS_OF_LABEL)) paste0(" and the interviews up to ", format(DATA_AS_OF_DATE, "%d %b %Y")) else "", ".")
+                      if (is.finite(DATA_AS_OF_DATE)) paste0(" and the interviews up to ", format(DATA_AS_OF_DATE, "%d %b %Y")) else "", ".")
             } else {
               "The frame's current version date isn't available right now."
             },
@@ -127,7 +127,7 @@ mod_home_ui <- function(id) {
     layout_columns(
       col_widths = c(6, 6),
       card(
-        card_header("Today's snapshot", span(class = "text-muted", style = "font-size: 0.8em; font-weight: normal; margin-left: 8px;", "National, unfiltered")),
+        card_header("Final snapshot", span(class = "text-muted", style = "font-size: 0.8em; font-weight: normal; margin-left: 8px;", "National, unfiltered")),
         uiOutput(ns("snapshot"))
       ),
       card(
@@ -249,7 +249,7 @@ mod_home_server <- function(id, target_basis) {
           )
         ),
         tags$tr(
-          tags$td("Achieved so far", info_icon(paste0(
+          tags$td("Achieved", info_icon(paste0(
             "Every completed interview that counts — excludes confirmed deletions, includes in full any collected past a stratum's own target. ",
             "Of these, ", comma(total_credited), " count toward the target of ", comma(active_planned_interviews(target_basis())),
             " and ", comma(total_achieved - total_credited), " are extra interviews in strata already at target, which is why target minus achieved is NOT what's still needed — see the next row. ",
@@ -261,7 +261,7 @@ mod_home_server <- function(id, target_basis) {
           tags$td(strong(comma(total_credited), " (", fmt_pct(total_credited / active_planned_interviews(target_basis())), " of ", target_basis_label(target_basis()), ") / ", comma(total_remaining), " still needed"))
         ),
         tags$tr(
-          tags$td("Collected so far", info_icon("Every completed interview, including any later deleted or oversampled — total field effort, not what counts toward target.")),
+          tags$td("Collected", info_icon("Every completed interview, including any later deleted or oversampled — total field effort, not what counts toward target.")),
           tags$td(strong(comma(total_collected)))
         ),
         tags$tr(
@@ -340,15 +340,15 @@ mod_home_server <- function(id, target_basis) {
         tags$tr(tags$td("Submissions that day"), tags$td(strong(comma(today_count)))),
         tags$tr(tags$td("Submissions the day before"), tags$td(strong(comma(yesterday_n)))),
         tags$tr(
-          tags$td("Total achieved to date", info_icon("Same figures as 'Achieved so far' / 'Credited toward target' above, shown alongside today's activity for context. The % is credited (capped per stratum), not raw.")),
+          tags$td("Total achieved", info_icon("Same figures as 'Achieved' / 'Credited toward target' above. The % is credited (capped per stratum), not raw.")),
           tags$td(strong(comma(total_achieved), " / ", comma(total_target), " (", fmt_pct(total_credited / total_target), " credited toward target)"))
         ),
         tags$tr(
-          tags$td("Total collected to date", info_icon("Every completed interview, including surplus, duplicates and unmatched submissions.")),
+          tags$td("Total collected", info_icon("Every completed interview, including surplus, duplicates and unmatched submissions.")),
           tags$td(strong(comma(total_collected)))
         ),
         tags$tr(
-          tags$td("Most recent upload timestamp"),
+          tags$td("Last upload in the final data"),
           tags$td(strong(if (is.na(last_upload)) "not available" else format(last_upload, "%d %b %Y %H:%M")),
                   if (n_no_upload > 0) span(class = "text-muted", paste0(" (", comma(n_no_upload), " submission(s) have no upload time)")))
         ),

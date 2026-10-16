@@ -91,6 +91,12 @@ FIELDING_PLANNED_END <- as.Date("2026-09-27")
 # boundary); the Progress Overview timeline marks where Round 1 ended with a subtle dotted line on this date. Not the
 # same date as FIELDING_PLANNED_END above (27 Sep, the IPC-CH pace target).
 ROUND1_DATE <- as.Date("2026-09-30")
+# 16 Oct 2026 (Jack, relayed by Coordinator): data collection closed on 15 Oct and the final download was taken on
+# 16 Oct, so the dashboard presents the final overview of the collected data - app.R's banner on every page, the
+# navbar/Home titles and AS_OF_CAPTION below all read from these two dates.
+COLLECTION_CLOSED_DATE <- as.Date("2026-10-15")
+FINAL_DOWNLOAD_DATE <- as.Date("2026-10-16")
+fmt_long_date <- function(d) paste(as.integer(format(d, "%d")), format(d, "%B %Y"))  # "15 October 2026"
 
 # ---- load data -------------------------------------------------------------
 
@@ -1279,7 +1285,11 @@ TOTAL_PLANNED_INTERVIEWS_CURRENT <- strata_frame %>%
   pull(target_sample_current) %>%
   sum(na.rm = TRUE)
 
-# ---- Margin-of-error toggle: Full design vs Simplified - LIVE (on by default) ---------------------------------
+# ---- Margin-of-error toggle: Full design vs Simplified - REMOVED 16 Oct 2026 (switched off below) ---------------
+# 16 Oct 2026 (Jack, relayed by Coordinator): "remove the margin of error global filter everywhere in the dashboard" -
+# not really used, decisions have changed since, and it overcomplicates things. FEATURE_SIMPLIFIED_MOE is now a hard
+# FALSE, which removes the sidebar control, the Coverage Map recolouring/legend/summary and the hover block in one
+# place; the code below is left dormant and is to be deleted at wrap-up. The history that follows is kept for that.
 # Jack (2 Oct, relayed by Coordinator): a universal toggle between two ways of judging representativity - e.g. to
 # show on the Coverage Map how much becomes representative under the simplified margin of error. Renamed 4 Oct (Jack:
 # "not Round 1/Round 2" - name it after the method it switches). Built staged OFF; switched ON by default 4 Oct night
@@ -1304,7 +1314,7 @@ TOTAL_PLANNED_INTERVIEWS_CURRENT <- strata_frame %>%
 #     the 8 Sep / 26 Sep archived layers (input_data/round1/collection_period_access.csv, built by
 #     _working_files/scripts/build_round1_collection_period_access.py), or all its households if never recorded
 #     accessible in either (a larger denominator never overstates representativity).
-FEATURE_SIMPLIFIED_MOE <- !identical(Sys.getenv("MSNA_FEATURE_SIMPLIFIED_MOE"), "0")
+FEATURE_SIMPLIFIED_MOE <- FALSE  # 16 Oct 2026: removed (see above); was !identical(Sys.getenv("MSNA_FEATURE_SIMPLIFIED_MOE"), "0")
 SMOE_Z <- qnorm(0.95)
 SMOE_TARGET_MOE <- 10
 SMOE_FLOOR <- 20
@@ -2058,7 +2068,9 @@ FRAME_AS_OF_LABEL <- if (!is.na(FRAME_AS_OF_DATE)) {
 # interviews from 3-4 Oct read as stale data. AS_OF_CAPTION shows both: the latest interview date in the data, then the
 # frame's version date. Built from submissions_raw, already loaded above (no extra read at startup).
 DATA_AS_OF_DATE <- suppressWarnings(max(submissions_raw$submission_date, na.rm = TRUE))
-DATA_AS_OF_LABEL <- if (is.finite(DATA_AS_OF_DATE)) paste0("Data up to ", format(DATA_AS_OF_DATE, "%d %b %Y")) else NA_character_
+# 16 Oct 2026 (Jack, relayed by Coordinator): collection closed, so the caption names the final data, not a date
+# the data runs "up to" (Home's frame paragraph still quotes DATA_AS_OF_DATE itself, the last interview date).
+DATA_AS_OF_LABEL <- paste0("Final data, collection closed ", format(COLLECTION_CLOSED_DATE, "%d %b %Y"))
 AS_OF_CAPTION <- paste(c(DATA_AS_OF_LABEL, FRAME_AS_OF_LABEL)[!is.na(c(DATA_AS_OF_LABEL, FRAME_AS_OF_LABEL))], collapse = " · ")
 if (!nzchar(AS_OF_CAPTION)) AS_OF_CAPTION <- NA_character_
 

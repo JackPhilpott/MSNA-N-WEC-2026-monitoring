@@ -14,6 +14,13 @@ Reads the two archived layers from 1_sampling once (read-only) and writes a stat
 workspace's data-handoff convention: input_data/round1/collection_period_access.csv.
 
     python -B _working_files/scripts/build_round1_collection_period_access.py
+
+13 Oct 2026 (Jack, #47 - Round 1 re-issued with the DTM IDP share, #44): the IDP rows of
+input_data/round1/collection_period_access.csv now carry the DTM-based accessible share, taken from Resampling's
+1_sampling/resampling/output/dtm_share_fix_sandbox_2026-10-12/round1/R1_idp_share_worldpop_vs_dtm_by_lga.csv
+(layer_0908_share_dtm_pct / layer_0926_share_dtm_pct, the same larger-of-the-two rule); Non-IDP rows are unchanged
+(WorldPop). This script still computes the WorldPop share for every row: re-running it would RESTORE the WorldPop IDP
+values, until Resampling promotes its DTM outputs out of that sandbox folder and this script is pointed at them.
 """
 import csv
 from collections import defaultdict
